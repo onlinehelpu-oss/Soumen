@@ -1,0 +1,986 @@
+# -*- coding: utf-8 -*-
+"""
+Green-Hammer live scanner with CNC GTT/OCO attempt
+
+VWAP touch behaviour:
+- Accept signal when:
+A) signal bar opened BELOW VWAP and closed ABOVE VWAP (strict intrabar cross)
+OR
+B) signal bar opened ABOVE VWAP, LOW touched/under VWAP intrabar, and closed ABOVE VWAP (touch case)
+OR
+C) previous bar closed <= prev-VWAP and signal bar closed > current VWAP (prev-bar alternative)
+"""
+import os
+import sys
+import json
+import time
+import math
+import hashlib
+import datetime as dt
+from urllib.parse import urlparse, parse_qs, quote
+import threading
+import argparse
+import traceback
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+import requests
+
+from fyers_apiv3 import fyersModel
+from fyers_apiv3.FyersWebsocket import data_ws
+
+# ===================== STRATEGY SETTINGS =====================
+TIMEFRAME_MIN = 15 # default timeframe in minutes
+R_MULTIPLIER = 1.5 # Risk:Reward multiple (target = entry + R_MULTIPLIER * risk)
+TRADE_MODE = "CNC" # default
+DEFAULT_QTY = 1
+EPS = 1e-6
+
+# VWAP tuning
+VWAP_ALLOW_TOUCH = True # allow "open above, touched VWAP, closed above" case
+VWAP_TOLERANCE = 0.0005 # relative tolerance (fraction of VWAP). 0.0005 = 0.05%
+VWAP_DEBUG = False # set True for verbose VWAP alignment debug prints
+
+# ===================== ALLOCATION / MODE =====================
+ORDER_MODE = "CNC"
+ALLOC_DEFAULT = 5000.0
+ALLOC_MAP = {
+# "NSE:SBIN-EQ": 12000.0,
+}
+# LOT_SIZE: units per lot (you must populate correct values, e.g. NATGASMINI -> 40)
+LOT_SIZE = {
+# "MCX:NATGASMINI": 40,
+}
+# LOT_COUNT: how many lots to place for a given base symbol (default 1)
+LOT_COUNT = {
+# "MCX:NATGASMINI": 1,
+}
+
+# ===================== OTHER SETTINGS =====================
+ONE_POSITION_AT_A_TIME = True
+TICK_SIZE = 0.05
+ENTRY_BUFFER = 0.05
+ENTRY_CUTOFF = dt.time(15, 0)
+EXIT_ALL_TIME = dt.time(15, 9)
+ENTRY_CUTOFF_MCX = dt.time(22, 0)
+EXIT_ALL_TIME_MCX = dt.time(22, 50)
+FORCE_CLOSED_ALL = False
+FORCE_CLOSED_ALL_MCX = False
+MIN_RANGE_PCT = 0.0015
+MIN_BODY_TICKS = 0
+
+# Persistence files
+TRADE_STORE = "open_trades.json"
+TRADE_LOG = "trade_log.csv"
+
+# ===================== UTILITIES =====================
+KOLKATA = ZoneInfo("Asia/Kolkata")
+
+def round_to_tick(x, tick=TICK_SIZE):
+    return round(round(x / tick) * tick, 2)
+
+def ceil_to_tick(x, tick=TICK_SIZE):
+    k = math.floor(x / tick)
+    if abs(x - k * tick) < 1e-12:
+        return round(x, 2)
+    return round((k + 1) * tick, 2)
+
+def _read_json(path, default=None):
+    try:
+        with open(path, 'r') as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+def _write_json(path, data):
+    try:
+        os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+        with open(path, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"⚠️ Could not write JSON {path}: {e}")
+
+# ===================== CONSTANTS & PATHS =====================
+CONFIG_FILE = "fyers_login_details.json"
+TOKENS_DIR = "AccessToken"
+TOKENS_STORE = "tokens_store.json"
+TODAY = dt.date.today()
+TODAY_PATH = os.path.join(TOKENS_DIR, f"{TODAY}.json")
+API_HOST = "https://api-t1.fyers.in"
+
+# ===================== WATCHLIST =====================
+SYMBOLS = [
+    'NSE:ADANIENT-EQ', 'NSE:ADANIPORTS-EQ', 'NSE:APOLLOHOSP-EQ', 'NSE:ASIANPAINT-EQ', 'NSE:AXISBANK-EQ',
+    'NSE:BAJAJ-AUTO-EQ', 'NSE:BAJFINANCE-EQ', 'NSE:BAJAJFINSV-EQ', 'NSE:BPCL-EQ', 'NSE:BHARTIARTL-EQ',
+    'NSE:BRITANNIA-EQ', 'NSE:CIPLA-EQ', 'NSE:COALINDIA-EQ', 'NSE:DIVISLAB-EQ', 'NSE:DRREDDY-EQ',
+    'NSE:EICHERMOT-EQ', 'NSE:GRASIM-EQ', 'NSE:HCLTECH-EQ', 'NSE:HDFCBANK-EQ', 'NSE:HDFCLIFE-EQ',
+    'NSE:HEROMOTOCO-EQ', 'NSE:HINDALCO-EQ', 'NSE:HINDUNILVR-EQ', 'NSE:ICICIBANK-EQ', 'NSE:ITC-EQ',
+    'NSE:INFY-EQ', 'NSE:JSWSTEEL-EQ', 'NSE:KOTAKBANK-EQ', 'NSE:LTIM-EQ', 'NSE:LT-EQ',
+    'NSE:M&M-EQ', 'NSE:MARUTI-EQ', 'NSE:NTPC-EQ', 'NSE:NESTLEIND-EQ', 'NSE:ONGC-EQ',
+    'NSE:POWERGRID-EQ', 'NSE:RELIANCE-EQ', 'NSE:SBILIFE-EQ', 'NSE:SBIN-EQ', 'NSE:SIEMENS-EQ',
+    'NSE:SUNPHARMA-EQ', 'NSE:TCS-EQ', 'NSE:TATACONSUM-EQ', 'NSE:TATASTEEL-EQ',
+    'NSE:TECHM-EQ', 'NSE:TITAN-EQ', 'NSE:UPL-EQ'
+]
+
+# ===================== LOGIN & TOKEN MGMT =====================
+def load_creds():
+    creds = _read_json(CONFIG_FILE)
+    if not creds:
+        raise SystemExit("❌ Missing 'fyers_login_details.json'. Create it with {api_key, api_secret, redirect_url}.")
+    for k in ("api_key", "api_secret", "redirect_url"):
+        if k not in creds or not creds[k]:
+            raise SystemExit(f"❌ '{k}' missing in {CONFIG_FILE}.")
+    return creds
+
+def appid_hash(app_id: str, secret_id: str) -> str:
+    return hashlib.sha256(f"{app_id}:{secret_id}".encode()).hexdigest()
+
+def compose_access_token_string(app_id: str, access_token: str) -> str:
+    if access_token.startswith(f"{app_id}:"):
+        return access_token
+    return f"{app_id}:{access_token}"
+
+def build_auth_url(app_id: str, redirect_uri: str, state: str = "sample_state") -> str:
+    base = f"{API_HOST}/api/v3/generate-authcode"
+    params = (
+        f"client_id={quote(app_id)}"
+        f"&redirect_uri={quote(redirect_uri, safe='')}"
+        f"&response_type=code"
+        f"&state={quote(state)}"
+        f"&scope=openid"
+        f"&nonce={int(time.time())}"
+    )
+    return f"{base}?{params}"
+
+def extract_code(user_input: str) -> str:
+    if user_input.startswith("http://") or user_input.startswith("https://"):
+        q = parse_qs(urlparse(user_input).query)
+        code = q.get("code", [None])[0]
+        if not code:
+            raise ValueError("No 'code' param found in the provided URL.")
+        return code
+    return user_input
+
+def post_json(url: str, payload: dict, max_retries: int = 5, timeout: int = 20):
+    headers = {"Content-Type": "application/json"}
+    for attempt in range(1, max_retries + 1):
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            try:
+                data = r.json()
+            except ValueError:
+                data = None
+
+            if r.status_code == 503:
+                sleep_s = min(2 ** attempt, 30)
+                print(f"[{attempt}/{max_retries}] 503 from server. Retrying in {sleep_s}s...")
+                time.sleep(sleep_s)
+                continue
+
+            if r.status_code >= 400:
+                if isinstance(data, dict) and data.get("s") == "error":
+                    raise RuntimeError(f"Fyers error {data.get('code')}: {data.get('message')}")
+                else:
+                    raise RuntimeError(f"Fyers returned HTTP {r.status_code}: {r.text.strip()[:200]}")
+
+            if isinstance(data, dict) and data.get("s") == "error":
+                raise RuntimeError(f"Fyers error {data.get('code')}: {data.get('message')}")
+
+            return data
+
+        except Exception as e:
+            if attempt == max_retries:
+                raise
+            sleep_s = min(2 ** attempt, 30)
+            print(f"[{attempt}/{max_retries}] Retrying due to: {e}. Next in {sleep_s}s...")
+            time.sleep(sleep_s)
+
+def validate_authcode(app_id: str, secret_id: str, auth_code: str):
+    url = f"{API_HOST}/api/v3/validate-authcode"
+    payload = {"grant_type": "authorization_code","appIdHash": appid_hash(app_id, secret_id),"code": auth_code}
+    return post_json(url, payload)
+
+def validate_refresh_token(app_id: str, secret_id: str, refresh_token: str):
+    url = f"{API_HOST}/api/v3/validate-refresh-token"
+    payload = {"grant_type": "refresh_token","appIdHash": appid_hash(app_id, secret_id),"refresh_token": refresh_token}
+    return post_json(url, payload)
+
+def save_access_token_for_today(app_id: str, access_token: str):
+    token_str = compose_access_token_string(app_id, access_token)
+    _write_json(TODAY_PATH, token_str)
+    return token_str
+
+def ensure_access_token():
+    creds = load_creds()
+    app_id = creds["api_key"]
+    secret_id = creds["api_secret"]
+    redirect_uri = creds["redirect_url"]
+
+    tok_today = _read_json(TODAY_PATH)
+    if isinstance(tok_today, str) and tok_today:
+        token_str = compose_access_token_string(app_id, tok_today.split(":")[-1])
+        if token_str != tok_today:
+            _write_json(TODAY_PATH, token_str)
+        print("🔑 Using today's cached access token.")
+        return app_id, token_str, token_str.split(":", 1)[-1]
+
+    store = _read_json(TOKENS_STORE, {}) or {}
+    refresh_token = store.get("refresh_token")
+    if refresh_token:
+        try:
+            print("🔄 Attempting refresh-token login …")
+            r = validate_refresh_token(app_id, secret_id, refresh_token)
+            access_token = r.get("access_token")
+            new_refresh = r.get("refresh_token") or refresh_token
+            if not access_token:
+                raise RuntimeError(f"Unexpected refresh response: {r}")
+            _write_json(TOKENS_STORE, {"refresh_token": new_refresh})
+            token_str = save_access_token_for_today(app_id, access_token)
+            print("✅ Refresh successful.")
+            return app_id, token_str, access_token
+        except Exception as e:
+            print(f"⚠️ Refresh failed: {e}")
+            try:
+                if os.path.exists(TOKENS_STORE):
+                    _write_json(TOKENS_STORE, {})
+                print("ℹ️ Cleared stored refresh token — falling back to manual auth.")
+            except Exception:
+                pass
+
+    auth_url = build_auth_url(app_id, redirect_uri)
+    print("\n👉 Open this login URL in your browser, complete login, and copy the FULL redirect URL:")
+    print(auth_url)
+    user_val = input("\nPaste the FULL redirect URL (or just the code value): ").strip()
+    auth_code = extract_code(user_val)
+
+    r = validate_authcode(app_id, secret_id, auth_code)
+    access_token = r.get("access_token")
+    refresh_token = r.get("refresh_token")
+    if not access_token:
+        raise SystemExit(f"❌ Unexpected token response: {r}")
+
+    token_str = save_access_token_for_today(app_id, access_token)
+    if refresh_token:
+        _write_json(TOKENS_STORE, {"refresh_token": refresh_token})
+    print("✅ Manual auth successful — tokens saved.")
+    return app_id, token_str, access_token
+
+# ===================== HISTORICAL CANDLES & VWAP HELPERS =====================
+def timeframe_to_resolution_token(minutes: int) -> str:
+    if minutes == 1440:
+        return "D"
+    if minutes == 10080:
+        return "W"
+    if minutes == 43200:
+        return "M"
+    return str(int(minutes))
+
+def fetch_historical_candles(fy: fyersModel.FyersModel, sym: str, timeframe_minutes: int, from_date: dt.date, to_date: dt.date):
+    payload = {
+        "symbol": sym,
+        "resolution": timeframe_to_resolution_token(timeframe_minutes),
+        "date_format": "1",
+        "range_from": from_date.strftime("%Y-%m-%d"),
+        "range_to": to_date.strftime("%Y-%m-%d"),
+        "cont_flag": "1",
+    }
+    resp = fy.history(payload)
+    if resp.get("s") != "ok":
+        raise RuntimeError(f"Fyers history API error: {resp.get('message')}")
+    candles = resp.get("candles", [])
+    if not candles:
+        return pd.DataFrame(columns=["timestamp","Open","High","Low","Close","Volume"]).set_index("timestamp")
+    df = pd.DataFrame(candles, columns=["timestamp","Open","High","Low","Close","Volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s").dt.tz_localize("UTC").dt.tz_convert("Asia/Kolkata")
+    df.set_index("timestamp", inplace=True)
+    return df
+
+def add_vwap(df: pd.DataFrame, timeframe_minutes: int) -> pd.DataFrame:
+    if df.empty:
+        df["VWAP"] = pd.Series(dtype=float)
+        return df
+    tp = (df["High"] + df["Low"] + df["Close"]) / 3.0
+    vol = df["Volume"].fillna(0)
+    if timeframe_minutes < 1440:
+        day_key = df.index.tz_convert("Asia/Kolkata").date
+        pv = (tp * vol).groupby(day_key).cumsum()
+        vv = vol.groupby(day_key).cumsum().replace(0, float("nan"))
+        df["VWAP"] = pv / vv
+    else:
+        pv = (tp * vol).cumsum()
+        vv = vol.cumsum().replace(0, float("nan"))
+        df["VWAP"] = pv / vv
+    return df
+
+# ===================== CANDLE DETECTOR =====================
+def is_bullish_hammer_candle(o, h, l, c, prev_o, prev_c, min_range_pct=0.0015):
+    if c == 0:
+        return False
+    rng = h - l
+    if rng <= 0:
+        return False
+    if (rng / max(c, 1e-9)) < min_range_pct:
+        return False
+    if prev_c >= prev_o:
+        return False
+    if not (c > o):
+        return False
+    upper_shorter_than_body = (h - c) < (c - o)
+    lower_longer_than_body = (o - l) > (c - o)
+    return upper_shorter_than_body and lower_longer_than_body
+
+def flag_bullish_hammer(df: pd.DataFrame, min_range_pct=0.0015):
+    o, h, l, c = df["Open"], df["High"], df["Low"], df["Close"]
+    prev_o, prev_c = o.shift(1), c.shift(1)
+    rng = h - l
+    cond_range = (rng / c) >= min_range_pct
+    cond_prev_red = prev_c < prev_o
+    cond_green = c > o
+    cond_upper = (h - c) < (c - o)
+    cond_lower = (o - l) > (c - o)
+    df["BullishHammer"] = cond_range & cond_prev_red & cond_green & cond_upper & cond_lower
+    return df
+
+# ===================== ORDER HELPERS, GTT & PERSISTENCE =====================
+def is_future_symbol(sym: str) -> bool:
+    return sym.startswith("MCX:") or "FUT" in sym.upper()
+
+def base_symbol_for_lot(sym: str) -> str:
+    s = sym.split(":")[-1]
+    import re
+    m = re.match(r"([A-Z]+[A-Z0-9]*?)(?:\d.*|$)", s)
+    if m:
+        return "MCX:" + m.group(1)
+    return sym
+
+def calculate_qty_for_allocation(sym: str, entry_price: float) -> int:
+    """
+    Option A behaviour:
+    - NSE stocks: rupee-based qty = floor(allocation / entry_price)
+    - MCX futures: pure lot-based qty = LOT_SIZE[base] * LOT_COUNT[base] (default 1 lot)
+      (ignores rupee allocation)
+    - fallback: DEFAULT_QTY
+    """
+    # equities: rupee-based
+    if sym.endswith("-EQ"):
+        alloc = float(ALLOC_MAP.get(sym, ALLOC_DEFAULT))
+        qty = int(math.floor(alloc / max(entry_price, EPS)))
+        return max(qty, 0)
+
+    # futures (MCX): pure lot logic (IGNORE ALLOCATION)
+    if is_future_symbol(sym):
+        base = base_symbol_for_lot(sym)
+        # units per lot (e.g., 40 for NATGASMINI). default 1 unit-per-lot if missing.
+        units_per_lot = int(LOT_SIZE.get(base, 1))
+        lots_to_place = int(LOT_COUNT.get(base, 1))
+        if units_per_lot <= 0:
+            units_per_lot = 1
+        if lots_to_place <= 0:
+            lots_to_place = 1
+        qty = int(units_per_lot * lots_to_place)
+        return max(qty, 0)
+
+    # fallback
+    return int(DEFAULT_QTY)
+
+def extract_order_id(resp: dict):
+    if not isinstance(resp, dict):
+        return None
+    for k in ("id", "order_id", "orderId", "data", "orderIdStr"):
+        if k in resp and not isinstance(resp[k], dict):
+            return resp[k]
+    if "data" in resp and isinstance(resp["data"], dict):
+        for k in ("id", "order_id", "orderId"):
+            if k in resp["data"]:
+                return resp["data"][k]
+    return None
+
+def place_order(fy: fyersModel.FyersModel, sym: str, side: int, qty: int, tag: str, product_type: str):
+    payload = {
+        "symbol": sym,
+        "qty": int(qty),
+        "type": 2, # market
+        "side": int(side), # 1=buy, -1=sell
+        "productType": product_type,
+        "validity": "DAY",
+        "orderTag": tag[:15] if tag else ""
+    }
+    try:
+        resp = fy.place_order(payload)
+        order_id = extract_order_id(resp)
+        print(f"[{dt.datetime.now():%H:%M:%S}] 📌 {tag} resp={resp} order_id={order_id}")
+        return resp if isinstance(resp, dict) else {}, order_id
+    except Exception as e:
+        print(f"[{dt.datetime.now():%H:%M:%S}] 🚨 Order error {sym} {tag}: {e}")
+        return {"s": "error", "message": str(e)}, None
+
+def exit_long_by_sell_market(fy: fyersModel.FyersModel, sym: str, qty: int, product_type: str):
+    resp, oid = place_order(fy, sym, side=-1, qty=qty, tag="ExitLong", product_type=product_type)
+    return resp, oid
+
+def place_gtt_order(raw_access_token: str, sym: str, qty: int, sl: float, tgt: float, product_type: str):
+    """
+    Best-effort GTT/OCO creation via Fyers REST.
+    - raw_access_token: OAuth access token (not app_id:token)
+    - The exact payload/endpoint names may need adjusting to match Fyers' live API docs.
+    - On failure, return (False, response_or_exception)
+    """
+    url = f"{API_HOST}/api/v3/gtt" # best-effort endpoint; adapt to official docs if different
+    headers = {"Authorization": f"Bearer {raw_access_token}", "Content-Type": "application/json"}
+    # Example GTT payload (approximate). Please update to match Fyers docs if fields differ.
+    payload = {
+        "symbol": sym,
+        "qty": int(qty),
+        "productType": product_type,
+        "gtt_type": "OCO", # attempt OCO style; docs may use another key
+        "orders": [
+            {
+                "trigger_price": float(sl),
+                "order_type": "SL-M", # stop loss market
+                "limit_price": None,
+                "side": -1, # sell
+                "productType": product_type,
+            },
+            {
+                "trigger_price": float(tgt),
+                "order_type": "LMT", # target as limit sell
+                "limit_price": float(tgt),
+                "side": -1,
+                "productType": product_type,
+            }
+        ],
+        "validity": "DAY"
+    }
+    try:
+        r = requests.post(url, headers=headers, json=payload, timeout=20)
+        try:
+            data = r.json()
+        except Exception:
+            data = {"raw_text": r.text}
+        if r.status_code >= 400:
+            return False, {"status_code": r.status_code, "body": data}
+        return True, data
+    except Exception as e:
+        return False, str(e)
+
+# ===================== TRADE LOG & PERSISTENCE =====================
+active_trades = {} # sym -> dict(entry, sl, tgt, qty, status, product, order_id, gtt_id)
+
+def persist_active_trades():
+    try:
+        _write_json(TRADE_STORE, active_trades)
+    except Exception as e:
+        print(f"⚠️ Could not persist active trades: {e}")
+
+def load_persisted_trades():
+    data = _read_json(TRADE_STORE, default={}) or {}
+    for sym, rec in data.items():
+        try:
+            active_trades[sym] = rec
+        except Exception:
+            pass
+    if active_trades:
+        print(f"[{dt.datetime.now():%H:%M:%S}] Loaded {len(active_trades)} persisted open trade(s).")
+
+def save_trade(sym, entry, sl, tgt, qty, product_type, order_id=None, gtt_id=None):
+    row = {
+        "Datetime": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "Symbol": sym,
+        "Entry Price": float(entry),
+        "Stop Loss": float(sl),
+        "Target": float(tgt),
+        "Qty": int(qty),
+        "Product": product_type,
+        "OrderID": order_id,
+        "GTT_ID": gtt_id
+    }
+    try:
+        pd.DataFrame([row]).to_csv(
+            TRADE_LOG,
+            mode='a',
+            header=not os.path.exists(TRADE_LOG),
+            index=False
+        )
+    except Exception as e:
+        print(f"⚠️ Could not write trade_log: {e}")
+    active_trades[sym] = {"entry": entry, "sl": sl, "tgt": tgt, "qty": qty, "status": "open", "product": product_type, "order_id": order_id, "gtt_id": gtt_id}
+    persist_active_trades()
+
+# ===================== CANDLE BUILD STATE & LTP CACHE =====================
+bars = {}
+processed_candles = set()
+trigger = {}
+
+ltp_cache = {} # symbol -> (ltp, ts)
+prev_ltp_cache = {} # symbol -> previous ltp (for strict cross)
+_last_quote_error = {}
+ERROR_THROTTLE_SECS = 10
+
+def candle_start(t: dt.datetime) -> dt.datetime:
+    # expects tz-aware datetime (we ensure tick_time is timezone-aware)
+    return t.replace(second=0, microsecond=0) - dt.timedelta(minutes=t.minute % TIMEFRAME_MIN)
+
+# ===================== SAFE QUOTES (cache-first, REST fallback) =====================
+def get_ltp(fy, sym, cache_ttl=10, max_retries=3):
+    now = time.time()
+    cached = ltp_cache.get(sym)
+    if cached:
+        ltp_val, ts = cached
+        if (now - ts) <= cache_ttl:
+            return float(ltp_val)
+
+    base_sleep = 1.0
+    for attempt in range(1, max_retries + 1):
+        try:
+            q = fy.quotes({"symbols": sym})
+            if q.get("s") != "ok" or not q.get("d"):
+                last = _last_quote_error.get(sym, 0)
+                if now - last > ERROR_THROTTLE_SECS:
+                    print(f"⚠️ Quote fetch failed {sym}: {q}")
+                    _last_quote_error[sym] = now
+                if isinstance(q, dict) and q.get("code") == 429:
+                    time.sleep(min(base_sleep * (2 ** attempt), 10))
+                    continue
+                time.sleep(base_sleep * attempt)
+                continue
+
+            v = q["d"][0].get("v", {})
+            ltp = v.get("lp") or v.get("last_price")
+            if ltp is None:
+                last = _last_quote_error.get(sym, 0)
+                if now - last > ERROR_THROTTLE_SECS:
+                    print(f"⚠️ Quote fetch missing price {sym}: {q}")
+                    _last_quote_error[sym] = now
+                time.sleep(base_sleep * attempt)
+                continue
+
+            ltp_cache[sym] = (float(ltp), time.time())
+            return float(ltp)
+
+        except Exception as e:
+            last = _last_quote_error.get(sym, 0)
+            if now - last > ERROR_THROTTLE_SECS:
+                print(f"⚠️ Quote fetch exception {sym}: {e}")
+                _last_quote_error[sym] = now
+            sleep_s = min(base_sleep * (2 ** (attempt - 1)), 10)
+            time.sleep(sleep_s)
+            continue
+
+    cached = ltp_cache.get(sym)
+    if cached:
+        return float(cached[0])
+    return None
+
+# ===================== WEBSOCKET HANDLER (LIVE LONG logic) =====================
+def make_onmsg(fy: fyersModel.FyersModel, order_mode_local: str, raw_access_token: str):
+    def onmsg(msg):
+        if msg.get("type") != "sf":
+            return
+
+        try:
+            sym = msg["symbol"]
+            # make tick timestamp timezone-aware in Asia/Kolkata
+            ltp = float(msg["ltp"])
+            ts = int(msg.get("timestamp", time.time()))
+            tick_time = dt.datetime.fromtimestamp(ts, tz=dt.timezone.utc).astimezone(KOLKATA)
+        except Exception:
+            return
+
+        # track prev LTP for strict cross
+        prev_ltp = ltp_cache.get(sym, (None, None))[0]
+        if prev_ltp is not None:
+            prev_ltp_cache[sym] = float(prev_ltp)
+
+        # update websocket LTP cache
+        ltp_cache[sym] = (ltp, time.time())
+
+        cstart = candle_start(tick_time)
+        key = (sym, cstart)
+
+        # build/extend the current bar
+        bar = bars.get(key)
+        if not bar:
+            bars[key] = bar = {"o": ltp, "h": ltp, "l": ltp, "c": ltp}
+        else:
+            bar["h"] = max(bar["h"], ltp)
+            bar["l"] = min(bar["l"], ltp)
+            bar["c"] = ltp
+
+        # when candle completes (end of timeframe)
+        if tick_time >= cstart + dt.timedelta(minutes=TIMEFRAME_MIN) - dt.timedelta(seconds=1):
+            if key not in processed_candles:
+                processed_candles.add(key)
+
+                prev_cstart = cstart - dt.timedelta(minutes=TIMEFRAME_MIN)
+                prev_bar = bars.get((sym, prev_cstart))
+
+                # If single-position mode and something is open, skip forming a new signal
+                if ONE_POSITION_AT_A_TIME and has_open_positions():
+                    return
+
+                # Ensure previous candle exists AND is strictly red
+                if prev_bar and (prev_bar.get("c") is not None) and (prev_bar.get("o") is not None):
+                    if prev_bar["c"] < prev_bar["o"]:
+                        if is_bullish_hammer_candle(
+                            bar["o"], bar["h"], bar["l"], bar["c"],
+                            prev_bar["o"], prev_bar["c"],
+                            min_range_pct=MIN_RANGE_PCT
+                        ):
+                            # compute VWAP crossover for this signal candle before creating trigger
+                            try:
+                                from_day = (cstart - dt.timedelta(days=1)).date()
+                                to_day = (cstart + dt.timedelta(days=0)).date()
+                                hist = fetch_historical_candles(fy, sym, TIMEFRAME_MIN, from_date=from_day, to_date=to_day)
+                                if not hist.empty:
+                                    hist = add_vwap(hist, TIMEFRAME_MIN)
+
+                                    # create timezone-aware cstart aligned to hist tz (Asia/Kolkata)
+                                    cstart_aware = cstart.astimezone(KOLKATA).replace(second=0, microsecond=0)
+
+                                    # attempt direct match first, else use nearest with tolerance = half timeframe
+                                    loc = None
+                                    try:
+                                        if cstart_aware in hist.index:
+                                            loc = cstart_aware
+                                        else:
+                                            deltas = (hist.index - cstart_aware).to_series().abs()
+                                            nearest_idx = deltas.idxmin()
+                                            tol = pd.Timedelta(minutes=max(1, TIMEFRAME_MIN / 2.0))
+                                            if deltas.loc[nearest_idx] <= tol:
+                                                loc = nearest_idx
+                                            else:
+                                                loc = None
+                                    except Exception:
+                                        loc = None
+
+                                    if loc is not None:
+                                        vwap = float(hist.loc[loc]["VWAP"])
+                                        prev_idx_pos = hist.index.get_loc(loc) - 1
+                                        if prev_idx_pos >= 0:
+                                            prev_idx = hist.index[prev_idx_pos]
+                                            prev_vwap = float(hist.loc[prev_idx]["VWAP"])
+                                            prev_close = float(hist.loc[prev_idx]["Close"])
+                                        else:
+                                            prev_vwap = float('nan')
+                                            prev_close = float('nan')
+
+                                        # apply VWAP tolerance thresholds
+                                        vwap_high = vwap * (1.0 + VWAP_TOLERANCE)
+                                        vwap_low = vwap * (1.0 - VWAP_TOLERANCE)
+                                        prev_vwap_high = prev_vwap * (1.0 + VWAP_TOLERANCE) if not pd.isna(prev_vwap) else float('nan')
+
+                                        # strict intrabar: open below and close above
+                                        cond_strict_intrabar = (bar["o"] < vwap_low) and (bar["c"] > vwap_high)
+
+                                        # touch intrabar (requested behaviour):
+                                        # require: open > VWAP, low <= VWAP (touch within tolerance), close > VWAP
+                                        cond_touch_intrabar = False
+                                        if VWAP_ALLOW_TOUCH:
+                                            cond_touch_intrabar = (bar["o"] > vwap_high) and (bar["l"] <= vwap_high) and (bar["c"] > vwap_high)
+
+                                        # previous-bar alternative: prev_close <= prev_vwap and current close > vwap
+                                        cond_cross_prev = (not pd.isna(prev_vwap)) and (prev_close <= prev_vwap_high) and (bar["c"] > vwap_high)
+
+                                        # final intrabar condition (strict or touch depending on flag)
+                                        cond_cross_intrabar = cond_strict_intrabar or cond_touch_intrabar
+
+                                        # final pass: either intrabar condition or prev-bar condition
+                                        cond_vwap_cross = cond_cross_intrabar or cond_cross_prev
+
+                                        if VWAP_DEBUG:
+                                            print(f"[VWAP_DEBUG] {sym} cstart={cstart_aware} vwap={vwap:.6f} prev_vwap={prev_vwap if 'prev_vwap' in locals() else 'NA'}")
+                                            print(f"[VWAP_DEBUG] strict_intrabar={cond_strict_intrabar}, touch_intrabar={cond_touch_intrabar}, prev_alt={cond_cross_prev} -> pass={cond_vwap_cross}")
+                                            try:
+                                                idx_pos = hist.index.get_loc(loc)
+                                                start = max(0, idx_pos - 3)
+                                                end = min(len(hist) - 1, idx_pos + 1)
+                                                print("[VWAP_DEBUG] nearby rows:")
+                                                print(hist.iloc[start:end+1][["Open","High","Low","Close","VWAP"]])
+                                            except Exception:
+                                                pass
+
+                                        if not cond_vwap_cross:
+                                            print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ SKIP {sym} — signal bar did NOT meet VWAP condition (vwap={vwap:.2f})")
+                                        else:
+                                            next_cstart = cstart + dt.timedelta(minutes=TIMEFRAME_MIN)
+                                            trigger[sym] = {
+                                                "low": bar["l"],
+                                                "high": bar["h"],
+                                                "active_start": next_cstart,
+                                                "triggered": False
+                                            }
+                                            print(f"[{dt.datetime.now():%H:%M:%S}] 🎯 GREEN-SIG {sym} TF={TIMEFRAME_MIN}m → watch NEXT HIGH {bar['h']} (SL {bar['l']}) [VWAP OK]")
+                                            print(f" SIG BAR o={bar['o']:.2f} h={bar['h']:.2f} l={bar['l']:.2f} c={bar['c']:.2f} | PREV o={prev_bar['o']:.2f} c={prev_bar['c']:.2f} | VWAP={vwap:.2f}")
+                                    else:
+                                        if VWAP_DEBUG:
+                                            print(f"[VWAP_DEBUG] hist.index sample for {sym}: {hist.index[:5]}")
+                                        print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ SKIP {sym} — could not align historical candle for VWAP check.")
+                                else:
+                                    print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ SKIP {sym} — historical candles empty for VWAP check.")
+                            except Exception as e:
+                                print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ VWAP check error for {sym}: {e}\n{traceback.format_exc()}")
+                        else:
+                            pass
+                    else:
+                        pass
+
+        # check active trigger for symbol (NEXT candle only)
+        t = trigger.get(sym)
+        if not t:
+            return
+
+        # expire trigger if window passed
+        if tick_time >= t["active_start"] + dt.timedelta(minutes=TIMEFRAME_MIN):
+            trigger.pop(sym, None)
+            return
+
+        # only act in NEXT candle window if not already triggered
+        if tick_time < t["active_start"] or t.get("triggered"):
+            return
+
+        # strict cross: prev_ltp <= threshold AND current ltp > threshold
+        threshold = round_to_tick(t["high"] + ENTRY_BUFFER)
+        prev_for_cross = prev_ltp_cache.get(sym)
+        if (prev_for_cross is not None) and (prev_for_cross <= threshold) and (ltp > threshold):
+            # Breakout detected. This is the one-time check. Mark as triggered immediately.
+            t["triggered"] = True
+
+            # --- Pre-Trade Guards ---
+            # Exposure guard: if any position is open, do NOT enter.
+            if ONE_POSITION_AT_A_TIME and has_open_positions():
+                print(f"[{dt.datetime.now():%H:%M:%S}] 🚫 Breakout on {sym} ignored — position already open.")
+                trigger.pop(sym, None)
+                return
+
+            # Cutoff guard: check if we are past the entry cutoff time.
+            now_time = dt.datetime.now().time()
+            cutoff_time = ENTRY_CUTOFF_MCX if sym.startswith("MCX:") else ENTRY_CUTOFF
+            if now_time >= cutoff_time:
+                print(f"[{dt.datetime.now():%H:%M:%S}] ⏰ Breakout on {sym} ignored — cutoff passed ({cutoff_time})")
+                trigger.pop(sym, None)
+                return
+
+            entry = ceil_to_tick(ltp)
+            sl = t["low"]
+            risk = entry - sl
+            if risk <= 0:
+                print(f"[{tick_time:%H:%M:%S}] ✋ Risk <= 0 for {sym}, skipping trigger.")
+                trigger.pop(sym, None)
+                return
+
+            qty_calc = calculate_qty_for_allocation(sym, entry)
+            if qty_calc <= 0:
+                print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ Not enough allocation for {sym} at entry {entry}. Skipping trigger.")
+                trigger.pop(sym, None)
+                return
+
+            # --- All checks passed, proceed with order ---
+            tgt = round_to_tick(entry + (R_MULTIPLIER * risk))
+            qty = qty_calc
+
+            resp, order_id = place_order(fy, sym, side=1, qty=qty, tag="GreenHammerBuy", product_type=order_mode_local)
+
+            gtt_id = None
+            if order_mode_local.upper() == "CNC":
+                try:
+                    ok, gresp = place_gtt_order(raw_access_token, sym, qty, sl, tgt, product_type=order_mode_local)
+                    if ok:
+                        if isinstance(gresp, dict):
+                            gtt_id = gresp.get("id") or gresp.get("gtt_id") or gresp.get("data", {}).get("id")
+                        print(f"[{dt.datetime.now():%H:%M:%S}] 🔁 GTT placed for {sym} -> {gresp}")
+                    else:
+                        print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ GTT placement failed for {sym} -> {gresp}")
+                except Exception as e:
+                    print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ GTT call exception for {sym}: {e}")
+
+            save_trade(sym, entry, sl, tgt, qty, order_mode_local, order_id=order_id, gtt_id=gtt_id)
+
+            # Pop the trigger now that the trade is logged.
+            trigger.pop(sym, None)
+            print(f"[{tick_time:%H:%M:%S}] ✅ LONG {sym} @ {entry} (cross>{threshold}), SL={sl}, TGT={tgt}, QTY={qty}, TF={TIMEFRAME_MIN}m, PROD={order_mode_local}, GTT={gtt_id is not None}")
+
+    return onmsg
+
+# ===================== EXIT MONITOR (for LONG positions) with FORCE-EXIT =====================
+def monitor_loop(fy: fyersModel.FyersModel, order_mode_local: str):
+    global FORCE_CLOSED_ALL, FORCE_CLOSED_ALL_MCX
+    while True:
+        try:
+            now_dt = dt.datetime.now()
+            now_time = now_dt.time()
+
+            # Force-exit non-MCX INTRADAY trades only
+            if (not FORCE_CLOSED_ALL) and (now_time >= EXIT_ALL_TIME):
+                non_mcx_trades = [s for s in list(active_trades.keys())
+                                  if (not s.startswith("MCX:")) and (active_trades.get(s, {}).get("product", "INTRADAY") == "INTRADAY")]
+                if non_mcx_trades:
+                    print(f"[{now_dt:%H:%M:%S}] ⏳ EXIT_ALL (non-MCX INTRADAY) — closing {len(non_mcx_trades)} trades")
+                    for sym in non_mcx_trades:
+                        trade = active_trades.get(sym)
+                        if not trade:
+                            continue
+                        qty = trade.get("qty", DEFAULT_QTY)
+                        try:
+                            print(f"[{now_dt:%H:%M:%S}] 🔔 Force exiting {sym} (SELL market) qty={qty}")
+                            exit_long_by_sell_market(fy, sym, qty, order_mode_local)
+                        except Exception as e:
+                            print(f"[{now_dt:%H:%M:%S}] ⚠️ Force-exit error for {sym}: {e}")
+                        active_trades[sym]["status"] = "closed"
+                        active_trades.pop(sym, None)
+                    trigger.clear()
+                else:
+                    print(f"[{now_dt:%H:%M:%S}] ⏳ EXIT_ALL (non-MCX) triggered but no INTRADAY trades to close.")
+                FORCE_CLOSED_ALL = True
+
+            # Force-exit MCX INTRADAY trades only
+            if (not FORCE_CLOSED_ALL_MCX) and (now_time >= EXIT_ALL_TIME_MCX):
+                mcx_trades = [s for s in list(active_trades.keys())
+                              if s.startswith("MCX:") and (active_trades.get(s, {}).get("product", "INTRADAY") == "INTRADAY")]
+                if mcx_trades:
+                    print(f"[{now_dt:%H:%M:%S}] ⏳ EXIT_ALL (MCX INTRADAY) — closing {len(mcx_trades)} trades")
+                    for sym in mcx_trades:
+                        trade = active_trades.get(sym)
+                        if not trade:
+                            continue
+                        qty = trade.get("qty", DEFAULT_QTY)
+                        try:
+                            print(f"[{now_dt:%H:%M:%S}] 🔔 Force exiting {sym} (SELL market) qty={qty}")
+                            exit_long_by_sell_market(fy, sym, qty, order_mode_local)
+                        except Exception as e:
+                            print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ Force-exit error for {sym}: {e}")
+                        active_trades[sym]["status"] = "closed"
+                        active_trades.pop(sym, None)
+                    trigger.clear()
+                else:
+                    print(f"[{dt.datetime.now():%H:%M:%S}] ⏳ EXIT_ALL (MCX) triggered but no INTRADAY MCX trades to close.")
+                FORCE_CLOSED_ALL_MCX = True
+
+            # Normal monitoring for open trades (SL/TP)
+            if active_trades:
+                for sym in list(active_trades.keys()):
+                    trade = active_trades.get(sym)
+                    if not trade or trade.get("status") != "open":
+                        continue
+
+                    ltp = get_ltp(fy, sym)
+                    if ltp is None:
+                        continue
+
+                    sl = trade["sl"]
+                    tgt = trade["tgt"]
+                    qty = trade["qty"]
+                    prod = trade.get("product", order_mode_local)
+
+                    if ltp <= sl:
+                        print(f"[{dt.datetime.now():%H:%M:%S}] ❌ SL HIT {sym} @ {ltp} → SELL market")
+                        active_trades[sym]["status"] = "exiting"
+                        exit_resp, oid = exit_long_by_sell_market(fy, sym, qty, prod)
+                        active_trades[sym]["status"] = "closed"
+                        active_trades.pop(sym, None)
+                        persist_active_trades()
+                        try:
+                            pd.DataFrame([{
+                                "Datetime": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "Symbol": sym,
+                                "Exit Price": float(ltp),
+                                "Exit Type": "SL",
+                                "OrderID": oid
+                            }]).to_csv(TRADE_LOG, mode='a', header=not os.path.exists(TRADE_LOG), index=False)
+                        except Exception:
+                            pass
+
+                    elif ltp >= tgt:
+                        print(f"[{dt.datetime.now():%H:%M:%S}] 🎯 TARGET HIT {sym} @ {ltp} → SELL market")
+                        active_trades[sym]["status"] = "exiting"
+                        exit_resp, oid = exit_long_by_sell_market(fy, sym, qty, prod)
+                        active_trades[sym]["status"] = "closed"
+                        active_trades.pop(sym, None)
+                        persist_active_trades()
+                        try:
+                            pd.DataFrame([{
+                                "Datetime": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "Symbol": sym,
+                                "Exit Price": float(ltp),
+                                "Exit Type": "TGT",
+                                "OrderID": oid
+                            }]).to_csv(TRADE_LOG, mode='a', header=not os.path.exists(TRADE_LOG), index=False)
+                        except Exception:
+                            pass
+
+        except Exception as e:
+            print(f"⚠️ Monitor loop error: {e}\n{traceback.format_exc()}")
+
+        time.sleep(1.5)
+
+# ===================== MAIN =====================
+def has_open_positions() -> bool:
+    return any(v.get("status") == "open" for v in active_trades.values())
+
+def main():
+    global TIMEFRAME_MIN, R_MULTIPLIER, ORDER_MODE, ALLOC_DEFAULT, VWAP_TOLERANCE, VWAP_ALLOW_TOUCH, VWAP_DEBUG
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--tf", type=int, default=TIMEFRAME_MIN, help="Timeframe in minutes (e.g., 5, 15, 60)")
+    parser.add_argument("--rmult", type=float, default=R_MULTIPLIER, help="Risk:Reward multiple (e.g., 2.0)")
+    parser.add_argument("--mode", type=str, choices=["intraday","cnc"], default=ORDER_MODE.lower(), help="Order product type: intraday or cnc")
+    parser.add_argument("--alloc-default", type=float, default=ALLOC_DEFAULT, help="Default rupee allocation per symbol (stocks).")
+    parser.add_argument("--vwap-tolerance", type=float, default=VWAP_TOLERANCE, help="VWAP tolerance as fraction (e.g., 0.0005)")
+    parser.add_argument("--vwap-touch", action="store_true", help="Allow VWAP touch (open above but low touched VWAP then close above)")
+    parser.add_argument("--vwap-debug", action="store_true", help="Enable VWAP debug prints")
+    args, _ = parser.parse_known_args()
+    TIMEFRAME_MIN = max(1, int(args.tf))
+    R_MULTIPLIER = float(args.rmult)
+    ORDER_MODE = "CNC" if args.mode.lower() == "cnc" else "INTRADAY"
+    ALLOC_DEFAULT = float(args.alloc_default)
+    VWAP_TOLERANCE = float(args.vwap_tolerance)
+    if args.vwap_touch:
+        VWAP_ALLOW_TOUCH = True
+    VWAP_DEBUG = bool(args.vwap_debug)
+
+    # Load persisted trades before auth
+    load_persisted_trades()
+
+    app_id, token_str, raw_access = ensure_access_token()
+
+    # REST client uses raw_access
+    fy = fyersModel.FyersModel(client_id=app_id, token=raw_access, log_path=".")
+
+    # Start exit monitor thread
+    threading.Thread(target=monitor_loop, args=(fy, ORDER_MODE), daemon=True).start()
+
+    # WebSocket uses token_str
+    on_message = make_onmsg(fy, ORDER_MODE, raw_access)
+    ws = data_ws.FyersDataSocket(
+        access_token=token_str,
+        log_path=".",
+        litemode=False,
+        write_to_file=False,
+        reconnect=True,
+        on_message=on_message,
+        on_error=lambda m: print("🚨", m),
+        on_close=lambda m: print("❌", m),
+        on_connect=lambda: (
+            print(f"🔌 Connected → subscribing {len(SYMBOLS)} symbols | TF={TIMEFRAME_MIN}m") or
+            ws.subscribe(symbols=SYMBOLS, data_type="SymbolUpdate")
+        )
+    )
+
+    print("\n========== Green-Hammer/PINBAR Scanner (with GTT attempt for CNC) ==========")
+    print(f"🧩 Python: {sys.version.split()[0]} | Symbols: {len(SYMBOLS)} | TF={TIMEFRAME_MIN}m | Rmult={R_MULTIPLIER} | ORDER_MODE={ORDER_MODE} | ALLOC_DEFAULT={ALLOC_DEFAULT}")
+    print(f"🗄️ Persisted open trades: {len(active_trades)} (loaded from {TRADE_STORE})")
+    print(f"🚀 Real-time LONG scanner started … VWAP_ALLOW_TOUCH={VWAP_ALLOW_TOUCH} VWAP_TOL={VWAP_TOLERANCE}")
+    print()
+
+    try:
+        ws.connect()
+    except Exception as e:
+        print(f"❌ Websocket connect failed: {e}")
+        raise
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n👋 Exiting on user interrupt.")
+    except Exception as e:
+        print(f"❌ Fatal error: {e}\n{traceback.format_exc()}")
+        sys.exit(1)
