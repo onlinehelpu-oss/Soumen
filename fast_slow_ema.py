@@ -102,7 +102,7 @@ ALLOC_MAP = {}
 
 SL_MODE = "signal_low"  # "signal_low" or "swing_low"
 SWING_LOOKBACK = 5      # used for swing-low
-SWING_HIGH_LOOKBACK = 5 # used for target swing-high
+SWING_HIGH_LOOKBACK = 150 # used for target swing-high
 
 MAX_CONCURRENT_POS = 3
 DAILY_MAX_LOSS = 50000.0
