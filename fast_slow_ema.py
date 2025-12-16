@@ -136,9 +136,8 @@ MAX_REAUTH_ATTEMPTS = 3
 _real_print = print
 ALLOWED_SUBSTRINGS = (
     "ENTRY SIGNAL", "[signal:", "EXIT SIGNAL", "[exit:", "[CANDLE]", "[order]", "[auth]", "[ws]",
-    "[blocked-entry]", "[entry-debug]", "[exit-debug]", "TARGET EXIT", "STOP-LOSS"
+    "[blocked-entry]", "[entry-debug]", "[exit-debug]", "TARGET EXIT", "STOP-LOSS", "[ENTRY CONFIRMED]"
 )
-
 def print(*args, **kwargs):
     try:
         s = " ".join(str(x) for x in args)
@@ -970,6 +969,18 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                                 else:
                                     state.target_price = None
                                 state.potential_target_price = None  # Clear after use
+
+                                target_str = (
+                                    f"{state.target_price:.2f}"
+                                    if state.target_price is not None
+                                    else "N/A"
+                                )
+                                _real_print(
+                                    f"[ENTRY CONFIRMED] {state.symbol}: "
+                                    f"Entered at {state.entry_price:.2f} | "
+                                    f"Target={target_str} | "
+                                    f"Stoploss={state.stop_price:.2f}"
+                                )
 
                                 gtt_resp = place_gtt_stoploss(
                                     symbol, qty, trigger_price=state.stop_price
