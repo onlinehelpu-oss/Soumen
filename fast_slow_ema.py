@@ -922,7 +922,10 @@ def on_tick(tick: dict):
                         pass
                     elif current_bucket == next_allowed_bucket:
                         trigger = float(state.signal_candle["high"])
-                        if ltp > trigger:
+                        signal_vwap = float(state.signal_candle.get("vwap", 0.0))
+                        signal_ema_fast = float(state.signal_candle.get("ema_fast", 0.0))
+
+                        if ltp > trigger and signal_ema_fast > signal_vwap:
                             qty = decide_qty(symbol, ltp)
                             if qty <= 0:
                                 state.status = "watch"
@@ -1169,6 +1172,8 @@ def evaluate_on_new_candle(st: SymbolState):
                 "high": curr_high,
                 "low": curr_low,
                 "close": curr_close,
+                "vwap": vwap,
+                "ema_fast": ema_fast,
             }
 
             try:
