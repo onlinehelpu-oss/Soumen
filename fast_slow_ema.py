@@ -1064,7 +1064,12 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                 else:
                     exit_next_bucket = None
 
-            if exit_next_bucket is not None and current_bucket > exit_next_bucket:
+            if exit_next_bucket is None:
+                state.exit_pending = False
+                state.exit_signal_candle = None
+                return
+
+            if current_bucket > exit_next_bucket:
                 _real_print(
                     f"[exit-debug] {symbol} next candle {exit_next_bucket} "
                     f"closed without breaking exit_low; cancelling exit_pending."
@@ -1073,32 +1078,7 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                 state.exit_signal_candle = None
                 state.exit_signal_expiry = None
                 state.exit_try_count = 0
-            elif exit_next_bucket is not None and current_bucket == exit_next_bucket:
-                if ltp < exit_low:
-                    _real_print(
-                        f"[{symbol}] EXIT TRIGGERED at LTP {ltp:.2f} (< {exit_low:.2f})"
-                    )
-                    resp = place_market_order(symbol, state.qty, side=-1)
-                    state.exit_try_count += 1
-                    if isinstance(resp, dict) and resp.get("s") == "ok":
-                        pnl = (ltp - state.entry_price) * state.qty
-                        _real_print(f"[{symbol}] EXIT OK. PnL={pnl:.2f}")
-                        if state.gtt_order_id:
-                            cancel_gtt_order(state.gtt_order_id)
-                        state.status = "cooldown"
-                        state.exit_pending = False
-                        state.exit_signal_candle = None
-                        state.target_price = None
-                    else:
-                        _real_print(f"[{symbol}] EXIT ORDER FAILED: {resp}")
-                        state.last_failed_exit_ts = dt.now(IST).replace(tzinfo=None)
-                        if state.exit_try_count >= MAX_EXIT_RETRIES:
-                            _real_print(f"[{symbol}] EXIT failed {state.exit_try_count} times. Moving to cooldown.")
-                            state.status = "cooldown"
-                            state.exit_pending = False
-                            state.exit_signal_candle = None
-                            state.target_price = None
-            else:
+            elif current_bucket == exit_next_bucket:
                 if ltp < exit_low:
                     _real_print(
                         f"[{symbol}] EXIT TRIGGERED at LTP {ltp:.2f} (< {exit_low:.2f})"
@@ -1163,6 +1143,10 @@ def evaluate_on_new_candle(st: SymbolState):
     df = st.data
     if df is None or df.empty:
         return
+
+    # If a position was just closed, reset status to 'watch' to allow new trades.
+    if st.status == "cooldown":
+        st.status = "watch"
 
     last_ts = st.last_candle_ts
     if last_ts is None:
@@ -1240,11 +1224,9 @@ def evaluate_on_new_candle(st: SymbolState):
             )
 
     # EXIT SIGNAL (EXIT EMA)
-    if st.status == "position":
-        intrabar_up = (curr_open < ema_exit) and (curr_high > ema_exit)
+    if st.status == "position" and not st.exit_pending:
         closed_below = curr_close < ema_exit - EMA_BUFFER
-        is_red = curr_close < curr_open
-        if is_red and intrabar_up and closed_below:
+        if closed_below:
             st.exit_signal_candle = {
                 "ts": curr.name,
                 "open": curr_open,
@@ -1256,10 +1238,10 @@ def evaluate_on_new_candle(st: SymbolState):
             st.exit_pending = True
             st.exit_try_count = 0
             _real_print(
-                f"****** [{st.symbol}] EXIT SIGNAL (RED candle crossed & closed below EXIT EMA) ******"
+                f"****** [{st.symbol}] EXIT SIGNAL (Candle closed below EXIT EMA) ******"
             )
             _real_print(
-                f"[exit:{st.symbol}] exit_low={curr_low:.2f} exit_high={curr_high:.2f} | "
+                f"[exit:{st.symbol}] exit_low={curr_low:.2f} | "
                 f"waiting for NEXT CANDLE to attempt exit on break below exit_low"
             )
 
