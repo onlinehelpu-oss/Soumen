@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 - ENTRY (Bullish, using VWAP & ENTRY_FAST_EMA):
-    * Signal candle (must be a fresh cross):
-        - Previous candle's close was AT or BELOW its VWAP.
-        - Current candle's close is ABOVE its VWAP.
+    * Signal candle (strict body cross):
+        - Candle OPEN is AT or BELOW VWAP.
+        - Candle CLOSE is ABOVE VWAP.
         - EMA_fast > VWAP (trend confirmation).
         - (optional) candle is green if REQUIRE_GREEN_SIGNAL is True.
         - tiny-candle filter via MIN_RANGE_PCT if enabled.
@@ -923,10 +923,8 @@ def on_tick(tick: dict):
                         pass
                     elif current_bucket == next_allowed_bucket:
                         trigger = float(state.signal_candle["high"])
-                        signal_vwap = float(state.signal_candle.get("vwap", 0.0))
-                        signal_ema_fast = float(state.signal_candle.get("ema_fast", 0.0))
 
-                        if ltp > trigger and signal_ema_fast > signal_vwap:
+                        if ltp > trigger:
                             qty = decide_qty(symbol, ltp)
                             if qty <= 0:
                                 state.status = "watch"
@@ -1084,19 +1082,15 @@ def evaluate_on_new_candle(st: SymbolState):
     vwap = float(curr.get("vwap", float("nan")))
     ema_exit = float(curr.get("ema_exit", float("nan")))
 
-    # ENTRY SIGNAL (VWAP CROSS)
-    if st.status == "watch" and len(df) > 1:
-        prev = df.iloc[-2]
-        prev_close = float(prev["close"])
-        prev_vwap = float(prev.get("vwap", float("nan")))
-
+    # ENTRY SIGNAL (VWAP BODY CROSS)
+    if st.status == "watch":
+        open_below_vwap = curr_open <= vwap
         closed_above_vwap = curr_close > vwap
         fast_ema_above_vwap = ema_fast > vwap
-        fresh_cross = prev_close <= prev_vwap
         green_ok = (not REQUIRE_GREEN_SIGNAL) or (curr_close > curr_open)
         ok_signal = bool(curr.get("ok_signal", True))
 
-        if closed_above_vwap and fast_ema_above_vwap and fresh_cross and green_ok and ok_signal:
+        if open_below_vwap and closed_above_vwap and fast_ema_above_vwap and green_ok and ok_signal:
             st.signal_candle = {
                 "ts": curr.name,
                 "open": curr_open,
@@ -1127,7 +1121,7 @@ def evaluate_on_new_candle(st: SymbolState):
             st.signal_notified = False
             st.qty = decide_qty(st.symbol, curr_high)
             _real_print(
-                f"****** [{st.symbol}] ENTRY SIGNAL (Closed above VWAP & EMA > VWAP) ******")
+                f"****** [{st.symbol}] ENTRY SIGNAL (VWAP Body Cross & EMA > VWAP) ******")
 
             _real_print(
                 f"[signal:{st.symbol}] signal_high={curr_high:.2f} signal_low={curr_low:.2f} | "
@@ -1154,8 +1148,8 @@ def evaluate_on_new_candle(st: SymbolState):
                 f"****** [{st.symbol}] EXIT SIGNAL (RED candle crossed & closed below EXIT EMA) ******"
             )
             _real_print(
-                f"[exit:{st.symbol}] exit_low={curr_low:.2f} exit_high={curr_high:.2f} | "
-                f"waiting for NEXT CANDLE to attempt exit on break below exit_low"
+                f"[exit:{st.symbol}] exit_low={curr_low:.2f} | "
+                f"exit will trigger immediately on break below this"
             )
 
         # ---------------------------- WEBSOCKET HANDLERS ----------------------------
@@ -1593,6 +1587,7 @@ def main():
                     "high": np.linspace(101, 111, len(idx)),
                     "low": np.linspace(99, 109, len(idx)),
                     "close": np.linspace(100, 110, len(idx)),
+                    "volume": np.random.randint(1000, 5000, len(idx)),
                 },
                 index=idx,
             )
