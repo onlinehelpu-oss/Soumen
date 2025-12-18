@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 - ENTRY (Bullish, using VWAP & ENTRY_FAST_EMA):
-    * Signal candle:
-        - Candle CLOSE > VWAP
-        - EMA_fast > VWAP (trend confirmation)
-        - (optional) candle is green if REQUIRE_GREEN_SIGNAL is True
-        - tiny-candle filter via MIN_RANGE_PCT if enabled
+    * Signal candle (must be a fresh cross):
+        - Previous candle's close was AT or BELOW its VWAP.
+        - Current candle's close is ABOVE its VWAP.
+        - EMA_fast > VWAP (trend confirmation).
+        - (optional) candle is green if REQUIRE_GREEN_SIGNAL is True.
+        - tiny-candle filter via MIN_RANGE_PCT if enabled.
     * ENTRY:
         - Only allowed on the VERY NEXT candle.
         - During that next candle, if any tick LTP > signal_high -> market BUY.
@@ -1159,13 +1160,18 @@ def evaluate_on_new_candle(st: SymbolState):
     ema_exit = float(curr.get("ema_exit", float("nan")))
 
     # ENTRY SIGNAL (VWAP CROSS)
-    if st.status == "watch":
+    if st.status == "watch" and len(df) > 1:
+        prev = df.iloc[-2]
+        prev_close = float(prev["close"])
+        prev_vwap = float(prev.get("vwap", float("nan")))
+
         closed_above_vwap = curr_close > vwap
         fast_ema_above_vwap = ema_fast > vwap
+        fresh_cross = prev_close <= prev_vwap
         green_ok = (not REQUIRE_GREEN_SIGNAL) or (curr_close > curr_open)
         ok_signal = bool(curr.get("ok_signal", True))
 
-        if closed_above_vwap and fast_ema_above_vwap and green_ok and ok_signal:
+        if closed_above_vwap and fast_ema_above_vwap and fresh_cross and green_ok and ok_signal:
             st.signal_candle = {
                 "ts": curr.name,
                 "open": curr_open,
