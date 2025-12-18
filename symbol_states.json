@@ -1,0 +1,22 @@
+{
+  "NSE:NIFTY50-INDEX": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "opt_symbol": null,
+    "last_candle_ts": "2025-12-18T07:38:34.054912",
+    "signal_notified": false,
+    "target_price": null
+  },
+  "NSE:BANKNIFTY-INDEX": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "opt_symbol": null,
+    "last_candle_ts": "2025-12-18T07:38:34.059309",
+    "signal_notified": false,
+    "target_price": null
+  }
+}
