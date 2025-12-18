@@ -16,8 +16,8 @@
     * Either signal low or swing low (SL_MODE = "signal_low" or "swing_low").
 
 - EXIT:
-    * EXIT EMA: red candle crosses & closes below EXIT_EMA -> exit_pending.
-      Only next candle can trigger actual exit on break below exit_low.
+    * EXIT EMA: A red candle crossing and closing below the `EXIT_EMA` generates a signal.
+      The exit is triggered immediately as soon as the price breaks the low of this signal candle.
     * No target-based exit; position is closed by stop-loss or EXIT_EMA signal.
 
 - Indicators:
@@ -997,7 +997,7 @@ def on_tick(tick: dict):
         except Exception:
             return
 
-            # EXIT via EXIT EMA (next-candle gating)
+            # EXIT via EXIT EMA (IMMEDIATE)
     if (
             state.status == "position"
             and state.exit_pending
@@ -1005,104 +1005,29 @@ def on_tick(tick: dict):
             and not skip_exit_checks
     ):
         try:
-            tick_ts = (
-                ts
-                if isinstance(ts, dt)
-                else pd.to_datetime(ts).to_pydatetime().replace(tzinfo=None)
-            )
-
             exit_low = float(state.exit_signal_candle["low"])
-
-            try:
-                if CANDLE_MANAGER is not None:
-                    current_bucket = CANDLE_MANAGER._floor_ts(tick_ts)
-                else:
-                    minute = (tick_ts.minute // TIMEFRAME_MIN) * TIMEFRAME_MIN
-                    current_bucket = tick_ts.replace(
-                        second=0, microsecond=0, minute=minute
-                    )
-            except Exception:
-                minute = (tick_ts.minute // TIMEFRAME_MIN) * TIMEFRAME_MIN
-                current_bucket = tick_ts.replace(
-                    second=0, microsecond=0, minute=minute
-                )
-
-            if isinstance(current_bucket, pd.Timestamp):
-                current_bucket = current_bucket.to_pydatetime().replace(tzinfo=None)
-
-            exit_sig_start = state.exit_signal_candle.get("ts")
-            exit_next_bucket = None
-            try:
-                exit_floor = pd.to_datetime(exit_sig_start)
-                if exit_floor.tzinfo is not None:
-                    exit_floor = exit_floor.tz_convert(TIMEZONE).tz_localize(None)
-                exit_next_bucket = (
-                        exit_floor.to_pydatetime().replace(tzinfo=None)
-                        + timedelta(minutes=TIMEFRAME_MIN)
-                )
-            except Exception:
-                if isinstance(exit_sig_start, dt):
-                    exit_next_bucket = (
-                            exit_sig_start + timedelta(minutes=TIMEFRAME_MIN)
-                    ).replace(tzinfo=None)
-                else:
-                    exit_next_bucket = None
-
-            if exit_next_bucket is not None and current_bucket > exit_next_bucket:
+            if ltp < exit_low:
                 _real_print(
-                    f"[exit-debug] {symbol} next candle {exit_next_bucket} "
-                    f"closed without breaking exit_low; cancelling exit_pending."
+                    f"[{symbol}] EXIT TRIGGERED at LTP {ltp:.2f} (< {exit_low:.2f})"
                 )
-                state.exit_pending = False
-                state.exit_signal_candle = None
-                state.exit_signal_expiry = None
-                state.exit_try_count = 0
-            elif exit_next_bucket is not None and current_bucket == exit_next_bucket:
-                if ltp < exit_low:
-                    _real_print(
-                        f"[{symbol}] EXIT TRIGGERED at LTP {ltp:.2f} (< {exit_low:.2f})"
-                    )
-                    resp = place_market_order(symbol, state.qty, side=-1)
-                    state.exit_try_count += 1
-                    if isinstance(resp, dict) and resp.get("s") == "ok":
-                        pnl = (ltp - state.entry_price) * state.qty
-                        _real_print(f"[{symbol}] EXIT OK. PnL={pnl:.2f}")
-                        if state.gtt_order_id:
-                            cancel_gtt_order(state.gtt_order_id)
+                resp = place_market_order(symbol, state.qty, side=-1)
+                state.exit_try_count += 1
+                if isinstance(resp, dict) and resp.get("s") == "ok":
+                    pnl = (ltp - state.entry_price) * state.qty
+                    _real_print(f"[{symbol}] EXIT OK. PnL={pnl:.2f}")
+                    if state.gtt_order_id:
+                        cancel_gtt_order(state.gtt_order_id)
+                    state.status = "cooldown"
+                    state.exit_pending = False
+                    state.exit_signal_candle = None
+                else:
+                    _real_print(f"[{symbol}] EXIT ORDER FAILED: {resp}")
+                    state.last_failed_exit_ts = dt.now(IST).replace(tzinfo=None)
+                    if state.exit_try_count >= MAX_EXIT_RETRIES:
+                        _real_print(f"[{symbol}] EXIT failed {state.exit_try_count} times. Moving to cooldown.")
                         state.status = "cooldown"
                         state.exit_pending = False
                         state.exit_signal_candle = None
-                    else:
-                        _real_print(f"[{symbol}] EXIT ORDER FAILED: {resp}")
-                        state.last_failed_exit_ts = dt.now(IST).replace(tzinfo=None)
-                        if state.exit_try_count >= MAX_EXIT_RETRIES:
-                            _real_print(f"[{symbol}] EXIT failed {state.exit_try_count} times. Moving to cooldown.")
-                            state.status = "cooldown"
-                            state.exit_pending = False
-                            state.exit_signal_candle = None
-            else:
-                if ltp < exit_low:
-                    _real_print(
-                        f"[{symbol}] EXIT TRIGGERED at LTP {ltp:.2f} (< {exit_low:.2f})"
-                    )
-                    resp = place_market_order(symbol, state.qty, side=-1)
-                    state.exit_try_count += 1
-                    if isinstance(resp, dict) and resp.get("s") == "ok":
-                        pnl = (ltp - state.entry_price) * state.qty
-                        _real_print(f"[{symbol}] EXIT OK. PnL={pnl:.2f}")
-                        if state.gtt_order_id:
-                            cancel_gtt_order(state.gtt_order_id)
-                        state.status = "cooldown"
-                        state.exit_pending = False
-                        state.exit_signal_candle = None
-                    else:
-                        _real_print(f"[{symbol}] EXIT ORDER FAILED: {resp}")
-                        state.last_failed_exit_ts = dt.now(IST).replace(tzinfo=None)
-                        if state.exit_try_count >= MAX_EXIT_RETRIES:
-                            _real_print(f"[{symbol}] EXIT failed {state.exit_try_count} times. Moving to cooldown.")
-                            state.status = "cooldown"
-                            state.exit_pending = False
-                            state.exit_signal_candle = None
         except Exception:
             return
 
