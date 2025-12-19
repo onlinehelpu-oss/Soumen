@@ -481,8 +481,8 @@ class CandleManager:
         if callable(self.on_candle):
             try:
                 self.on_candle(symbol, {"ts": ts, **row})
-            except Exception:
-                pass
+            except Exception as e:
+                _real_print(f"[CandleManager:_append_history:on_candle_call] error: {e}")
 
     def process_tick(self, tick: dict):
         try:
@@ -525,8 +525,8 @@ class CandleManager:
                                "low": ltp, "close": ltp, "ticks": 1}
                 self.partial[symbol] = new_partial
                 self._persist_partial()
-        except Exception:
-            return
+        except Exception as e:
+            _real_print(f"[CandleManager:process_tick] error: {e}")
 
     def force_close_all_up_to(self, upto_ts: dt = None):
         if upto_ts is None:
@@ -858,8 +858,8 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
             CANDLE_MANAGER.process_tick(
                 {"symbol": symbol, "ltp": ltp, "timestamp": ts.isoformat()}
             )
-        except Exception:
-            pass
+        except Exception as e:
+            _real_print(f"[on_tick:candle_manager_call] error: {e}")
 
     state = SYMBOL_STATES.get(symbol)
     if state is None:
@@ -892,8 +892,8 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                     state.target_price = None
                 else:
                     _real_print(f"[{symbol}] TARGET EXIT ORDER FAILED: {resp}")
-        except Exception:
-            pass
+        except Exception as e:
+            _real_print(f"[on_tick:target_exit] error: {e}")
 
             # ENTRY: strict next candle
     if state.status == "entry_pending" and state.signal_candle is not None:
@@ -1009,6 +1009,7 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                                     target_str = "N/A"
 
                                 state.potential_target_price = None  # Clear after use
+
                                 _real_print(
                                     f"[ENTRY CONFIRMED] {state.symbol}: "
                                     f"Entered at {state.entry_price:.2f} | "
@@ -1044,8 +1045,8 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                         state.status = "watch"
                         state.signal_candle = None
                         state.signal_close_ts = None
-        except Exception:
-            return
+        except Exception as e:
+            _real_print(f"[on_tick:entry] error: {e}")
 
             # EXIT via EXIT EMA (next-candle gating)
     if (
@@ -1157,8 +1158,8 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                             state.exit_pending = False
                             state.exit_signal_candle = None
                             state.target_price = None
-        except Exception:
-            return
+        except Exception as e:
+            _real_print(f"[on_tick:ema_exit] error: {e}")
 
             # STOP LOSS
     if (
@@ -1186,8 +1187,8 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                     state.target_price = None
                 else:
                     _real_print(f"[{symbol}] STOP-LOSS SELL FAILED: {sell_resp}")
-        except Exception:
-            return
+        except Exception as e:
+            _real_print(f"[on_tick:stop_loss] error: {e}")
 
     if state.just_entered:
         state.just_entered = False
@@ -1315,8 +1316,8 @@ def on_ws_message(raw):
             timestamp = m.get("timestamp") or m.get("time")
             if symbol and ltp is not None:
                 on_tick(symbol, float(ltp), timestamp)
-    except Exception:
-        pass
+    except Exception as e:
+        _real_print(f"[ws] on_message error: {e}")
 
 
 def detect_and_print_signals_on_open():
