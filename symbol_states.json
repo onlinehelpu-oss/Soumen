@@ -1,0 +1,425 @@
+{
+  "NSE:ADANIENT-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.597812",
+    "signal_notified": false
+  },
+  "NSE:ADANIPORTS-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.607359",
+    "signal_notified": false
+  },
+  "NSE:APOLLOHOSP-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.615814",
+    "signal_notified": false
+  },
+  "NSE:ASIANPAINT-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.622811",
+    "signal_notified": false
+  },
+  "NSE:AXISBANK-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.629563",
+    "signal_notified": false
+  },
+  "NSE:BAJAJ-AUTO-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.636284",
+    "signal_notified": false
+  },
+  "NSE:BAJFINANCE-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.643250",
+    "signal_notified": false
+  },
+  "NSE:BAJAJFINSV-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.649920",
+    "signal_notified": false
+  },
+  "NSE:BPCL-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.656578",
+    "signal_notified": false
+  },
+  "NSE:BHARTIARTL-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.663133",
+    "signal_notified": false
+  },
+  "NSE:BRITANNIA-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.669806",
+    "signal_notified": false
+  },
+  "NSE:CIPLA-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.676491",
+    "signal_notified": false
+  },
+  "NSE:COALINDIA-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.683379",
+    "signal_notified": false
+  },
+  "NSE:DIVISLAB-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.690137",
+    "signal_notified": false
+  },
+  "NSE:DRREDDY-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.697412",
+    "signal_notified": false
+  },
+  "NSE:EICHERMOT-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.704376",
+    "signal_notified": false
+  },
+  "NSE:GRASIM-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.711265",
+    "signal_notified": false
+  },
+  "NSE:HCLTECH-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.718485",
+    "signal_notified": false
+  },
+  "NSE:HDFCBANK-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.725502",
+    "signal_notified": false
+  },
+  "NSE:HDFCLIFE-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.732388",
+    "signal_notified": false
+  },
+  "NSE:HEROMOTOCO-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.739258",
+    "signal_notified": false
+  },
+  "NSE:HINDALCO-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.746275",
+    "signal_notified": false
+  },
+  "NSE:HINDUNILVR-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.753097",
+    "signal_notified": false
+  },
+  "NSE:ICICIBANK-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.759804",
+    "signal_notified": false
+  },
+  "NSE:ITC-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.766626",
+    "signal_notified": false
+  },
+  "NSE:INFY-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.773405",
+    "signal_notified": false
+  },
+  "NSE:JSWSTEEL-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.780082",
+    "signal_notified": false
+  },
+  "NSE:KOTAKBANK-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.786673",
+    "signal_notified": false
+  },
+  "NSE:LTIM-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.793452",
+    "signal_notified": false
+  },
+  "NSE:LT-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.800170",
+    "signal_notified": false
+  },
+  "NSE:M&M-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.807120",
+    "signal_notified": false
+  },
+  "NSE:MARUTI-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.813962",
+    "signal_notified": false
+  },
+  "NSE:NTPC-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.820739",
+    "signal_notified": false
+  },
+  "NSE:NESTLEIND-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.827575",
+    "signal_notified": false
+  },
+  "NSE:ONGC-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.834589",
+    "signal_notified": false
+  },
+  "NSE:POWERGRID-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.841736",
+    "signal_notified": false
+  },
+  "NSE:RELIANCE-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.848686",
+    "signal_notified": false
+  },
+  "NSE:SBILIFE-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.855555",
+    "signal_notified": false
+  },
+  "NSE:SBIN-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.862462",
+    "signal_notified": false
+  },
+  "NSE:SIEMENS-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.869258",
+    "signal_notified": false
+  },
+  "NSE:SUNPHARMA-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.875819",
+    "signal_notified": false
+  },
+  "NSE:TCS-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.882629",
+    "signal_notified": false
+  },
+  "NSE:TATACONSUM-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.889498",
+    "signal_notified": false
+  },
+  "NSE:TATASTEEL-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.896248",
+    "signal_notified": false
+  },
+  "NSE:TECHM-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.903063",
+    "signal_notified": false
+  },
+  "NSE:TITAN-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.909809",
+    "signal_notified": false
+  },
+  "NSE:UPL-EQ": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-19T18:22:59.917303",
+    "signal_notified": false
+  }
+}

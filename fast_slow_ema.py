@@ -922,6 +922,29 @@ def on_tick(tick: dict):
                     if current_bucket < next_allowed_bucket:
                         pass
                     elif current_bucket == next_allowed_bucket:
+                        # Time-based entry restrictions
+                        now_time = tick_ts.time()
+                        is_nse = "NSE:" in symbol.upper()
+                        is_mcx = "MCX:" in symbol.upper()
+
+                        if is_nse and now_time >= datetime.time(15, 0):
+                            _real_print(
+                                f"[blocked-entry] {symbol} signal ignored. NSE trading hours are over (current time: {now_time.strftime('%H:%M:%S')})."
+                            )
+                            state.status = "watch"
+                            state.signal_candle = None
+                            state.signal_close_ts = None
+                            return
+
+                        if is_mcx and now_time >= datetime.time(22, 0):
+                            _real_print(
+                                f"[blocked-entry] {symbol} signal ignored. MCX trading hours are over (current time: {now_time.strftime('%H:%M:%S')})."
+                            )
+                            state.status = "watch"
+                            state.signal_candle = None
+                            state.signal_close_ts = None
+                            return
+
                         trigger = float(state.signal_candle["high"])
 
                         if ltp > trigger:
