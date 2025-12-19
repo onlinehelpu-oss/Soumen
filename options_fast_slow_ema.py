@@ -82,7 +82,7 @@ STATE_DUMP = "symbol_states.json"
 PARTIAL_CANDLES_FILE = "partial_candles.json"
 
 # Default product type for options is Intraday
-PRODUCT_TYPE = "Intraday"
+PRODUCT_TYPE = "INTRADAY"
 
 ALLOC_DEFAULT = 1000.0
 ALLOC_MAP = {}
