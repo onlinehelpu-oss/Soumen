@@ -970,6 +970,24 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                     elif current_bucket == next_allowed_bucket:
                         trigger = float(state.signal_candle["high"])
                         if ltp > trigger:
+                            # Time-based entry cutoff
+                            now_ist = tick_ts
+                            is_mcx = symbol.startswith("MCX:")
+
+                            if is_mcx and now_ist.hour >= 22:
+                                _real_print(f"[blocked-entry] {symbol} MCX entry blocked after 10 PM IST. Cancelling signal.")
+                                state.status = "watch"
+                                state.signal_candle = None
+                                state.signal_close_ts = None
+                                return
+
+                            if not is_mcx and now_ist.hour >= 15:
+                                _real_print(f"[blocked-entry] {symbol} NSE entry blocked after 3 PM IST. Cancelling signal.")
+                                state.status = "watch"
+                                state.signal_candle = None
+                                state.signal_close_ts = None
+                                return
+
                             qty = decide_qty(symbol, ltp)
                             if qty <= 0:
                                 state.status = "watch"
