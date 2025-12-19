@@ -400,28 +400,48 @@ def calculate_itm_strike(spot_ltp: float, strike_step: int) -> int:
 
 
 def resolve_option_symbol(fyers: fyersModel.FyersModel, underlying: str, ltp: float) -> Optional[str]:
-    base_symbol = underlying.split(":")[1].split("-")[0]
+    base_symbol = underlying.split(":")[1].split("-")[0].strip()
     config = SYMBOL_CONFIG.get(base_symbol)
     if not config:
         return None
 
     try:
         resp = fyers.optionchain(data={"symbol": underlying}) or {}
-        chain = (resp.get("data") or {}).get("optionChain", [])
+        data = resp.get("data", {})
+        chain = data.get("optionsChain", [])
+        expiry_data = data.get("expiryData", [])
     except Exception:
         return None
 
-    if not chain:
+    if not chain or not expiry_data:
         return None
+
+    # Get the nearest expiry date string (e.g., "23-12-2025")
+    nearest_expiry_str = expiry_data[0]['date']
+
+    # Convert date string to Fyers symbol date code (e.g., 25D23)
+    try:
+        dt_obj = dt.strptime(nearest_expiry_str, "%d-%m-%Y")
+        year = str(dt_obj.year)[-2:]
+        day = str(dt_obj.day)
+
+        month_codes = {
+            1: '1', 2: '2', 3: '3', 4: '4', 5: '5', 6: '6',
+            7: '7', 8: '8', 9: '9', 10: 'O', 11: 'N', 12: 'D'
+        }
+        month = month_codes[dt_obj.month]
+
+        date_code = f"{year}{month}{day}"
+    except (ValueError, KeyError):
+        return None  # Failed to parse date or find month code
 
     target_strike = calculate_itm_strike(ltp, config["strike_step"])
 
-    # Filter for earliest expiry CE options
-    earliest_expiry = min(row["expiry_date"]
-                          for row in chain if row["option_type"] == "CE")
+    # Filter for CE options of the nearest expiry
+    # Symbol format e.g., NSE:NIFTY25D2323450CE
     candidates = [
         row for row in chain
-        if row["option_type"] == "CE" and row["expiry_date"] == earliest_expiry
+        if row.get("option_type") == "CE" and date_code in row.get("symbol", "")
     ]
 
     if not candidates:
