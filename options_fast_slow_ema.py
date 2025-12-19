@@ -2,34 +2,25 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 """
-- ENTRY (Bullish, using ENTRY_FAST_EMA & ENTRY_SLOW_EMA):
-    * Signal candle (NOW STRICT BODY CROSS):
-        - EMA_fast > EMA_slow (uptrend sequence)
-        - Candle OPEN < min(EMA_fast, EMA_slow)  (body starts below both EMAs)
-        - Candle CLOSE > max(EMA_fast, EMA_slow) + EMA_BUFFER  (body closes above both EMAs)
-        - (optional) candle is green if REQUIRE_GREEN_SIGNAL is True
-        - tiny-candle filter via MIN_RANGE_PCT if enabled
-    * ENTRY:
-        - Only allowed on the VERY NEXT candle.
-        - During that next candle, if any tick LTP > signal_high -> market BUY.
+- STRATEGY:
+    * This bot trades index options (e.g., Nifty, BankNifty) based on EMA crossover signals generated from the underlying index's spot price.
+    * It is a bullish-only strategy, meaning it only buys Call (CE) options.
 
-- STOPLOSS:
-    * Either signal low or swing low (SL_MODE = "signal_low" or "swing_low").
+- ENTRY SIGNAL (generated from the UNDERLYING SPOT PRICE):
+    * A signal is generated when a candle's body strictly crosses from below both the fast and slow entry EMAs to above them, while the fast EMA is above the slow EMA.
+    * The actual market order to buy a Call option is only placed during the VERY NEXT candle if the spot price breaks the high of the signal candle.
 
-- EXIT:
-    * EXIT EMA: red candle crosses & closes below EXIT_EMA → exit_pending.
-      Only next candle can trigger actual exit on break below exit_low.
-    * TARGET: previous swing high (last SWING_HIGH_LOOKBACK highs before signal candle).
-      If LTP >= target_price, exit immediately.
-    * Whatever comes first (TARGET or EXIT EMA / SL) closes the trade.
+- STRIKE SELECTION:
+    * Upon a valid entry trigger, the script automatically selects an In-The-Money (ITM) Call option for the nearest expiry.
+    * It calculates the appropriate strike price based on the current LTP of the underlying index and the configured `strike_step`.
 
-- EMAs:
-    * ENTRY_FAST_EMA, ENTRY_SLOW_EMA – only for entry.
-    * EXIT_EMA – only for exit.
+- STOPLOSS & TARGET (based on the UNDERLYING SPOT PRICE):
+    * STOPLOSS: The stop-loss is placed based on the spot price, either at the signal candle's low or a recent swing low. If the spot LTP hits the stop-loss level, the open option position is sold.
+    * TARGET: The profit target is based on a recent swing high of the spot price. If the spot LTP hits the target, the option position is sold.
 
-- Position sizing:
-    * POSITION_MODE = "qty": fixed quantity per trade (FIXED_QTY, default 1).
-    * POSITION_MODE = "alloc": alloc-based: qty = ALLOC_DEFAULT // entry_price.
+- POSITION SIZING (for the OPTION contract):
+    * "qty" mode: Buys a fixed number of lots. `FIXED_QTY` acts as a lot multiplier (e.g., `FIXED_QTY=2` means 2 lots).
+    * "alloc" mode: Calculates the number of lots based on a defined capital allocation (`ALLOC_DEFAULT`) and the option's premium (LTP).
 
 - Fyers v3 login:
     * Uses api-t1 endpoints with appIdHash.
@@ -78,12 +69,12 @@ EMA_BUFFER = 0.0  # optional extra buffer above/below EMAs
 REQUIRE_GREEN_SIGNAL = True
 
 # List of underlying index symbols to track for signals
-UNDERLYING_SYMBOLS = ["NSE:NIFTY50-INDEX", "NSE:BANKNIFTY-INDEX"]
+UNDERLYING_SYMBOLS = ["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"]
 
 # Symbol-specific configurations for options trading
 SYMBOL_CONFIG = {
     "NIFTY50": {"strike_step": 50},
-    "BANKNIFTY": {"strike_step": 100},
+    "NIFTYBANK": {"strike_step": 100},
 }
 
 LOG_FILE = "trade_log.csv"
@@ -132,7 +123,7 @@ MAX_REAUTH_ATTEMPTS = 3
 _real_print = print
 ALLOWED_SUBSTRINGS = (
     "ENTRY SIGNAL", "[signal:", "EXIT SIGNAL", "[exit:", "[CANDLE]", "[order]", "[auth]", "[ws]",
-    "[blocked-entry]", "[entry-debug]", "[exit-debug]", "TARGET EXIT", "STOP-LOSS", "[ENTRY CONFIRMED]"
+    "[blocked-entry]", "[entry-debug]", "[exit-debug]", "TARGET EXIT", "STOP-LOSS", "[ENTRY CONFIRMED]",
 )
 
 
