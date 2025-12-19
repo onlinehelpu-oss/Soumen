@@ -825,11 +825,14 @@ def on_completed_candle(symbol: str, candle: dict):
             df = pd.DataFrame([row], index=[idx])
         else:
             df = pd.concat([df, pd.DataFrame([row], index=[idx])])
+            # De-duplicate the index, keeping the last entry
+            df = df.loc[~df.index.duplicated(keep='last')]
             df = df.tail(2000)
         df.index.name = "datetime"
         st.data = compute_indicators(df)
         st.last_candle_ts = idx
-    except Exception:
+    except Exception as e:
+        _real_print(f"[on_completed_candle] error processing for {symbol}: {e}")
         return
     evaluate_on_new_candle(st)
 
