@@ -598,19 +598,23 @@ def decide_qty(symbol: str, entry_price: float) -> int:
 
 def place_market_order(symbol: str, qty: int, side: int) -> dict:
     side_str = "BUY" if side == 1 else "SELL"
+
+    # Dynamically set productType based on exchange
+    order_product_type = "INTRADAY" if symbol.startswith("MCX:") else PRODUCT_TYPE
+
     data = {
         "symbol": symbol,
         "qty": qty,
         "type": 2,
         "side": side,
-        "productType": PRODUCT_TYPE,
+        "productType": order_product_type,
         "limitPrice": 0,
         "stopPrice": 0,
         "validity": "DAY",
         "disclosedQty": 0,
         "offlineOrder": False,
     }
-    _real_print(f"[order] Placing market {side_str} for {qty} of {symbol}")
+    _real_print(f"[order] Placing market {side_str} for {qty} of {symbol} with productType={order_product_type}")
     if side == 1 and len([s for s in SYMBOL_STATES.values() if s.status == "position"]) >= MAX_CONCURRENT_POS:
         _real_print(f"[order] MAX_CONCURRENT_POS reached ({MAX_CONCURRENT_POS}). Rejecting new buy for {symbol}.")
         return {"s": "error", "message": "max concurrent positions reached"}
@@ -638,12 +642,16 @@ def place_market_order(symbol: str, qty: int, side: int) -> dict:
 
 def place_gtt_stoploss(symbol: str, qty: int, trigger_price: float) -> dict:
     sl_price = round(trigger_price * 0.99, 1)
+
+    # Dynamically set productType based on exchange
+    order_product_type = "INTRADAY" if symbol.startswith("MCX:") else PRODUCT_TYPE
+
     data = {
         "symbol": symbol,
         "qty": qty,
         "type": 4,
         "side": -1,
-        "productType": PRODUCT_TYPE,
+        "productType": order_product_type,
         "limitPrice": sl_price,
         "stopPrice": trigger_price,
     }
