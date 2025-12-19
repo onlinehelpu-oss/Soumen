@@ -1177,6 +1177,7 @@ def evaluate_on_new_candle(st: SymbolState):
 
             _real_print(
                 f"[signal:{st.symbol}] signal_high={curr_high:.2f} signal_low={curr_low:.2f} | "
+                f"DEBUG: open={curr_open:.2f} close={curr_close:.2f} vwap={vwap:.2f} ema_fast={ema_fast:.2f} | "
                 f"waiting for NEXT CANDLE to attempt breakout entry"
             )
 
