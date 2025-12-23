@@ -1228,14 +1228,16 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
 
 def evaluate_on_new_candle(st: SymbolState):
     df = st.data
-    if df is None or df.empty:
+    if df is None or df.shape[0] < 2:  # Need at least 2 rows for previous EMA
         return
 
     last_ts = st.last_candle_ts
-    if last_ts is None:
+    if last_ts is None or last_ts not in df.index:
         return
 
     curr = df.loc[last_ts]
+    prev = df.iloc[-2]  # Get previous candle's data
+
     curr_open = float(curr["open"])
     curr_low = float(curr["low"])
     curr_high = float(curr["high"])
@@ -1243,11 +1245,14 @@ def evaluate_on_new_candle(st: SymbolState):
 
     ema_fast = float(curr.get("ema_fast_entry", float("nan")))
     ema_slow = float(curr.get("ema_slow_entry", float("nan")))
+    ema_slow_prev = float(prev.get("ema_slow_entry", float("nan")))
     ema_exit = float(curr.get("ema_exit", float("nan")))
 
     # ENTRY SIGNAL  (STRICT BODY CROSS)
     if st.status == "watch":
         ema_sequence_ok = ema_fast > ema_slow
+        rising_slow_ema = ema_slow > ema_slow_prev  # New condition
+
         lowest_ema = min(ema_fast, ema_slow)
         highest_ema = max(ema_fast, ema_slow)
 
@@ -1258,6 +1263,7 @@ def evaluate_on_new_candle(st: SymbolState):
 
         if (
                 ema_sequence_ok
+                and rising_slow_ema  # Check for confirmed uptrend
                 and open_below_both
                 and closed_above_both
                 and green_ok
