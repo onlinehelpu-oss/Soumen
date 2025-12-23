@@ -19,8 +19,8 @@ from __future__ import annotations
     * TARGET: The profit target is based on a recent swing high of the spot price. If the spot LTP hits the target, the option position is sold.
 
 - POSITION SIZING (for the OPTION contract):
-    * "qty" mode: Buys a fixed number of lots. `FIXED_QTY` acts as a lot multiplier (e.g., `FIXED_QTY=2` means 2 lots).
-    * "alloc" mode: Calculates the number of lots based on a defined capital allocation (`ALLOC_DEFAULT`) and the option's premium (LTP).
+    * The script automatically fetches the correct lot size for the chosen option contract.
+    * The `LOT_MULTIPLIER` setting controls how many lots to trade (e.g., set to 2 for 2 lots).
 
 - Fyers v3 login:
     * Uses api-t1 endpoints with appIdHash.
@@ -69,12 +69,13 @@ EMA_BUFFER = 0.0  # optional extra buffer above/below EMAs
 REQUIRE_GREEN_SIGNAL = True
 
 # List of underlying index symbols to track for signals
-UNDERLYING_SYMBOLS = ["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX"]
+UNDERLYING_SYMBOLS = ["NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX", "NSE:FINNIFTY-INDEX"]
 
 # Symbol-specific configurations for options trading
 SYMBOL_CONFIG = {
-    "NIFTY50": {"strike_step": 50},
-    "NIFTYBANK": {"strike_step": 100},
+    "NIFTY50": {"strike_step": 50, "fy_sym": "NIFTY"},
+    "NIFTYBANK": {"strike_step": 100, "fy_sym": "BANKNIFTY"},
+    "FINNIFTY": {"strike_step": 50, "fy_sym": "FINNIFTY"},
 }
 
 LOG_FILE = "trade_log.csv"
@@ -83,9 +84,6 @@ PARTIAL_CANDLES_FILE = "partial_candles.json"
 
 # Default product type for options is Intraday
 PRODUCT_TYPE = "INTRADAY"
-
-ALLOC_DEFAULT = 1000.0
-ALLOC_MAP = {}
 
 SL_MODE = "signal_low"  # "signal_low" or "swing_low"
 SWING_LOOKBACK = 5  # used for swing-low
@@ -110,10 +108,8 @@ TOKEN_PATH = os.path.join(TOKENS_DIR, f"{TODAY}.json")
 # Settings file for user-customisable values (optional)
 SETTINGS_FILE = "settings.json"
 
-# Position sizing mode globals
-POSITION_MODE = "qty"  # "alloc" or "qty"
-FIXED_QTY = 1  # default 1 share when using qty mode
-QTY_MAP: Dict[str, int] = {}
+# Lot multiplier
+LOT_MULTIPLIER = 1
 
 # Re-auth guard to avoid infinite recursion
 REAUTH_ATTEMPTS = 0
@@ -124,6 +120,7 @@ _real_print = print
 ALLOWED_SUBSTRINGS = (
     "ENTRY SIGNAL", "[signal:", "EXIT SIGNAL", "[exit:", "[CANDLE]", "[order]", "[auth]", "[ws]",
     "[blocked-entry]", "[entry-debug]", "[exit-debug]", "TARGET EXIT", "STOP-LOSS", "[ENTRY CONFIRMED]",
+    "[debug-options]", "[LOTS]"
 )
 
 
@@ -383,8 +380,10 @@ def log_trade_event(symbol, action, qty, price, response):
 def get_instrument_details(fyers: fyersModel.FyersModel, symbol: str) -> Optional[Dict[str, any]]:
     try:
         resp = fyers.quotes(data={"symbols": symbol})
-        if resp.get("s") == "ok" and resp.get("d"):
-            return resp["d"][0].get("v", {})
+        if resp and resp.get("s") == "ok" and resp.get("d"):
+            details = resp["d"][0]
+            if details.get("s") == "ok":
+                return details.get("v", {})
     except Exception as e:
         _real_print(f"[instrument] Failed to get details for {symbol}: {e}")
     return None
@@ -392,7 +391,12 @@ def get_instrument_details(fyers: fyersModel.FyersModel, symbol: str) -> Optiona
 
 def get_lot_size(fyers: fyersModel.FyersModel, symbol: str) -> int:
     details = get_instrument_details(fyers, symbol)
-    return int(details.get("lot_size", 1)) if details else 1
+    if not details:
+        _real_print(f"[LOTS] Could not get instrument details for {symbol}, assuming lot size 1.")
+        return 1
+    lot_size = int(details.get("lot_size", 1))
+    _real_print(f"[LOTS] Lot size for {symbol} is {lot_size}")
+    return lot_size
 
 
 def calculate_itm_strike(spot_ltp: float, strike_step: int) -> int:
@@ -403,54 +407,89 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, underlying: str, ltp: fl
     base_symbol = underlying.split(":")[1].split("-")[0].strip()
     config = SYMBOL_CONFIG.get(base_symbol)
     if not config:
+        _real_print(f"[debug-options] No config found for {base_symbol}")
         return None
 
     try:
-        resp = fyers.optionchain(data={"symbol": underlying}) or {}
+        payload = {"symbol": underlying, "strikecount": 12}
+        resp = fyers.optionchain(data=payload)
+        if not resp or resp.get("s") != "ok":
+            _real_print(f"[debug-options] Failed option chain response: {resp}")
+            return None
+
+        _real_print(f"[debug-options] Option chain API response received.")
         data = resp.get("data", {})
         chain = data.get("optionsChain", [])
         expiry_data = data.get("expiryData", [])
-    except Exception:
+
+    except Exception as e:
+        _real_print(f"[debug-options] Error fetching option chain for {underlying}: {e}")
         return None
 
     if not chain or not expiry_data:
+        _real_print(f"[debug-options] Option chain or expiry data is empty for {underlying}.")
         return None
 
-    # Get the nearest expiry date string (e.g., "23-12-2025")
     nearest_expiry_str = expiry_data[0]['date']
+    _real_print(f"[debug-options] Nearest expiry: {nearest_expiry_str}")
 
-    # Convert date string to Fyers symbol date code (e.g., 25D23)
+    target_strike = calculate_itm_strike(ltp, config["strike_step"])
+    _real_print(f"[debug-options] Target ITM strike: {target_strike}")
+
+    # Fyers symbol format: NSE:BANKNIFTY2470349000CE (YYM expiring day DD)
+    fy_sym = config["fy_sym"]
     try:
         dt_obj = dt.strptime(nearest_expiry_str, "%d-%m-%Y")
-        year = str(dt_obj.year)[-2:]
-        day = str(dt_obj.day)
+        yr_short = str(dt_obj.year)[-2:]
 
+        # Fyers month codes: 1-9 for Jan-Sep, O for Oct, N for Nov, D for Dec
         month_codes = {
             1: '1', 2: '2', 3: '3', 4: '4', 5: '5', 6: '6',
             7: '7', 8: '8', 9: '9', 10: 'O', 11: 'N', 12: 'D'
         }
-        month = month_codes[dt_obj.month]
+        month_code = month_codes.get(dt_obj.month)
+        if not month_code:
+            _real_print(f"[debug-options] Invalid month number {dt_obj.month} from expiry {nearest_expiry_str}")
+            return None
 
-        date_code = f"{year}{month}{day}"
-    except (ValueError, KeyError):
-        return None  # Failed to parse date or find month code
+        day_str = dt_obj.strftime('%d')
+        date_prefix = f"{fy_sym}{yr_short}{month_code}{day_str}"
+    except Exception as e:
+        _real_print(f"[debug-options] Error creating date prefix from '{nearest_expiry_str}': {e}")
+        return None
 
-    target_strike = calculate_itm_strike(ltp, config["strike_step"])
+    _real_print(f"[debug-options] Searching for CE candidates with prefix '{date_prefix}' and strike {target_strike}")
 
-    # Filter for CE options of the nearest expiry
-    # Symbol format e.g., NSE:NIFTY25D2323450CE
+    # Match symbol format like: 'NSE:BANKNIFTY2470349000CE'
+    # The date prefix matches the start, and the option type CE is at the end.
     candidates = [
         row for row in chain
-        if row.get("option_type") == "CE" and date_code in row.get("symbol", "")
+        if row.get("option_type") == "CE"
+        and row.get("strike_price") == target_strike
+        and row.get("symbol", "").startswith(f"NSE:{date_prefix}")
     ]
 
     if not candidates:
-        return None
+        _real_print(f"[debug-options] No exact strike match found. Looking for closest available ITM strike.")
+        # Fallback: find closest ITM strike if exact match fails
+        all_ce_for_expiry = [
+            row for row in chain
+            if row.get("option_type") == "CE" and row.get("symbol", "").startswith(f"NSE:{date_prefix}")
+        ]
+        itm_candidates = [
+            opt for opt in all_ce_for_expiry if opt.get("strike_price", 0) <= target_strike
+        ]
+        if not itm_candidates:
+            _real_print(f"[debug-options] No ITM CE options found for expiry {nearest_expiry_str}.")
+            return None
 
-    # Find the closest strike to the target
-    closest = min(candidates, key=lambda x: abs(
-        x["strike_price"] - target_strike))
-    return closest["symbol"]
+        closest = min(itm_candidates, key=lambda x: abs(x["strike_price"] - target_strike))
+        _real_print(f"[debug-options] Fallback closest ITM strike found: {closest.get('symbol')}")
+        return closest.get("symbol")
+
+
+    _real_print(f"[debug-options] Found exact strike match: {candidates[0].get('symbol')}")
+    return candidates[0].get("symbol")
 
 
 # ---------------------------- INDICATORS ----------------------------
@@ -895,35 +934,29 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
 
         next_candle_start = sig_ts + timedelta(minutes=TIMEFRAME_MIN)
         if CANDLE_MANAGER._floor_ts(tick_ts) > next_candle_start:
-            state.status = "watch"  # Cancel signal if not triggered in the next candle
+            _real_print(f"[{symbol}] Signal expired, not triggered in the next candle.")
+            state.status = "watch"
+            state.signal_candle = None
             return
 
         if CANDLE_MANAGER._floor_ts(tick_ts) == next_candle_start and ltp > state.signal_candle["high"]:
+            _real_print(f"[{symbol}] Breakout detected at {ltp:.2f}. Resolving option symbol...")
             opt_symbol = resolve_option_symbol(FYERS, symbol, ltp)
+
             if not opt_symbol:
-                _real_print(
-                    f"[{symbol}] Could not resolve option symbol. Cancelling entry.")
+                _real_print(f"[{symbol}] Could not resolve option symbol. Cancelling entry.")
                 state.status = "watch"
+                state.signal_candle = None
                 return
 
             lot_size = get_lot_size(FYERS, opt_symbol)
             if lot_size <= 0:
+                _real_print(f"[{symbol}] Invalid lot size {lot_size}. Cancelling entry.")
                 state.status = "watch"
+                state.signal_candle = None
                 return
 
-            qty = 0
-            if POSITION_MODE == "qty":
-                qty = lot_size * FIXED_QTY
-            else:  # allocation mode
-                opt_details = get_instrument_details(FYERS, opt_symbol)
-                opt_ltp = opt_details.get("ltp") if opt_details else 0
-                if opt_ltp > 0:
-                    alloc = ALLOC_MAP.get(symbol, ALLOC_DEFAULT)
-                    qty = int(alloc / opt_ltp) // lot_size * lot_size
-
-            if qty <= 0:
-                state.status = "watch"
-                return
+            qty = lot_size * LOT_MULTIPLIER
 
             resp = place_market_order(opt_symbol, qty, side=1)
             if resp.get("s") == "ok":
@@ -945,11 +978,14 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                     state.target_price = None
 
                 _real_print(
-                    f"[ENTRY CONFIRMED] {state.symbol} -> {opt_symbol} @ {ltp:.2f}")
+                    f"[ENTRY CONFIRMED] {state.symbol} -> {opt_symbol} ({qty} units) @ spot {ltp:.2f}")
                 state.status = "position"
+                state.signal_candle = None
             else:
                 _real_print(f"[ORDER FAILED] {opt_symbol}: {resp}")
                 state.status = "watch"
+                state.signal_candle = None
+
 
     # EXIT via EXIT EMA (next-candle gating)
     if state.status == "position" and state.exit_pending and state.exit_signal_candle and not skip_exit_checks:
@@ -958,7 +994,8 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
 
         next_candle_start = exit_sig_ts + timedelta(minutes=TIMEFRAME_MIN)
         if CANDLE_MANAGER._floor_ts(tick_ts) > next_candle_start:
-            state.exit_pending = False  # Cancel signal if not triggered in the next candle
+            state.exit_pending = False
+            state.exit_signal_candle = None
             return
 
         if CANDLE_MANAGER._floor_ts(tick_ts) == next_candle_start and ltp < state.exit_signal_candle["low"]:
@@ -1433,20 +1470,12 @@ def parse_args():
                    help="Run test mode without Fyers")
     p.add_argument("--no-require-green",
                    dest="require_green", action="store_false")
-    p.add_argument("--use-ltp-entry", action="store_true",
-                   help="Use LTP immediate entry/exit (default)")
-    p.add_argument("--position-mode", choices=["alloc", "qty"],
-                   default=POSITION_MODE, help="Position sizing mode")
-    p.add_argument("--fixed-qty", type=int, default=None,
-                   help="When --position-mode qty is set, fixed quantity per trade (default 1).")
-    p.add_argument("--qty-map", type=str, default="",
-                   help='Optional per-symbol qty map as JSON string, e.g. \'{"NSE:RELIANCE-EQ":2}\'.')
+    p.add_argument("--lot-multiplier", type=int, default=LOT_MULTIPLIER,
+                   help="Number of lots to trade per signal (default 1).")
     p.add_argument("--product-type", type=str, default=PRODUCT_TYPE,
-                   help="Order product type: 'CNC' or 'Intraday'.")
+                   help="Order product type, e.g., 'INTRADAY'.")
     p.add_argument("--sl-mode", type=str, default=SL_MODE,
                    help="Stop-loss mode: 'signal_low' or 'swing_low'.")
-    p.add_argument("--qty-map-file", type=str, default="",
-                   help="Optional file path to JSON with per-symbol qty map.")
     p.set_defaults(require_green=True)
     return p.parse_args()
 
@@ -1459,14 +1488,14 @@ def print_startup(args):
     _real_print("[update] EMA buffer =", EMA_BUFFER)
     _real_print("[update] Require green signal =", REQUIRE_GREEN_SIGNAL)
     _real_print("[mode] Order mode set to", PRODUCT_TYPE)
-    _real_print("[mode] SL_MODE =", SL_MODE, " POSITION_MODE =", POSITION_MODE)
-    _real_print("[mode] FIXED_QTY =", FIXED_QTY)
+    _real_print("[mode] SL_MODE =", SL_MODE)
+    _real_print("[mode] LOT_MULTIPLIER =", LOT_MULTIPLIER)
 
 
 def main():
     global TIMEFRAME_MIN, EXIT_EMA, ENTRY_FAST_EMA, ENTRY_SLOW_EMA, EMA_BUFFER, MIN_RANGE_PCT, REQUIRE_GREEN_SIGNAL
     global CANDLE_MANAGER, FYERS, FYERS_SOCKET, ACCESS_TOKEN
-    global POSITION_MODE, FIXED_QTY, QTY_MAP, ALLOC_DEFAULT, PRODUCT_TYPE, SL_MODE
+    global LOT_MULTIPLIER, PRODUCT_TYPE, SL_MODE
 
     args = parse_args()
     file_settings = load_settings_file()
@@ -1493,56 +1522,29 @@ def main():
     REQUIRE_GREEN_SIGNAL = bool(pick("require_green", getattr(
         args, "require_green", None), REQUIRE_GREEN_SIGNAL))
 
-    POSITION_MODE = str(pick("position_mode", getattr(
-        args, "position_mode", None), POSITION_MODE)).lower()
-
-    cli_fixed = getattr(args, "fixed_qty", None)
-    FIXED_QTY = int(pick("fixed_qty", cli_fixed,
-                    FIXED_QTY if FIXED_QTY is not None else 1))
-
-    ALLOC_DEFAULT = float(pick("alloc_default", None, ALLOC_DEFAULT))
+    LOT_MULTIPLIER = int(pick("lot_multiplier", getattr(args, "lot_multiplier", None), LOT_MULTIPLIER))
     PRODUCT_TYPE = str(pick("product_type", getattr(
         args, "product_type", None), PRODUCT_TYPE))
     SL_MODE = str(pick("sl_mode", getattr(
         args, "sl_mode", None), SL_MODE)).lower()
 
-    if args.qty_map_file:
-        try:
-            with open(args.qty_map_file, "r") as f:
-                qm = json.load(f)
-            if isinstance(qm, dict):
-                QTY_MAP.update({k: int(v) for k, v in qm.items()})
-        except Exception as e:
-            _real_print("[warn] Failed to load qty-map file:", e)
-    if args.qty_map:
-        try:
-            parsed = json.loads(args.qty_map)
-            if isinstance(parsed, dict):
-                QTY_MAP.update({k: int(v) for k, v in parsed.items()})
-        except Exception:
-            _real_print("[warn] Failed to parse --qty-map JSON; ignoring.")
-
-    ALLOWED_PRODUCT = {"CNC", "INTRADAY"}
+    ALLOWED_PRODUCT = {"CNC", "INTRADAY", "MARGIN", "CO", "BO"}
     ALLOWED_SL = {"signal_low", "swing_low"}
-    ALLOWED_POS = {"alloc", "qty"}
 
-    if PRODUCT_TYPE not in ALLOWED_PRODUCT:
+    if PRODUCT_TYPE.upper() not in ALLOWED_PRODUCT:
         _real_print(
-            f"[warn] Invalid PRODUCT_TYPE '{PRODUCT_TYPE}'. Falling back to 'CNC'.")
-        PRODUCT_TYPE = "CNC"
+            f"[warn] Invalid PRODUCT_TYPE '{PRODUCT_TYPE}'. Falling back to 'INTRADAY'.")
+        PRODUCT_TYPE = "INTRADAY"
     if SL_MODE not in ALLOWED_SL:
         _real_print(
             f"[warn] Invalid SL_MODE '{SL_MODE}'. Falling back to 'signal_low'.")
         SL_MODE = "signal_low"
-    if POSITION_MODE not in ALLOWED_POS:
-        _real_print(
-            f"[warn] Invalid POSITION_MODE '{POSITION_MODE}'. Falling back to 'alloc'.")
-        POSITION_MODE = "alloc"
 
     TIMEFRAME_MIN = max(1, int(TIMEFRAME_MIN))
     EXIT_EMA = max(1, int(EXIT_EMA))
     ENTRY_FAST_EMA = max(1, int(ENTRY_FAST_EMA))
     ENTRY_SLOW_EMA = max(1, int(ENTRY_SLOW_EMA))
+    LOT_MULTIPLIER = max(1, LOT_MULTIPLIER)
 
     print_startup(args)
 
@@ -1614,10 +1616,8 @@ def main():
         _real_print(f"EXIT_EMA        = {EXIT_EMA}")
         _real_print(f"ENTRY_FAST_EMA  = {ENTRY_FAST_EMA}")
         _real_print(f"ENTRY_SLOW_EMA  = {ENTRY_SLOW_EMA}")
-        _real_print("")
+        _real_print(f"LOT_MULTIPLIER  = {LOT_MULTIPLIER}")
         _real_print(f"PRODUCT_TYPE    = \"{PRODUCT_TYPE}\"")
-        _real_print(
-            f"POSITION_MODE   = \"{POSITION_MODE}\" (FIXED_QTY={FIXED_QTY})")
         _real_print(
             "=====================================================================\n")
 

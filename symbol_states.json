@@ -5,7 +5,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "opt_symbol": null,
-    "last_candle_ts": null,
+    "last_candle_ts": "2025-12-23T17:16:55.127609",
     "signal_notified": false,
     "target_price": null
   },
@@ -15,7 +15,17 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "opt_symbol": null,
-    "last_candle_ts": null,
+    "last_candle_ts": "2025-12-23T17:16:55.133165",
+    "signal_notified": false,
+    "target_price": null
+  },
+  "NSE:FINNIFTY-INDEX": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "opt_symbol": null,
+    "last_candle_ts": "2025-12-23T17:16:55.136463",
     "signal_notified": false,
     "target_price": null
   }
