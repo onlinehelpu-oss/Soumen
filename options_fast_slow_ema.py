@@ -1648,7 +1648,7 @@ def main():
         except Exception:
             _real_print("[warn] Failed to parse --qty-map JSON; ignoring.")
 
-    ALLOWED_PRODUCT = {"CNC", "Intraday"}
+    ALLOWED_PRODUCT = {"CNC", "INTRADAY"}
     ALLOWED_SL = {"signal_low", "swing_low"}
     ALLOWED_POS = {"alloc", "qty"}
 
