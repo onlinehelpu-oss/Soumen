@@ -82,8 +82,7 @@ STRIKE_DISTANCE = 1  # How many strikes ITM to select (e.g., 1 = nearest ITM str
 # -----------------------------------------------------------
 
 SYMBOLS = [
-    'NSE:NIFTYBANK-INDEX',
-    # 'NSE:NIFTY50-INDEX',
+    "NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX", "NSE:FINNIFTY-INDEX"
 ]
 
 LOG_FILE = "trade_log.csv"
