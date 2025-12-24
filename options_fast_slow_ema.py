@@ -77,19 +77,18 @@ MIN_RANGE_PCT = 0.0  # tiny-candle filter (0.001 = 0.1%), 0.0 = off
 EMA_BUFFER = 0.0  # optional extra buffer above/below EMAs
 REQUIRE_GREEN_SIGNAL = True
 
-# ------------------ OPTIONS TRADING PARAMS -------------------
-STRIKE_DISTANCE = 1  # How many strikes ITM to select (e.g., 1 = nearest ITM strike)
-# -----------------------------------------------------------
-
+# Symbols to track for signals (underlying spot indices)
 SYMBOLS = [
-    "NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX", "NSE:FINNIFTY-INDEX"
+    "NSE:NIFTY50-INDEX",
+    "NSE:NIFTYBANK-INDEX",
+    "NSE:FINNIFTY-INDEX",
 ]
 
 LOG_FILE = "trade_log.csv"
 STATE_DUMP = "symbol_states.json"
 PARTIAL_CANDLES_FILE = "partial_candles.json"
 
-# Default product type: "CNC" (delivery) or "Intraday"
+# Product type for options is always INTRADAY
 PRODUCT_TYPE = "INTRADAY"
 
 ALLOC_DEFAULT = 1000.0
@@ -120,7 +119,7 @@ SETTINGS_FILE = "settings.json"
 
 # Position sizing mode globals
 POSITION_MODE = "qty"  # "alloc" or "qty"
-FIXED_QTY = 1  # default 1 share when using qty mode
+FIXED_QTY = 1  # For options, this means 1 lot
 QTY_MAP: Dict[str, int] = {}
 
 # Re-auth guard to avoid infinite recursion
@@ -131,7 +130,8 @@ MAX_REAUTH_ATTEMPTS = 3
 _real_print = print
 ALLOWED_SUBSTRINGS = (
     "ENTRY SIGNAL", "[signal:", "EXIT SIGNAL", "[exit:", "[CANDLE]", "[order]", "[auth]", "[ws]",
-    "[blocked-entry]", "[entry-debug]", "[exit-debug]", "TARGET EXIT", "STOP-LOSS", "[ENTRY CONFIRMED]"
+    "[blocked-entry]", "[entry-debug]", "[exit-debug]", "TARGET EXIT", "STOP-LOSS", "[ENTRY CONFIRMED]",
+    "[options]", "[lot_size]"
 )
 
 
@@ -328,8 +328,17 @@ def run_interactive_login() -> str:
 
 
 # ---------------------------- STATE OBJECTS ----------------------------
+# Map from websocket symbol to option chain symbol
+SYMBOL_MAP = {
+    "NSE:NIFTY50-INDEX": "NSE:NIFTY50",
+    "NSE:NIFTYBANK-INDEX": "NSE:BANKNIFTY",
+    "NSE:FINNIFTY-INDEX": "NSE:FINNIFTY",
+}
+
+
 class SymbolState:
     def __init__(self, symbol: str):
+        # Underlying index symbol
         self.symbol = symbol
         self.data = pd.DataFrame()
         self.status = "watch"
@@ -337,17 +346,15 @@ class SymbolState:
         self.signal_close_ts = None
         self.signal_expiry = None
         self.signal_notified = False
-        self.entry_price = 0.0
-        self.qty = 0
-        self.stop_price = 0.0
-        self.gtt_order_id = None
 
-        # -- for options --
-        self.option_symbol = None
-        self.option_entry_price = None
-        self.option_ltp = None
-        self.underlying_stop_price = None
-        # -----------------
+        # --- Position details (for the OPTION contract) ---
+        self.entry_price = 0.0  # Underlying price at entry
+        self.option_symbol: Optional[str] = None
+        self.option_entry_price: float = 0.0
+        self.qty = 0  # Number of lots
+        self.lot_size = 1
+        self.stop_price = 0.0  # Underlying stop-loss price
+        self.gtt_order_id = None  # GTT not used for options, but kept for structure
 
         # exit
         self.exit_signal_candle = None
@@ -365,7 +372,10 @@ class SymbolState:
         self.potential_target_price = None
 
     def __repr__(self):
-        return f"<State {self.symbol} {self.status} qty={self.qty} sl={self.stop_price} tp={self.target_price}>"
+        if self.status == "position":
+            return (f"<State {self.symbol} -> {self.option_symbol} {self.status} "
+                    f"lots={self.qty} sl={self.stop_price} tp={self.target_price}>")
+        return f"<State {self.symbol} {self.status}>"
 
 
 SYMBOL_STATES: Dict[str, SymbolState] = {s: SymbolState(s) for s in SYMBOLS}
@@ -561,6 +571,102 @@ class CandleManager:
 
 CANDLE_MANAGER: Optional[CandleManager] = None
 
+# ---------------------------- OPTIONS HELPERS ----------------------------
+
+def get_option_chain(symbol: str) -> Optional[dict]:
+    """Fetches the option chain for a given underlying symbol."""
+    if FYERS is None:
+        return None
+    try:
+        # Use the mapped symbol for the API call
+        api_symbol = SYMBOL_MAP.get(symbol, symbol)
+        data = {"symbol": api_symbol}
+        response = FYERS.option_chain(data=data)
+        if isinstance(response, dict) and response.get("s") == "ok":
+            return response
+        _real_print(f"[options] Failed to get option chain for {api_symbol}: {response}")
+        return None
+    except Exception as e:
+        _real_print(f"[options] Error fetching option chain for {symbol}: {e}")
+        return None
+
+def get_lot_size(symbol: str) -> int:
+    """Fetches the lot size for a given symbol."""
+    if FYERS is None:
+        return 1
+    try:
+        api_symbol = SYMBOL_MAP.get(symbol, symbol)
+        data = {"symbols": api_symbol}
+        response = FYERS.symbol_details(data=data)
+
+        if response.get("s") == "ok":
+            details = response.get("d", {}).get(api_symbol, {})
+            lot_size = details.get("lotSize")
+            if lot_size:
+                _real_print(f"[lot_size] Lot size for {api_symbol} is {lot_size}")
+                return int(lot_size)
+    except Exception as e:
+        _real_print(f"[lot_size] Error fetching lot size for {symbol}: {e}")
+    return 1 # Default to 1 if lookup fails
+
+def select_itm_call_option(underlying_symbol: str, ltp: float) -> Optional[str]:
+    """Selects the nearest ITM call option for the current expiry."""
+    chain = get_option_chain(underlying_symbol)
+    if not chain or not chain.get("d"):
+        return None
+
+    try:
+        expiry_data = chain["d"].get("expiryData", [])
+        if not expiry_data:
+            _real_print("[options] No expiry data found in option chain.")
+            return None
+
+        # Find the nearest expiry date string (e.g., "24JUL24")
+        current_expiry_str = expiry_data[0]['expiry']
+
+        options = chain["d"].get("optionsChain", [])
+
+        # Filter for ITM Call options of the nearest expiry
+        itm_calls = []
+        for opt in options:
+            # Fyers option chain doesn't have expiry_date per option, must check symbol string
+            if current_expiry_str not in opt.get("symbol", ""):
+                continue
+
+            strike = opt.get("strike_price")
+            option_type = opt.get("option_type")
+            if strike is not None and option_type == "CE" and float(strike) < ltp:
+                itm_calls.append(opt)
+
+        if not itm_calls:
+            _real_print(f"[options] No ITM call options found for {underlying_symbol} at LTP {ltp}")
+            return None
+
+        # Find the ITM call with the strike closest to the LTP
+        nearest_option = min(itm_calls, key=lambda x: ltp - float(x.get("strike_price", 0.0)))
+
+        option_symbol = nearest_option.get("symbol")
+        _real_print(f"[options] Selected ITM call for {underlying_symbol}: {option_symbol}")
+        return option_symbol
+
+    except Exception as e:
+        _real_print(f"[options] Error selecting ITM call for {underlying_symbol}: {e}")
+        return None
+
+def get_order_details(order_id: str) -> Optional[dict]:
+    """Fetches details for a specific order ID to get traded price."""
+    if FYERS is None:
+        return None
+    try:
+        response = FYERS.get_order_book(data={"id": order_id})
+        if isinstance(response, dict) and response.get("s") == "ok" and response.get("orderBook"):
+            return response["orderBook"][0]
+        return None
+    except Exception as e:
+        _real_print(f"[order] Error fetching order details for {order_id}: {e}")
+        return None
+
+
 # ---------------------------- ORDER HELPERS ----------------------------
 FYERS = None
 FYERS_SOCKET = None
@@ -569,176 +675,102 @@ OPEN_POSITIONS = set()
 DAILY_PNL = 0.0
 
 
-def decide_qty(symbol: str, entry_price: float, is_option: bool = False) -> int:
-    # For options, FIXED_QTY is treated as the number of lots
-    if is_option:
-        if POSITION_MODE == "qty" and FIXED_QTY > 0:
-            return int(FIXED_QTY)
-        else: # Fallback for alloc mode or misconfiguration
-            return 1 # Default to 1 lot
+def decide_qty(symbol: str, entry_price: float) -> int:
+    sym_upper = symbol.upper()
 
-    # Original logic for non-options
     if QTY_MAP.get(symbol) is not None:
-        return int(QTY_MAP.get(symbol, 0))
+        try:
+            q = int(QTY_MAP.get(symbol))
+            return max(0, q)
+        except Exception:
+            pass
+
+    if sym_upper.startswith("MCX:"):
+        if POSITION_MODE == "qty" and FIXED_QTY and FIXED_QTY > 0:
+            return max(0, int(FIXED_QTY))
+        return 1
 
     if POSITION_MODE == "qty":
-        return int(FIXED_QTY) if FIXED_QTY > 0 else 0
+        if FIXED_QTY and FIXED_QTY > 0:
+            return max(0, int(FIXED_QTY))
 
     alloc = ALLOC_MAP.get(symbol, ALLOC_DEFAULT)
-    if entry_price <= 0: return 0
-    return int(alloc // entry_price)
+    if entry_price <= 0:
+        return 0
+    try:
+        q = int(alloc // entry_price)
+        return max(0, q)
+    except Exception:
+        return 0
 
 
-def place_market_order(symbol: str, qty: int, side: int) -> dict:
+def place_market_order(symbol: str, qty: int, side: int, ltp: float) -> dict:
     side_str = "BUY" if side == 1 else "SELL"
+    state = SYMBOL_STATES[symbol]
 
-    # Dynamically set productType based on exchange
-    order_product_type = "INTRADAY" if symbol.startswith("MCX:") else PRODUCT_TYPE
+    # For BUY orders, we trade the option. For SELL, we use the stored option symbol.
+    if side == 1: # ENTRY
+        option_symbol = select_itm_call_option(symbol, ltp)
+        if not option_symbol:
+            return {"s": "error", "message": "Could not find suitable ITM call option."}
+
+        state.lot_size = get_lot_size(symbol)
+        order_qty = qty * state.lot_size
+        state.option_symbol = option_symbol
+
+    else: # EXIT
+        if state.option_symbol is None:
+            return {"s": "error", "message": f"No option symbol stored for underlying {symbol} to exit."}
+        order_qty = state.qty * state.lot_size
+        option_symbol = state.option_symbol
 
     data = {
-        "symbol": symbol,
-        "qty": qty,
-        "type": 2,
+        "symbol": option_symbol,
+        "qty": order_qty,
+        "type": 2,  # Market order
         "side": side,
-        "productType": order_product_type,
+        "productType": PRODUCT_TYPE, # Always INTRADAY for this options script
         "limitPrice": 0,
         "stopPrice": 0,
         "validity": "DAY",
         "disclosedQty": 0,
         "offlineOrder": False,
     }
-    _real_print(f"[order] Placing market {side_str} for {qty} of {symbol} with productType={order_product_type}")
+    _real_print(f"[order] Placing market {side_str} for {order_qty} of {option_symbol} (underlying {symbol})")
+
     if side == 1 and len([s for s in SYMBOL_STATES.values() if s.status == "position"]) >= MAX_CONCURRENT_POS:
         _real_print(f"[order] MAX_CONCURRENT_POS reached ({MAX_CONCURRENT_POS}). Rejecting new buy for {symbol}.")
         return {"s": "error", "message": "max concurrent positions reached"}
+
     if FYERS is None:
         err = {"s": "error", "message": "no fyers client"}
-        log_trade_event(symbol, side_str, qty, None, err)
+        log_trade_event(option_symbol, side_str, order_qty, None, err)
         return err
+
     for attempt in range(1, 4):
         try:
             resp = FYERS.place_order(data=data)
-            log_trade_event(symbol, side_str, qty, None, resp)
+            log_trade_event(option_symbol, side_str, order_qty, None, resp)
+
             if isinstance(resp, dict) and resp.get("s") == "ok":
+                order_id = resp.get("id")
                 if side == 1:
-                    OPEN_POSITIONS.add(symbol)
+                    OPEN_POSITIONS.add(symbol) # Track open positions by underlying symbol
+                    # Fetch actual traded price to calculate PnL accurately
+                    time.sleep(1) # Give time for order to fill
+                    order_details = get_order_details(order_id)
+                    if order_details and order_details.get("tradedPrice"):
+                         state.option_entry_price = order_details["tradedPrice"]
                 else:
                     OPEN_POSITIONS.discard(symbol)
             return resp
         except Exception as e:
             _real_print(f"[order] Attempt {attempt} failed: {e}")
             time.sleep(1 * attempt)
+
     err = {"s": "error", "message": "order failed after retries"}
-    log_trade_event(symbol, side_str, qty, None, err)
+    log_trade_event(option_symbol, side_str, order_qty, None, err)
     return err
-
-
-def place_gtt_stoploss(symbol: str, qty: int, trigger_price: float) -> dict:
-    # GTT orders are not supported for options.
-    # The stop-loss is handled internally by monitoring the underlying's LTP.
-    return {"s": "ok", "message": "GTT not applicable for options."}
-
-
-def cancel_gtt_order(gtt_id: str) -> dict:
-    # GTT orders are not used for options.
-    return {"s": "ok", "message": "GTT not applicable for options."}
-
-
-# ---------------------------- OPTIONS HELPERS ----------------------------
-_LOT_SIZES: Dict[str, int] = {}
-
-
-def get_lot_size(symbol: str) -> Optional[int]:
-    if FYERS is None:
-        return None
-    if symbol in _LOT_SIZES:
-        return _LOT_SIZES[symbol]
-    try:
-        resp = FYERS.get_symbol_details(symbol=symbol)
-        if isinstance(resp, dict) and resp.get("s") == "ok":
-            details = resp.get("d", {}).get(symbol, {})
-            lot_size = details.get("lot_size")
-            if lot_size and isinstance(lot_size, int) and lot_size > 0:
-                _LOT_SIZES[symbol] = lot_size
-                return lot_size
-    except Exception as e:
-        _real_print(f"[get_lot_size] Error: {e}")
-    return None
-
-
-def get_option_chain(underlying: str) -> Optional[dict]:
-    if FYERS is None:
-        _real_print("[option-chain] No Fyers client")
-        return None
-    try:
-        # Map the live feed symbol to the correct symbol for option chain requests
-        symbol_map = {
-            "NSE:NIFTY50-INDEX": "NSE:NIFTY",
-            "NSE:NIFTYBANK-INDEX": "NSE:BANKNIFTY",
-            "NSE:FINNIFTY-INDEX": "NSE:FINNIFTY",
-        }
-        symbol_for_chain = symbol_map.get(underlying, underlying.replace("-INDEX", ""))
-
-        data = {"symbol": symbol_for_chain, "strikecount": 12}
-        resp = FYERS.optionchain(data=data)
-        if isinstance(resp, dict) and resp.get("s") == "ok":
-            return resp.get("d")
-    except Exception as e:
-        _real_print(f"[option-chain] Error: {e}")
-    return None
-
-def get_order_details(order_id: str) -> Optional[dict]:
-    if FYERS is None: return None
-    try:
-        resp = FYERS.get_orders(data={"id": order_id})
-        if isinstance(resp, dict) and resp.get("s") == "ok":
-            orders = resp.get("d", {}).get("orders", [])
-            if orders:
-                return orders[0]
-    except Exception as e:
-        _real_print(f"[get_order_details] Error: {e}")
-    return None
-
-
-def select_itm_call_option(underlying: str, spot_price: float, distance: int = 1) -> Optional[dict]:
-    chain = get_option_chain(underlying)
-    if not chain:
-        return None
-
-    try:
-        options = chain.get("optionsChain", [])
-        if not options:
-            return None
-
-        # Find the earliest expiry date
-        expiries = sorted(list(set(opt.get("expiry") for opt in options if opt.get("expiry"))))
-        if not expiries:
-            return None
-        nearest_expiry = expiries[0]
-
-        call_options = [opt for opt in options if str(opt.get("option_type")) == "CE" and opt.get("expiry") == nearest_expiry]
-
-        # Find strikes below the spot price
-        itm_calls = sorted(
-            [opt for opt in call_options if float(opt.get("strike_price", 0)) < spot_price],
-            key=lambda x: float(x.get("strike_price", 0)),
-            reverse=True,
-        )
-
-        if not itm_calls or len(itm_calls) < distance:
-            return None
-
-        selected = itm_calls[distance - 1]
-        symbol = selected.get("symbol")
-
-        if not symbol:
-            return None
-
-        return {"symbol": symbol, "ltp": float(selected.get("ltp", 0.0))}
-
-    except Exception as e:
-        _real_print(f"[select_itm_call] Error: {e}")
-        return None
 
         # ---------------------------- TOKEN UTILITIES ----------------------------
 
@@ -909,6 +941,8 @@ def on_completed_candle(symbol: str, candle: dict):
 
 # ---------------------------- LTP / Tick handler ----------------------------
 def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
+    # This function only gets ticks for the underlying index.
+    # All trading decisions are made based on the underlying's price action.
     if ts is None:
         ts = dt.now(IST).replace(tzinfo=None)
     if isinstance(ts, str):
@@ -926,14 +960,6 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
         else:
             ts = IST.localize(ts).replace(tzinfo=None)
 
-    # If the tick is for an option, find the parent state and update its LTP
-    if symbol not in SYMBOL_STATES:
-        for st in SYMBOL_STATES.values():
-            if getattr(st, 'option_symbol', None) == symbol:
-                st.option_ltp = ltp
-                break
-        return  # Stop further processing for option ticks
-
     if CANDLE_MANAGER:
         try:
             CANDLE_MANAGER.process_tick(
@@ -948,7 +974,7 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
 
     skip_exit_checks = bool(state.just_entered)
 
-    # TARGET EXIT (based on underlying's price)
+    # TARGET EXIT (based on underlying price)
     if (
             state.status == "position"
             and state.target_price is not None
@@ -958,36 +984,21 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
         try:
             if ltp >= state.target_price:
                 _real_print(
-                    f"[{symbol}] TARGET EXIT (underlying) at LTP {ltp:.2f} (>= {state.target_price:.2f})"
+                    f"[{symbol}] TARGET EXIT at LTP {ltp:.2f} (>= {state.target_price:.2f})"
                 )
-                option_sym = state.option_symbol
-                lot_size = get_lot_size(option_sym)
-                qty_in_lots = state.qty
-                qty_in_units = qty_in_lots * lot_size
-
-                resp = place_market_order(option_sym, qty_in_units, side=-1)
-                log_trade_event(option_sym, "TARGET_SELL", qty_in_units, state.option_ltp, resp)
-
-                if isinstance(resp, dict) and resp.get("s") == "ok" and resp.get("id"):
-                    order_id = resp["id"]
-                    time.sleep(0.5) # Give time for order to fill
-                    order_details = get_order_details(order_id)
-                    exit_price = state.option_ltp # Fallback
-                    if order_details and order_details.get('status') == 2 and order_details.get('tradedPrice'):
-                        exit_price = float(order_details['tradedPrice'])
-
-                    if exit_price is not None and state.option_entry_price is not None:
-                        pnl = (exit_price - state.option_entry_price) * qty_in_units
-                        _real_print(f"[{option_sym}] TARGET EXIT OK. PnL={pnl:.2f}")
-                    else:
-                        _real_print(f"[{option_sym}] TARGET EXIT OK. PnL=N/A")
-
-                    if FYERS_SOCKET:
-                        FYERS_SOCKET.unsubscribe(symbols=[option_sym])
+                resp = place_market_order(symbol, state.qty, side=-1, ltp=ltp)
+                log_trade_event(state.option_symbol, "TARGET_SELL", state.qty, ltp, resp)
+                if isinstance(resp, dict) and resp.get("s") == "ok":
+                    # PnL can be calculated more accurately after fetching exit fill price
+                    _real_print(f"[{symbol}] TARGET EXIT OK for option {state.option_symbol}.")
                     state.status = "cooldown"
+                    state.exit_pending = False
+                    state.exit_signal_candle = None
+                    state.target_price = None
                     state.option_symbol = None
+                    state.option_entry_price = 0.0
                 else:
-                    _real_print(f"[{option_sym}] TARGET EXIT ORDER FAILED: {resp}")
+                    _real_print(f"[{symbol}] TARGET EXIT ORDER FAILED: {resp}")
         except Exception as e:
             _real_print(f"[on_tick:target_exit] error: {e}")
 
@@ -1004,95 +1015,163 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
             if sig_start is None:
                 state.status = "watch"
                 state.signal_candle = None
+                state.signal_close_ts = None
             else:
-                sig_floor = pd.to_datetime(sig_start).to_pydatetime().replace(tzinfo=None)
-                next_allowed_bucket = sig_floor + timedelta(minutes=TIMEFRAME_MIN)
-                current_bucket = CANDLE_MANAGER._floor_ts(tick_ts)
+                try:
+                    sig_floor = pd.to_datetime(sig_start)
+                    if sig_floor.tzinfo is not None:
+                        sig_floor = sig_floor.tz_convert(TIMEZONE).tz_localize(None)
+                    next_allowed_bucket = (
+                            sig_floor.to_pydatetime().replace(tzinfo=None)
+                            + timedelta(minutes=TIMEFRAME_MIN)
+                    )
+                except Exception:
+                    if isinstance(sig_start, dt):
+                        next_allowed_bucket = (
+                                sig_start + timedelta(minutes=TIMEFRAME_MIN)
+                        ).replace(tzinfo=None)
+                    else:
+                        next_allowed_bucket = None
 
-                if current_bucket < next_allowed_bucket:
-                    pass  # Not yet the next candle
-                elif current_bucket == next_allowed_bucket:
-                    trigger = float(state.signal_candle["high"])
-                    if ltp > trigger:
-                        # Time-based entry cutoff
-                        if tick_ts.hour >= 15:
-                            state.status = "watch"
-                            return
+                try:
+                    if CANDLE_MANAGER is not None:
+                        current_bucket = CANDLE_MANAGER._floor_ts(tick_ts)
+                    else:
+                        minute = (tick_ts.minute // TIMEFRAME_MIN) * TIMEFRAME_MIN
+                        current_bucket = tick_ts.replace(
+                            second=0, microsecond=0, minute=minute
+                        )
+                except Exception:
+                    minute = (tick_ts.minute // TIMEFRAME_MIN) * TIMEFRAME_MIN
+                    current_bucket = tick_ts.replace(
+                        second=0, microsecond=0, minute=minute
+                    )
 
-                        _real_print(f"[{symbol}] Underlying trigger hit {ltp} > {trigger}. Selecting option...")
-                        option = select_itm_call_option(symbol, ltp, STRIKE_DISTANCE)
+                if next_allowed_bucket is None:
+                    _real_print(
+                        f"[blocked-entry] {symbol} unable to compute next_allowed_bucket; cancelling signal."
+                    )
+                    state.status = "watch"
+                    state.signal_candle = None
+                    state.signal_close_ts = None
+                else:
+                    if isinstance(current_bucket, pd.Timestamp):
+                        current_bucket = current_bucket.to_pydatetime().replace(
+                            tzinfo=None
+                        )
 
-                        if option and option.get("symbol") and option.get("ltp", 0) > 0:
-                            option_sym = option["symbol"]
-                            option_ltp = option["ltp"]
-                            lot_size = get_lot_size(option_sym)
-                            if lot_size is None:
-                                _real_print(f"[{symbol}] Could not determine lot size for {option_sym}. Aborting trade.")
+                    if current_bucket < next_allowed_bucket:
+                        pass
+                    elif current_bucket == next_allowed_bucket:
+                        trigger = float(state.signal_candle["high"])
+                        if ltp > trigger:
+                            # Time-based entry cutoff
+                            now_ist = tick_ts
+                            is_mcx = symbol.startswith("MCX:") # Should always be false for indices
+
+                            if is_mcx and now_ist.hour >= 22:
+                                _real_print(
+                                    f"[blocked-entry] {symbol} MCX entry blocked after 10 PM IST. Cancelling signal.")
                                 state.status = "watch"
                                 state.signal_candle = None
+                                state.signal_close_ts = None
                                 return
 
-                            qty_in_lots = decide_qty(option_sym, option_ltp, is_option=True)
-
-                            if qty_in_lots <= 0:
+                            if not is_mcx and now_ist.hour >= 15:
+                                _real_print(
+                                    f"[blocked-entry] {symbol} NSE entry blocked after 3 PM IST. Cancelling signal.")
                                 state.status = "watch"
+                                state.signal_candle = None
+                                state.signal_close_ts = None
                                 return
 
-                            qty_in_units = qty_in_lots * lot_size
-                            resp = place_market_order(option_sym, qty_in_units, side=1)
+                            qty_lots = decide_qty(symbol, ltp)
+                            if qty_lots <= 0:
+                                state.status = "watch"
+                                state.signal_candle = None
+                                state.signal_close_ts = None
+                                return
 
-                            if isinstance(resp, dict) and resp.get("s") == "ok" and resp.get("id"):
-                                order_id = resp["id"]
-                                time.sleep(0.5) # Give time for order to fill
-                                order_details = get_order_details(order_id)
-                                filled_price = option_ltp # Fallback
-                                if order_details and order_details.get('status') == 2 and order_details.get('tradedPrice'):
-                                    filled_price = float(order_details['tradedPrice'])
+                            _real_print(
+                                f"[entry-debug] {symbol} next-candle bucket {current_bucket} "
+                                f"LTP {ltp} > signal_high {trigger} -> ENTRY"
+                            )
 
-                                state.entry_price = ltp  # Underlying's price at entry
-                                state.qty = qty_in_lots
-                                state.option_symbol = option_sym
-                                state.option_entry_price = filled_price
+                            # This function now handles option selection and placing the order
+                            resp = place_market_order(symbol, qty_lots, side=1, ltp=ltp)
+
+                            if isinstance(resp, dict) and resp.get("s") == "ok":
+                                # The underlying price when the trade was initiated
+                                state.entry_price = ltp
+                                # The number of lots
+                                state.qty = qty_lots
                                 state.just_entered = True
+                                state.exit_pending = False
+                                state.exit_signal_candle = None
+                                state.exit_signal_expiry = None
+                                state.exit_try_count = 0
+                                state.last_failed_exit_ts = None
 
-                                if state.gtt_order_id: # Cancel any old GTT from previous non-option trades
-                                    cancel_gtt_order(state.gtt_order_id)
-                                    state.gtt_order_id = None
-
+                                # Set stop-loss price on the UNDERLYING index
                                 if SL_MODE == "signal_low":
-                                    state.underlying_stop_price = float(state.signal_candle["low"])
+                                    state.stop_price = float(state.signal_candle["low"])
                                 else:
-                                    swing = compute_swing_low_for_signal(state, SWING_LOOKBACK)
-                                    state.underlying_stop_price = float(swing) if not math.isnan(swing) else float(state.signal_candle["low"])
+                                    swing = compute_swing_low_for_signal(
+                                        state, SWING_LOOKBACK
+                                    )
+                                    state.stop_price = (
+                                        float(state.signal_candle["low"])
+                                        if math.isnan(swing) or swing <= 0
+                                        else float(swing)
+                                    )
 
-                                if state.potential_target_price and state.potential_target_price > state.entry_price:
+                                # Validate potential target against actual entry price (of underlying)
+                                if (
+                                        state.potential_target_price is not None
+                                        and state.potential_target_price > state.entry_price
+                                ):
                                     state.target_price = state.potential_target_price
                                 else:
                                     state.target_price = None
 
-                                _real_print(f"[ENTRY CONFIRMED] {option_sym} @ ~{option_ltp:.2f} | Underlying SL: {state.underlying_stop_price:.2f}")
+                                # Enhanced logging for target
+                                if state.target_price is not None:
+                                    target_str = f"{state.target_price:.2f}"
+                                elif state.potential_target_price is not None:
+                                    target_str = f"N/A (target {state.potential_target_price:.2f} <= entry {state.entry_price:.2f})"
+                                else:
+                                    target_str = "N/A"
+                                state.potential_target_price = None
 
-                                # Subscribe to the option's ticks
-                                if FYERS_SOCKET:
-                                    FYERS_SOCKET.subscribe(symbols=[option_sym])
+                                _real_print(
+                                    f"[ENTRY CONFIRMED] {state.symbol} -> {state.option_symbol}: \n"
+                                    f"    Underlying Price: {state.entry_price:.2f}\n"
+                                    f"    Option Entry: ~{state.option_entry_price:.2f}\n"
+                                    f"    Target (underlying): {target_str}\n"
+                                    f"    Stoploss (underlying): {state.stop_price:.2f}"
+                                )
 
+                                # NO GTT order for options
                                 state.status = "position"
+                                state.signal_candle = None
+                                state.signal_close_ts = None
                             else:
-                                _real_print(f"[order] OPTION BUY FAILED for {option_sym}: {resp}")
+                                _real_print(
+                                    f"[order] BUY ORDER FAILED for {symbol}: {resp}"
+                                )
                                 state.status = "cooldown"
-                        else:
-                            _real_print(f"[{symbol}] Could not find suitable ITM call option.")
-                            state.status = "watch"
-
-                        state.signal_candle = None  # Consume signal
-                else: # current_bucket > next_allowed_bucket
-                    state.status = "watch"
-                    state.signal_candle = None
-
+                                state.signal_candle = None
+                                state.signal_close_ts = None
+                    else:
+                        _real_print(
+                            f"[entry-debug] {symbol} next candle {next_allowed_bucket} "
+                            f"closed without breaking signal_high; cancelling signal."
+                        )
+                        state.status = "watch"
+                        state.signal_candle = None
+                        state.signal_close_ts = None
         except Exception as e:
             _real_print(f"[on_tick:entry] error: {e}")
-            state.status = "watch"
-            state.signal_candle = None
 
             # EXIT via EXIT EMA (next-candle gating)
     if (
@@ -1102,85 +1181,138 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
             and not skip_exit_checks
     ):
         try:
-            tick_ts = ts if isinstance(ts, dt) else pd.to_datetime(ts).to_pydatetime().replace(tzinfo=None)
+            tick_ts = (
+                ts
+                if isinstance(ts, dt)
+                else pd.to_datetime(ts).to_pydatetime().replace(tzinfo=None)
+            )
+
             exit_low = float(state.exit_signal_candle["low"])
 
-            exit_sig_start = state.exit_signal_candle.get("ts")
-            exit_next_bucket = (pd.to_datetime(exit_sig_start) + pd.Timedelta(minutes=TIMEFRAME_MIN)).to_pydatetime().replace(tzinfo=None)
-            current_bucket = CANDLE_MANAGER._floor_ts(tick_ts)
-
-            if current_bucket > exit_next_bucket:
-                state.exit_pending = False # Cancel signal
-
-            elif current_bucket == exit_next_bucket and ltp < exit_low:
-                _real_print(f"[{symbol}] EXIT TRIGGERED (underlying) at LTP {ltp:.2f} (< {exit_low:.2f})")
-                option_sym = state.option_symbol
-                lot_size = get_lot_size(option_sym)
-                qty_in_units = state.qty * lot_size
-
-                resp = place_market_order(option_sym, qty_in_units, side=-1)
-
-                if isinstance(resp, dict) and resp.get("s") == "ok" and resp.get("id"):
-                    order_id = resp["id"]
-                    time.sleep(0.5) # Give time for order to fill
-                    order_details = get_order_details(order_id)
-                    exit_price = state.option_ltp # Fallback
-                    if order_details and order_details.get('status') == 2 and order_details.get('tradedPrice'):
-                        exit_price = float(order_details['tradedPrice'])
-
-                    if exit_price is not None and state.option_entry_price is not None:
-                        pnl = (exit_price - state.option_entry_price) * qty_in_units
-                        _real_print(f"[{option_sym}] EMA EXIT OK. PnL={pnl:.2f}")
-                    else:
-                        _real_print(f"[{option_sym}] EMA EXIT OK. PnL=N/A")
-
-                    if FYERS_SOCKET:
-                        FYERS_SOCKET.unsubscribe(symbols=[option_sym])
-                    state.status = "cooldown"
-                    state.option_symbol = None
+            try:
+                if CANDLE_MANAGER is not None:
+                    current_bucket = CANDLE_MANAGER._floor_ts(tick_ts)
                 else:
-                    _real_print(f"[{option_sym}] EMA EXIT ORDER FAILED: {resp}")
+                    minute = (tick_ts.minute // TIMEFRAME_MIN) * TIMEFRAME_MIN
+                    current_bucket = tick_ts.replace(
+                        second=0, microsecond=0, minute=minute
+                    )
+            except Exception:
+                minute = (tick_ts.minute // TIMEFRAME_MIN) * TIMEFRAME_MIN
+                current_bucket = tick_ts.replace(
+                    second=0, microsecond=0, minute=minute
+                )
 
+            if isinstance(current_bucket, pd.Timestamp):
+                current_bucket = current_bucket.to_pydatetime().replace(tzinfo=None)
+
+            exit_sig_start = state.exit_signal_candle.get("ts")
+            exit_next_bucket = None
+            try:
+                exit_floor = pd.to_datetime(exit_sig_start)
+                if exit_floor.tzinfo is not None:
+                    exit_floor = exit_floor.tz_convert(TIMEZONE).tz_localize(None)
+                exit_next_bucket = (
+                        exit_floor.to_pydatetime().replace(tzinfo=None)
+                        + timedelta(minutes=TIMEFRAME_MIN)
+                )
+            except Exception:
+                if isinstance(exit_sig_start, dt):
+                    exit_next_bucket = (
+                            exit_sig_start + timedelta(minutes=TIMEFRAME_MIN)
+                    ).replace(tzinfo=None)
+                else:
+                    exit_next_bucket = None
+
+            if exit_next_bucket is not None and current_bucket > exit_next_bucket:
+                _real_print(
+                    f"[exit-debug] {symbol} next candle {exit_next_bucket} "
+                    f"closed without breaking exit_low; cancelling exit_pending."
+                )
+                state.exit_pending = False
+                state.exit_signal_candle = None
+                state.exit_signal_expiry = None
+                state.exit_try_count = 0
+            elif exit_next_bucket is not None and current_bucket == exit_next_bucket:
+                if ltp < exit_low:
+                    _real_print(
+                        f"[{symbol}] EXIT TRIGGERED at LTP {ltp:.2f} (< {exit_low:.2f})"
+                    )
+                    resp = place_market_order(symbol, state.qty, side=-1, ltp=ltp)
+                    state.exit_try_count += 1
+                    if isinstance(resp, dict) and resp.get("s") == "ok":
+                        _real_print(f"[{symbol}] EXIT OK for option {state.option_symbol}.")
+                        state.status = "cooldown"
+                        state.exit_pending = False
+                        state.exit_signal_candle = None
+                        state.target_price = None
+                        state.option_symbol = None
+                        state.option_entry_price = 0.0
+                    else:
+                        _real_print(f"[{symbol}] EXIT ORDER FAILED: {resp}")
+                        state.last_failed_exit_ts = dt.now(IST).replace(tzinfo=None)
+                        if state.exit_try_count >= MAX_EXIT_RETRIES:
+                            _real_print(f"[{symbol}] EXIT failed {state.exit_try_count} times. Moving to cooldown.")
+                            state.status = "cooldown"
+                            state.exit_pending = False
+                            state.exit_signal_candle = None
+                            state.target_price = None
+                            state.option_symbol = None
+                            state.option_entry_price = 0.0
+            else: # Should not happen if logic is correct, but as a fallback
+                if ltp < exit_low:
+                    _real_print(
+                        f"[{symbol}] EXIT TRIGGERED at LTP {ltp:.2f} (< {exit_low:.2f})"
+                    )
+                    resp = place_market_order(symbol, state.qty, side=-1, ltp=ltp)
+                    state.exit_try_count += 1
+                    if isinstance(resp, dict) and resp.get("s") == "ok":
+                        _real_print(f"[{symbol}] EXIT OK for option {state.option_symbol}.")
+                        state.status = "cooldown"
+                        state.exit_pending = False
+                        state.exit_signal_candle = None
+                        state.target_price = None
+                        state.option_symbol = None
+                        state.option_entry_price = 0.0
+                    else:
+                        _real_print(f"[{symbol}] EXIT ORDER FAILED: {resp}")
+                        state.last_failed_exit_ts = dt.now(IST).replace(tzinfo=None)
+                        if state.exit_try_count >= MAX_EXIT_RETRIES:
+                            _real_print(f"[{symbol}] EXIT failed {state.exit_try_count} times. Moving to cooldown.")
+                            state.status = "cooldown"
+                            state.exit_pending = False
+                            state.exit_signal_candle = None
+                            state.target_price = None
+                            state.option_symbol = None
+                            state.option_entry_price = 0.0
         except Exception as e:
             _real_print(f"[on_tick:ema_exit] error: {e}")
 
-            # STOP LOSS (based on underlying's price)
+    # STOP LOSS (based on underlying price, NO GTT for options)
     if (
             state.status == "position"
-            and state.underlying_stop_price
-            and state.underlying_stop_price > 0
+            and state.stop_price
+            and state.stop_price > 0
             and not skip_exit_checks
     ):
         try:
-            if ltp <= state.underlying_stop_price:
-                _real_print(f"[{symbol}] STOP-LOSS HIT (underlying) at LTP {ltp:.2f} (<= {state.underlying_stop_price:.2f})")
-                option_sym = state.option_symbol
-                lot_size = get_lot_size(option_sym)
-                qty_in_units = state.qty * lot_size
-
-                sell_resp = place_market_order(option_sym, qty_in_units, side=-1)
-                log_trade_event(option_sym, "STOP_SELL", qty_in_units, state.option_ltp, sell_resp)
-
-                if isinstance(sell_resp, dict) and sell_resp.get("s") == "ok" and sell_resp.get("id"):
-                    order_id = sell_resp["id"]
-                    time.sleep(0.5) # Give time for order to fill
-                    order_details = get_order_details(order_id)
-                    exit_price = state.option_ltp # Fallback
-                    if order_details and order_details.get('status') == 2 and order_details.get('tradedPrice'):
-                        exit_price = float(order_details['tradedPrice'])
-
-                    if exit_price is not None and state.option_entry_price is not None:
-                        pnl = (exit_price - state.option_entry_price) * qty_in_units
-                        _real_print(f"[{option_sym}] STOP-LOSS SELL OK. PnL={pnl:.2f}")
-                    else:
-                        _real_print(f"[{option_sym}] STOP-LOSS SELL OK. PnL=N/A")
-
-                    if FYERS_SOCKET:
-                        FYERS_SOCKET.unsubscribe(symbols=[option_sym])
+            if ltp <= state.stop_price:
+                _real_print(
+                    f"[{symbol}] STOP-LOSS HIT at LTP {ltp:.2f} (<= {state.stop_price:.2f})"
+                )
+                sell_resp = place_market_order(symbol, state.qty, side=-1, ltp=ltp)
+                log_trade_event(
+                    state.option_symbol, "STOP_SELL", state.qty, ltp, sell_resp
+                )
+                if isinstance(sell_resp, dict) and sell_resp.get("s") == "ok":
+                    _real_print(f"[{symbol}] STOP-LOSS SELL OK for option {state.option_symbol}.")
                     state.status = "cooldown"
+                    state.gtt_order_id = None
+                    state.target_price = None
                     state.option_symbol = None
+                    state.option_entry_price = 0.0
                 else:
-                    _real_print(f"[{option_sym}] STOP-LOSS SELL FAILED: {sell_resp}")
+                    _real_print(f"[{symbol}] STOP-LOSS SELL FAILED: {sell_resp}")
         except Exception as e:
             _real_print(f"[on_tick:stop_loss] error: {e}")
 
@@ -1263,10 +1395,9 @@ def evaluate_on_new_candle(st: SymbolState):
             st.signal_expiry = curr.name + pd.Timedelta(minutes=TIMEFRAME_MIN)
             st.status = "entry_pending"
             st.signal_notified = False
-            # For options, qty is decided at entry time based on lots
-            st.qty = decide_qty(st.symbol, curr_high, is_option=True)
+            st.qty = decide_qty(st.symbol, curr_high)
             _real_print(
-                f"****** [{st.symbol}] ENTRY SIGNAL (underlying) ******")
+                f"****** [{st.symbol}] ENTRY SIGNAL (BODY crossed from below both EMAs to above both EMAs, EMA_fast>EMA_slow) ******")
 
             target_info = (
                 f"potential_target={st.potential_target_price:.2f}"
@@ -1365,24 +1496,34 @@ def detect_and_print_signals_on_open():
 
 
 def on_ws_open():
-    # Subscribe to underlying symbols initially
-    _real_print(f"[ws:open] subscribing to {len(SYMBOLS)} underlying symbols...")
+    _real_print(f"[ws:open] subscribing to {len(SYMBOLS)} symbols...")
     try:
         FYERS_SOCKET.subscribe(symbols=SYMBOLS, data_type="SymbolUpdate")
     except Exception as e:
         _real_print("[ws:open] subscribe failed:", e)
 
-    # Subscribe to any active option symbols from the previous session
-    active_options = []
-    for st in SYMBOL_STATES.values():
-        if st.status == "position" and st.option_symbol:
-            active_options.append(st.option_symbol)
-    if active_options:
-        _real_print(f"[ws:open] re-subscribing to {len(active_options)} active option symbols...")
-        try:
-            FYERS_SOCKET.subscribe(symbols=active_options, data_type="SymbolUpdate")
-        except Exception as e:
-            _real_print("[ws:open] option re-subscribe failed:", e)
+    try:
+        for sym, st in SYMBOL_STATES.items():
+            try:
+                if st is None:
+                    continue
+                if getattr(st, "status", None) == "entry_pending" and st.signal_candle:
+                    sc = st.signal_candle
+                    _real_print(
+                        f"****** [{sym}] ENTRY SIGNAL (BODY crossed from below both EMAs to above both EMAs, EMA_fast>EMA_slow) ******")
+                    _real_print(
+                        f"[signal:{sym}] signal_high={float(sc.get('high')):.2f} signal_low={float(sc.get('low')):.2f} | waiting for NEXT CANDLE to attempt breakout entry")
+                if getattr(st, "status", None) == "position" and getattr(st, "exit_pending",
+                                                                         False) and st.exit_signal_candle:
+                    ec = st.exit_signal_candle
+                    _real_print(f"****** [{sym}] EXIT SIGNAL (RED candle crossed & closed below EXIT EMA) ******")
+                    _real_print(
+                        f"[exit:{sym}] exit_low={float(ec.get('low')):.2f} exit_high={float(ec.get('high')):.2f} | waiting for NEXT CANDLE to attempt exit on break below exit_low")
+            except Exception:
+                continue
+    except Exception:
+        pass
+        # NO detect_and_print_signals_on_open() call here
 
 
 def _clear_config_access_token():
@@ -1559,13 +1700,18 @@ def _serialize_state():
     out = {}
     for sym, st in SYMBOL_STATES.items():
         out[sym] = {
-            "status": st.status,
-            "qty": st.qty,
-            "entry_price": st.entry_price,
-            "target_price": st.target_price,
-            "option_symbol": st.option_symbol,
-            "option_entry_price": st.option_entry_price,
-            "underlying_stop_price": st.underlying_stop_price,
+            "status": getattr(st, "status", None),
+            "qty": getattr(st, "qty", 0),
+            "entry_price": getattr(st, "entry_price", None),
+            "stop_price": getattr(st, "stop_price", None),
+            "gtt_order_id": getattr(st, "gtt_order_id", None),
+            "last_candle_ts": (
+                getattr(st, "last_candle_ts", None).isoformat()
+                if getattr(st, "last_candle_ts", None) is not None
+                else None
+            ),
+            "signal_notified": getattr(st, "signal_notified", False),
+            "target_price": getattr(st, "target_price", None),
         }
     return out
 
@@ -1585,15 +1731,16 @@ def load_state_from_disk():
         with open(STATE_DUMP, "r") as f:
             raw = json.load(f)
         for sym, info in raw.items():
-            if sym in SYMBOL_STATES:
-                st = SYMBOL_STATES[sym]
-                st.status = info.get("status", "watch")
-                st.qty = info.get("qty", 0)
-                st.entry_price = info.get("entry_price")
-                st.target_price = info.get("target_price")
-                st.option_symbol = info.get("option_symbol")
-                st.option_entry_price = info.get("option_entry_price")
-                st.underlying_stop_price = info.get("underlying_stop_price")
+            if sym not in SYMBOL_STATES:
+                SYMBOL_STATES[sym] = SymbolState(sym)
+            st = SYMBOL_STATES[sym]
+            st.status = info.get("status", st.status)
+            st.qty = info.get("qty", st.qty)
+            st.entry_price = info.get("entry_price", st.entry_price)
+            st.stop_price = info.get("stop_price", st.stop_price)
+            st.gtt_order_id = info.get("gtt_order_id", st.gtt_order_id)
+            st.signal_notified = info.get("signal_notified", False)
+            st.target_price = info.get("target_price", None)
     except Exception as e:
         _real_print("[state] Failed to load state:", e)
 
@@ -1623,8 +1770,6 @@ def parse_args():
     p.add_argument("--product-type", type=str, default=PRODUCT_TYPE, help="Order product type: 'CNC' or 'Intraday'.")
     p.add_argument("--sl-mode", type=str, default=SL_MODE, help="Stop-loss mode: 'signal_low' or 'swing_low'.")
     p.add_argument("--qty-map-file", type=str, default="", help="Optional file path to JSON with per-symbol qty map.")
-    p.add_argument("--strike-distance", type=int, default=STRIKE_DISTANCE, help="How many strikes ITM to select (1=nearest)")
-
     p.set_defaults(require_green=True)
     return p.parse_args()
 
@@ -1692,7 +1837,7 @@ def main():
         except Exception:
             _real_print("[warn] Failed to parse --qty-map JSON; ignoring.")
 
-    ALLOWED_PRODUCT = {"CNC", "INTRADAY"}
+    ALLOWED_PRODUCT = {"CNC", "Intraday"}
     ALLOWED_SL = {"signal_low", "swing_low"}
     ALLOWED_POS = {"alloc", "qty"}
 
