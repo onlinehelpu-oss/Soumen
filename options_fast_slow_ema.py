@@ -120,7 +120,7 @@ SETTINGS_FILE = "settings.json"
 
 # Position sizing mode globals
 POSITION_MODE = "qty"  # "alloc" or "qty"
-FIXED_QTY = 2  # default 1 share when using qty mode
+FIXED_QTY = 1  # default 1 share when using qty mode
 QTY_MAP: Dict[str, int] = {}
 
 # Re-auth guard to avoid infinite recursion
