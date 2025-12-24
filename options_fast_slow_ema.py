@@ -411,7 +411,7 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, underlying: str, ltp: fl
         return None
 
     try:
-        payload = {"symbol": underlying, "strikecount": 12}
+        payload = {"symbol": underlying, "strikecount": 20} # Increased strike count
         resp = fyers.optionchain(data=payload)
         if not resp or resp.get("s") != "ok":
             _real_print(f"[debug-options] Failed option chain response: {resp}")
@@ -460,36 +460,45 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, underlying: str, ltp: fl
 
     _real_print(f"[debug-options] Searching for CE candidates with prefix '{date_prefix}' and strike {target_strike}")
 
-    # Match symbol format like: 'NSE:BANKNIFTY2470349000CE'
-    # The date prefix matches the start, and the option type CE is at the end.
-    candidates = [
+    # Filter all available Call options for the nearest expiry
+    all_ce_for_expiry = [
         row for row in chain
-        if row.get("option_type") == "CE"
-        and row.get("strike_price") == target_strike
-        and row.get("symbol", "").startswith(f"NSE:{date_prefix}")
+        if row.get("option_type") == "CE" and row.get("symbol", "").startswith(f"NSE:{date_prefix}")
     ]
 
-    if not candidates:
-        _real_print(f"[debug-options] No exact strike match found. Looking for closest available ITM strike.")
-        # Fallback: find closest ITM strike if exact match fails
-        all_ce_for_expiry = [
-            row for row in chain
-            if row.get("option_type") == "CE" and row.get("symbol", "").startswith(f"NSE:{date_prefix}")
-        ]
-        itm_candidates = [
-            opt for opt in all_ce_for_expiry if opt.get("strike_price", 0) <= target_strike
-        ]
-        if not itm_candidates:
-            _real_print(f"[debug-options] No ITM CE options found for expiry {nearest_expiry_str}.")
-            return None
+    if not all_ce_for_expiry:
+        _real_print(f"[debug-options] No Call options found at all for expiry prefix {date_prefix}.")
+        return None
 
+    # Try to find an exact match for the target ITM strike
+    candidates = [
+        row for row in all_ce_for_expiry
+        if row.get("strike_price") == target_strike
+    ]
+
+    if candidates:
+        _real_print(f"[debug-options] Found exact strike match: {candidates[0].get('symbol')}")
+        return candidates[0].get("symbol")
+
+    # If no exact match, find the closest available ITM strike
+    _real_print(f"[debug-options] No exact strike match found. Looking for closest available ITM strike.")
+    itm_candidates = [
+        opt for opt in all_ce_for_expiry if opt.get("strike_price", 0) <= target_strike
+    ]
+
+    if itm_candidates:
         closest = min(itm_candidates, key=lambda x: abs(x["strike_price"] - target_strike))
         _real_print(f"[debug-options] Fallback closest ITM strike found: {closest.get('symbol')}")
         return closest.get("symbol")
 
+    # If NO ITM strikes are available, fall back to the closest available strike (ATM or OTM)
+    _real_print(f"[debug-options] No ITM CE options found for expiry {nearest_expiry_str}.")
+    available_strikes = sorted([opt.get("strike_price") for opt in all_ce_for_expiry if opt.get("strike_price")])
+    _real_print(f"[debug-options] Available CE strikes for this expiry: {available_strikes}")
 
-    _real_print(f"[debug-options] Found exact strike match: {candidates[0].get('symbol')}")
-    return candidates[0].get("symbol")
+    closest = min(all_ce_for_expiry, key=lambda x: abs(x["strike_price"] - target_strike))
+    _real_print(f"[debug-options] CRITICAL FALLBACK: No ITM strikes available. Selecting closest available strike (ATM/OTM): {closest.get('symbol')}")
+    return closest.get("symbol")
 
 
 # ---------------------------- INDICATORS ----------------------------
