@@ -649,9 +649,9 @@ def cancel_gtt_order(gtt_id: str) -> dict:
 _LOT_SIZES: Dict[str, int] = {}
 
 
-def get_lot_size(symbol: str) -> int:
+def get_lot_size(symbol: str) -> Optional[int]:
     if FYERS is None:
-        return 1
+        return None
     if symbol in _LOT_SIZES:
         return _LOT_SIZES[symbol]
     try:
@@ -662,9 +662,9 @@ def get_lot_size(symbol: str) -> int:
             if lot_size and isinstance(lot_size, int) and lot_size > 0:
                 _LOT_SIZES[symbol] = lot_size
                 return lot_size
-    except Exception:
-        pass
-    return 1
+    except Exception as e:
+        _real_print(f"[get_lot_size] Error: {e}")
+    return None
 
 
 def get_option_chain(underlying: str) -> Optional[dict]:
@@ -703,7 +703,13 @@ def select_itm_call_option(underlying: str, spot_price: float, distance: int = 1
         if not options:
             return None
 
-        call_options = [opt for opt in options if str(opt.get("option_type")) == "CE"]
+        # Find the earliest expiry date
+        expiries = sorted(list(set(opt.get("expiry_date") for opt in options if opt.get("expiry_date"))))
+        if not expiries:
+            return None
+        nearest_expiry = expiries[0]
+
+        call_options = [opt for opt in options if str(opt.get("option_type")) == "CE" and opt.get("expiry_date") == nearest_expiry]
 
         # Find strikes below the spot price
         itm_calls = sorted(
@@ -717,6 +723,7 @@ def select_itm_call_option(underlying: str, spot_price: float, distance: int = 1
 
         selected = itm_calls[distance - 1]
         symbol = selected.get("symbol")
+
         if not symbol:
             return None
 
@@ -954,12 +961,20 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                 resp = place_market_order(option_sym, qty_in_units, side=-1)
                 log_trade_event(option_sym, "TARGET_SELL", qty_in_units, state.option_ltp, resp)
 
-                if isinstance(resp, dict) and resp.get("s") == "ok":
-                    if state.option_ltp is not None and state.option_entry_price is not None:
-                        pnl = (state.option_ltp - state.option_entry_price) * qty_in_units
+                if isinstance(resp, dict) and resp.get("s") == "ok" and resp.get("id"):
+                    order_id = resp["id"]
+                    time.sleep(0.5) # Give time for order to fill
+                    order_details = get_order_details(order_id)
+                    exit_price = state.option_ltp # Fallback
+                    if order_details and order_details.get('status') == 2 and order_details.get('tradedPrice'):
+                        exit_price = float(order_details['tradedPrice'])
+
+                    if exit_price is not None and state.option_entry_price is not None:
+                        pnl = (exit_price - state.option_entry_price) * qty_in_units
                         _real_print(f"[{option_sym}] TARGET EXIT OK. PnL={pnl:.2f}")
                     else:
-                        _real_print(f"[{option_sym}] TARGET EXIT OK. PnL=N/A (no option LTP)")
+                        _real_print(f"[{option_sym}] TARGET EXIT OK. PnL=N/A")
+
                     if FYERS_SOCKET:
                         FYERS_SOCKET.unsubscribe(symbols=[option_sym])
                     state.status = "cooldown"
@@ -1004,6 +1019,12 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                             option_sym = option["symbol"]
                             option_ltp = option["ltp"]
                             lot_size = get_lot_size(option_sym)
+                            if lot_size is None:
+                                _real_print(f"[{symbol}] Could not determine lot size for {option_sym}. Aborting trade.")
+                                state.status = "watch"
+                                state.signal_candle = None
+                                return
+
                             qty_in_lots = decide_qty(option_sym, option_ltp, is_option=True)
 
                             if qty_in_lots <= 0:
@@ -1092,12 +1113,20 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
 
                 resp = place_market_order(option_sym, qty_in_units, side=-1)
 
-                if isinstance(resp, dict) and resp.get("s") == "ok":
-                    if state.option_ltp is not None and state.option_entry_price is not None:
-                        pnl = (state.option_ltp - state.option_entry_price) * qty_in_units
+                if isinstance(resp, dict) and resp.get("s") == "ok" and resp.get("id"):
+                    order_id = resp["id"]
+                    time.sleep(0.5) # Give time for order to fill
+                    order_details = get_order_details(order_id)
+                    exit_price = state.option_ltp # Fallback
+                    if order_details and order_details.get('status') == 2 and order_details.get('tradedPrice'):
+                        exit_price = float(order_details['tradedPrice'])
+
+                    if exit_price is not None and state.option_entry_price is not None:
+                        pnl = (exit_price - state.option_entry_price) * qty_in_units
                         _real_print(f"[{option_sym}] EMA EXIT OK. PnL={pnl:.2f}")
                     else:
-                        _real_print(f"[{option_sym}] EMA EXIT OK. PnL=N/A (no option LTP)")
+                        _real_print(f"[{option_sym}] EMA EXIT OK. PnL=N/A")
+
                     if FYERS_SOCKET:
                         FYERS_SOCKET.unsubscribe(symbols=[option_sym])
                     state.status = "cooldown"
@@ -1125,12 +1154,20 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                 sell_resp = place_market_order(option_sym, qty_in_units, side=-1)
                 log_trade_event(option_sym, "STOP_SELL", qty_in_units, state.option_ltp, sell_resp)
 
-                if isinstance(sell_resp, dict) and sell_resp.get("s") == "ok":
-                    if state.option_ltp is not None and state.option_entry_price is not None:
-                        pnl = (state.option_ltp - state.option_entry_price) * qty_in_units
+                if isinstance(sell_resp, dict) and sell_resp.get("s") == "ok" and sell_resp.get("id"):
+                    order_id = sell_resp["id"]
+                    time.sleep(0.5) # Give time for order to fill
+                    order_details = get_order_details(order_id)
+                    exit_price = state.option_ltp # Fallback
+                    if order_details and order_details.get('status') == 2 and order_details.get('tradedPrice'):
+                        exit_price = float(order_details['tradedPrice'])
+
+                    if exit_price is not None and state.option_entry_price is not None:
+                        pnl = (exit_price - state.option_entry_price) * qty_in_units
                         _real_print(f"[{option_sym}] STOP-LOSS SELL OK. PnL={pnl:.2f}")
                     else:
-                        _real_print(f"[{option_sym}] STOP-LOSS SELL OK. PnL=N/A (no option LTP)")
+                        _real_print(f"[{option_sym}] STOP-LOSS SELL OK. PnL=N/A")
+
                     if FYERS_SOCKET:
                         FYERS_SOCKET.unsubscribe(symbols=[option_sym])
                     state.status = "cooldown"
