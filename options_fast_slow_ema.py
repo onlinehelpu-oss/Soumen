@@ -98,6 +98,8 @@ SL_MODE = "signal_low"  # "signal_low" or "swing_low"
 SWING_LOOKBACK = 5  # used for swing-low
 SWING_HIGH_LOOKBACK = 150  # used for target swing-high
 
+STRIKE_DISTANCE = 0  # 0=ATM, -1=1st ITM, 1=1st OTM, etc.
+
 MAX_CONCURRENT_POS = 3
 DAILY_MAX_LOSS = 50000.0
 TRADING_ENABLED = True
@@ -609,8 +611,8 @@ def get_lot_size(symbol: str) -> int:
         _real_print(f"[lot_size] Error fetching lot size for {symbol}: {e}")
     return 1 # Default to 1 if lookup fails
 
-def select_itm_call_option(underlying_symbol: str, ltp: float) -> Optional[str]:
-    """Selects the nearest ITM call option for the current expiry."""
+def select_option_contract(underlying_symbol: str, ltp: float) -> Optional[str]:
+    """Selects a call option based on the STRIKE_DISTANCE from ATM."""
     chain = get_option_chain(underlying_symbol)
     if not chain or not chain.get("d"):
         return None
@@ -621,36 +623,42 @@ def select_itm_call_option(underlying_symbol: str, ltp: float) -> Optional[str]:
             _real_print("[options] No expiry data found in option chain.")
             return None
 
-        # Find the nearest expiry date string (e.g., "24JUL24")
+        # Find the nearest expiry date string
         current_expiry_str = expiry_data[0]['expiry']
-
         options = chain["d"].get("optionsChain", [])
 
-        # Filter for ITM Call options of the nearest expiry
-        itm_calls = []
+        # Filter for all Call options of the nearest expiry
+        calls = []
         for opt in options:
-            # Fyers option chain doesn't have expiry_date per option, must check symbol string
-            if current_expiry_str not in opt.get("symbol", ""):
-                continue
+            if current_expiry_str in opt.get("symbol", "") and opt.get("option_type") == "CE":
+                calls.append(opt)
 
-            strike = opt.get("strike_price")
-            option_type = opt.get("option_type")
-            if strike is not None and option_type == "CE" and float(strike) < ltp:
-                itm_calls.append(opt)
-
-        if not itm_calls:
-            _real_print(f"[options] No ITM call options found for {underlying_symbol} at LTP {ltp}")
+        if not calls:
+            _real_print(f"[options] No call options found for {underlying_symbol} for expiry {current_expiry_str}")
             return None
 
-        # Find the ITM call with the strike closest to the LTP
-        nearest_option = min(itm_calls, key=lambda x: ltp - float(x.get("strike_price", 0.0)))
+        # Sort calls by strike price
+        calls.sort(key=lambda x: float(x.get("strike_price", 0.0)))
 
-        option_symbol = nearest_option.get("symbol")
-        _real_print(f"[options] Selected ITM call for {underlying_symbol}: {option_symbol}")
-        return option_symbol
+        # Find the ATM strike (closest to current ltp)
+        atm_option = min(calls, key=lambda x: abs(ltp - float(x.get("strike_price", 0.0))))
+        atm_index = calls.index(atm_option)
+
+        # Apply the strike distance
+        target_index = atm_index + STRIKE_DISTANCE
+
+        if 0 <= target_index < len(calls):
+            target_option = calls[target_index]
+            option_symbol = target_option.get("symbol")
+            strike_price = target_option.get("strike_price")
+            _real_print(f"[options] Selected option for {underlying_symbol}: {option_symbol} (Strike: {strike_price})")
+            return option_symbol
+        else:
+            _real_print(f"[options] Strike distance {STRIKE_DISTANCE} is out of bounds. ATM index: {atm_index}, Target: {target_index}, Total calls: {len(calls)}")
+            return None
 
     except Exception as e:
-        _real_print(f"[options] Error selecting ITM call for {underlying_symbol}: {e}")
+        _real_print(f"[options] Error selecting option contract for {underlying_symbol}: {e}")
         return None
 
 def get_order_details(order_id: str) -> Optional[dict]:
@@ -710,9 +718,9 @@ def place_market_order(symbol: str, qty: int, side: int, ltp: float) -> dict:
 
     # For BUY orders, we trade the option. For SELL, we use the stored option symbol.
     if side == 1: # ENTRY
-        option_symbol = select_itm_call_option(symbol, ltp)
+        option_symbol = select_option_contract(symbol, ltp)
         if not option_symbol:
-            return {"s": "error", "message": "Could not find suitable ITM call option."}
+            return {"s": "error", "message": "Could not find suitable option contract."}
 
         state.lot_size = get_lot_size(symbol)
         order_qty = qty * state.lot_size
