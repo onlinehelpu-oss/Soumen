@@ -671,7 +671,9 @@ def get_option_chain(underlying: str) -> Optional[dict]:
         _real_print("[option-chain] No Fyers client")
         return None
     try:
-        data = {"symbol": underlying, "strikecount": 12}
+        # Fyers API requires the -INDEX suffix to be removed for option chain requests
+        symbol_for_chain = underlying.replace("-INDEX", "")
+        data = {"symbol": symbol_for_chain, "strikecount": 12}
         resp = FYERS.optionchain(data=data)
         if isinstance(resp, dict) and resp.get("s") == "ok":
             return resp.get("d")
