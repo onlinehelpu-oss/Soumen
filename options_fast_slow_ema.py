@@ -671,8 +671,14 @@ def get_option_chain(underlying: str) -> Optional[dict]:
         _real_print("[option-chain] No Fyers client")
         return None
     try:
-        # Fyers API requires the -INDEX suffix to be removed for option chain requests
-        symbol_for_chain = underlying.replace("-INDEX", "")
+        # Map the live feed symbol to the correct symbol for option chain requests
+        symbol_map = {
+            "NSE:NIFTY50-INDEX": "NSE:NIFTY",
+            "NSE:NIFTYBANK-INDEX": "NSE:BANKNIFTY",
+            "NSE:FINNIFTY-INDEX": "NSE:FINNIFTY",
+        }
+        symbol_for_chain = symbol_map.get(underlying, underlying.replace("-INDEX", ""))
+
         data = {"symbol": symbol_for_chain, "strikecount": 12}
         resp = FYERS.optionchain(data=data)
         if isinstance(resp, dict) and resp.get("s") == "ok":
@@ -705,12 +711,12 @@ def select_itm_call_option(underlying: str, spot_price: float, distance: int = 1
             return None
 
         # Find the earliest expiry date
-        expiries = sorted(list(set(opt.get("expiry_date") for opt in options if opt.get("expiry_date"))))
+        expiries = sorted(list(set(opt.get("expiry") for opt in options if opt.get("expiry"))))
         if not expiries:
             return None
         nearest_expiry = expiries[0]
 
-        call_options = [opt for opt in options if str(opt.get("option_type")) == "CE" and opt.get("expiry_date") == nearest_expiry]
+        call_options = [opt for opt in options if str(opt.get("option_type")) == "CE" and opt.get("expiry") == nearest_expiry]
 
         # Find strikes below the spot price
         itm_calls = sorted(
