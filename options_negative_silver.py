@@ -106,7 +106,7 @@ except Exception as e:  # pragma: no cover - fallback path for sandboxed envs
 TIMEFRAME_MIN = 15       # change to 5 / 15 / 30 / 60 etc., or override with --tf
 # NOTE: R_MULTIPLIER is the direct Risk:Reward multiple (e.g., 2.0 means target = entry - 2 * risk for shorts)
 R_MULTIPLIER = 1.0       # default Risk:Reward (1:2)
-DEFAULT_QTY = 1
+LOT_MULTIPLIER = 1       # Number of lots to trade
 EPS = 1e-6
 
 # One-position-at-a-time control
@@ -140,7 +140,7 @@ TODAY_PATH = os.path.join(TOKENS_DIR, f"{TODAY}.json")
 API_HOST = "https://api-t1.fyers.in"
 
 # ===================== WATCHLIST =====================
-SYMBOLS = [
+BASE_INDICES = [
     'NSE:NIFTY50-INDEX',
     'NSE:NIFTYBANK-INDEX',
     'NSE:FINNIFTY-INDEX'
@@ -590,7 +590,7 @@ def get_ltp(fy, sym, cache_ttl=10, max_retries=3):
         return float(cached[0])
     return None
 
-# ===================== WEBSOCKET HANDLER (LIVE SHORT logic) =====================
+# ===================== WEBSOCKET HANDLER (Option-Direct Signal & Trade) =====================
 
 def make_onmsg(fy, dry_run=False):
     def onmsg(msg):
@@ -598,7 +598,7 @@ def make_onmsg(fy, dry_run=False):
             return
 
         try:
-            sym = msg["symbol"]
+            sym = msg["symbol"] # This is now an OPTION symbol
             ltp = float(msg["ltp"])
             ts = int(msg.get("timestamp", time.time()))
         except Exception:
@@ -609,20 +609,14 @@ def make_onmsg(fy, dry_run=False):
         if prev_ltp is not None:
             prev_ltp_cache[sym] = float(prev_ltp)
 
-        # update websocket LTP cache for all symbols (index and options)
+        # update websocket LTP cache
         ltp_cache[sym] = (ltp, time.time())
-
-        # --- Option Logic ---
-        # If this is an option tick, we're done. The monitor_loop handles it.
-        # We only build candles and generate signals from the base index symbols.
-        if sym not in SYMBOLS:
-            return
 
         tick_time = dt.datetime.fromtimestamp(ts)
         cstart = candle_start(tick_time)
         key = (sym, cstart)
 
-        # build/extend the current bar for the INDEX
+        # build/extend the current bar for the OPTION
         bar = bars.get(key)
         if not bar:
             bars[key] = bar = {"o": ltp, "h": ltp, "l": ltp, "c": ltp}
@@ -631,7 +625,7 @@ def make_onmsg(fy, dry_run=False):
             bar["l"] = min(bar["l"], ltp)
             bar["c"] = ltp
 
-        # when index candle completes, check for signal
+        # when OPTION candle completes, check for signal
         if tick_time >= cstart + dt.timedelta(minutes=TIMEFRAME_MIN) - dt.timedelta(seconds=1):
             if key not in processed_candles:
                 processed_candles.add(key)
@@ -653,9 +647,9 @@ def make_onmsg(fy, dry_run=False):
                         "active_start": next_cstart,
                         "triggered": False
                     }
-                    print(f"[{tick_time:%H:%M:%S}] 🎯 INDEX-SIG {sym} TF={TIMEFRAME_MIN}m → watch NEXT LOW {bar['l']} (SL based on {bar['h']})")
+                    print(f"[{tick_time:%H:%M:%S}] 🎯 OPTION-SIG {sym} TF={TIMEFRAME_MIN}m → watch NEXT LOW {bar['l']} (SL {bar['h']})")
 
-        # check active trigger for the INDEX
+        # check active trigger for the OPTION
         t = trigger.get(sym)
         if not t:
             return
@@ -675,58 +669,39 @@ def make_onmsg(fy, dry_run=False):
             return
 
         now_time = dt.datetime.now().time()
-        cutoff = ENTRY_CUTOFF_MCX if sym.startswith("MCX:") else ENTRY_CUTOFF
-        if now_time >= cutoff:
-            print(f"[{dt.datetime.now():%H:%M:%S}] ⏰ Skipping NEW entry {sym} — cutoff passed ({cutoff})")
+        if now_time >= ENTRY_CUTOFF:
+            print(f"[{dt.datetime.now():%H:%M:%S}] ⏰ Skipping NEW entry {sym} — cutoff passed ({ENTRY_CUTOFF})")
             trigger.pop(sym, None)
             return
 
-        # breakout condition on the INDEX
+        # breakout condition on the OPTION
         threshold = round_to_tick(t["low"] - ENTRY_BUFFER)
         prev_for_cross = prev_ltp_cache.get(sym)
         if (prev_for_cross is not None) and (prev_for_cross >= threshold) and (ltp < threshold):
-            print(f"[{tick_time:%H:%M:%S}] 🔥 INDEX BREAKOUT {sym} < {threshold}. Selecting option...")
+            print(f"[{tick_time:%H:%M:%S}] 🔥 OPTION BREAKOUT {sym} < {threshold}. Placing trade...")
 
-            # 1. Select the ITM call option to trade
-            option_symbol = get_option_contract(fy, sym, STRIKE_DISTANCE)
-            if not option_symbol:
-                print(f"[{tick_time:%H:%M:%S}] ⚠️ Could not find suitable option for {sym}, aborting.")
+            # 1. Get lot size and calculate quantity
+            lot_size = get_lot_size(fy, sym)
+            qty = LOT_MULTIPLIER * lot_size
+
+            # 2. Define risk based on the OPTION candle's range
+            entry_price = floor_to_tick(ltp)
+            sl_price = t["high"]
+            risk = sl_price - entry_price
+            if risk <= 0:
+                print(f"[{tick_time:%H:%M:%S}] ✋ Risk <= 0 for {sym}, skipping.")
                 trigger.pop(sym, None)
                 return
 
-            # 2. Get option LTP and lot size
-            time.sleep(0.1) # short delay for quote to be available
-            option_ltp = get_ltp(fy, option_symbol)
-            if option_ltp is None:
-                print(f"[{tick_time:%H:%M:%S}] ⚠️ Could not get LTP for option {option_symbol}, skipping.")
-                trigger.pop(sym, None)
-                return
+            tgt_price = round_to_tick(entry_price - (R_MULTIPLIER * risk))
 
-            lot_size = get_lot_size(fy, option_symbol)
-            qty = DEFAULT_QTY * lot_size
-
-            # 3. Define risk based on the INDEX candle's range, then apply to OPTION price
-            risk_points = t["high"] - t["low"]
-            if risk_points <= 0:
-                print(f"[{tick_time:%H:%M:%S}] ✋ Risk points from index candle <= 0 for {sym}, skipping.")
-                trigger.pop(sym, None)
-                return
-
-            entry_price = option_ltp
-            sl_price = round_to_tick(entry_price + risk_points)
-            tgt_price = round_to_tick(entry_price - (R_MULTIPLIER * risk_points))
-
-            # 4. Place order, save trade for the OPTION, and subscribe to its feed
-            place_order(fy, option_symbol, side=-1, qty=qty, tag="Opt-RedShootSell", dry_run=dry_run)
-            save_trade(option_symbol, entry_price, sl_price, tgt_price, qty, side=-1)
-
-            if ws_connection:
-                print(f"[{tick_time:%H:%M:%S}] <sub> Subscribing to option {option_symbol} for live monitoring.")
-                ws_connection.subscribe(symbols=[option_symbol])
+            # 3. Place order and save trade for the OPTION
+            place_order(fy, sym, side=-1, qty=qty, tag="Opt-RedShootSell", dry_run=dry_run)
+            save_trade(sym, entry_price, sl_price, tgt_price, qty, side=-1)
 
             t["triggered"] = True
             trigger.pop(sym, None)
-            print(f"[{tick_time:%H:%M:%S}] ✅ SHORT-CE {option_symbol} (for {sym}) @ {entry_price}, SL={sl_price}, TGT={tgt_price}, QTY={qty}")
+            print(f"[{tick_time:%H:%M:%S}] ✅ SHORT-CE {sym} @ {entry_price}, SL={sl_price}, TGT={tgt_price}, QTY={qty}")
 
     return onmsg
 
@@ -828,6 +803,21 @@ def main():
         raw_access = "MOCK_ACCESS"
         fy = fyersModel.FyersModel(client_id=app_id, token=raw_access, log_path=".")
 
+    # --- Dynamic Watchlist Creation ---
+    print("Building dynamic watchlist of ITM options...")
+    dynamic_watchlist = []
+    for index_sym in BASE_INDICES:
+        option_sym = get_option_contract(fy, index_sym, STRIKE_DISTANCE)
+        if option_sym:
+            dynamic_watchlist.append(option_sym)
+            print(f"  ✅ Added {option_sym} for {index_sym}")
+        else:
+            print(f"  ⚠️ Could not find suitable option for {index_sym}, it will be skipped.")
+        time.sleep(0.5) # Avoid hitting API rate limits
+
+    if not dynamic_watchlist:
+        raise SystemExit("❌ No option contracts could be found for the given indices. Exiting.")
+
     # WebSocket uses token_str
     on_message = make_onmsg(fy, dry_run=dry_run)
 
@@ -843,8 +833,8 @@ def main():
         on_error=lambda m: print("🚨", m),
         on_close=lambda m: print("❌", m),
         on_connect=lambda: (
-            print(f"🔌 Connected → subscribing to {len(SYMBOLS)} base symbols.") or
-            ws_connection.subscribe(symbols=SYMBOLS)
+            print(f"🔌 Connected → subscribing to {len(dynamic_watchlist)} selected option contracts.") or
+            ws_connection.subscribe(symbols=dynamic_watchlist)
         )
     )
 
@@ -852,7 +842,7 @@ def main():
     threading.Thread(target=monitor_loop, args=(fy, dry_run), daemon=True).start()
 
     print("\n========== Red-ShootingStar/PINBAR SHORT Scanner (Strict Breakout + One-Position Mode) ==========")
-    print(f"🧩 Python: {sys.version.split()[0]}  |  Symbols: {len(SYMBOLS)} | TF={TIMEFRAME_MIN}m | Rmult={R_MULTIPLIER} | dry_run={dry_run}")
+    print(f"🧩 Python: {sys.version.split()[0]}  |  Symbols: {len(dynamic_watchlist)} | TF={TIMEFRAME_MIN}m | Rmult={R_MULTIPLIER} | dry_run={dry_run}")
     print("🚀 Real-time SHORT scanner started …\n")
 
     ws_connection.connect()
