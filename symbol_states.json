@@ -1,0 +1,32 @@
+{
+  "NSE:NIFTY50-INDEX": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-26T04:37:42.358020",
+    "signal_notified": false,
+    "target_price": null
+  },
+  "NSE:NIFTYBANK-INDEX": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-26T04:37:42.362087",
+    "signal_notified": false,
+    "target_price": null
+  },
+  "NSE:FINNIFTY-INDEX": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "gtt_order_id": null,
+    "last_candle_ts": "2025-12-26T04:37:42.364744",
+    "signal_notified": false,
+    "target_price": null
+  }
+}

@@ -583,7 +583,7 @@ def get_option_chain(symbol: str) -> Optional[dict]:
         # Use the mapped symbol for the API call
         api_symbol = SYMBOL_MAP.get(symbol, symbol)
         data = {"symbol": api_symbol}
-        response = FYERS.option_chain(data=data)
+        response = FYERS.optionchain(data=data)
         if isinstance(response, dict) and response.get("s") == "ok":
             return response
         _real_print(f"[options] Failed to get option chain for {api_symbol}: {response}")
@@ -630,7 +630,7 @@ def select_option_contract(underlying_symbol: str, ltp: float) -> Optional[str]:
         # Filter for all Call options of the nearest expiry
         calls = []
         for opt in options:
-            if current_expiry_str in opt.get("symbol", "") and opt.get("option_type") == "CE":
+            if opt.get("expiry") == current_expiry_str and opt.get("option_type") == "CE":
                 calls.append(opt)
 
         if not calls:
@@ -1845,7 +1845,7 @@ def main():
         except Exception:
             _real_print("[warn] Failed to parse --qty-map JSON; ignoring.")
 
-    ALLOWED_PRODUCT = {"CNC", "Intraday"}
+    ALLOWED_PRODUCT = {"CNC", "INTRADAY"}
     ALLOWED_SL = {"signal_low", "swing_low"}
     ALLOWED_POS = {"alloc", "qty"}
 
