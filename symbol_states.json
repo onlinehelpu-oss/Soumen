@@ -1,0 +1,32 @@
+{
+  "NSE:NIFTY50-INDEX": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "opt_symbol": null,
+    "last_candle_ts": null,
+    "signal_notified": false,
+    "target_price": null
+  },
+  "NSE:NIFTYBANK-INDEX": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "opt_symbol": null,
+    "last_candle_ts": null,
+    "signal_notified": false,
+    "target_price": null
+  },
+  "NSE:FINNIFTY-INDEX": {
+    "status": "watch",
+    "qty": 0,
+    "entry_price": 0.0,
+    "stop_price": 0.0,
+    "opt_symbol": null,
+    "last_candle_ts": null,
+    "signal_notified": false,
+    "target_price": null
+  }
+}

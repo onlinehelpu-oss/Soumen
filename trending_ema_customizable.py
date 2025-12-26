@@ -188,60 +188,87 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, is_ce: bool, spot_ltp: f
     for nearest 50-strike of earliest expiry for the requested type (CE/PE).
     """
     chain = []
-    for root in ("NSE:NIFTY50-INDEX", "NSE:NIFTY50", "NSE:NIFTY"):  # try all NIFTY roots
+    # Use the most specific root first
+    for root in ("NSE:NIFTY50-INDEX", "NIFTY50", "NIFTY"):
         try:
-            resp = fyers.optionchain(data={"symbol": root}) or {}
-            data = (resp.get("data") or {}).get("optionChain", []) or (resp.get("data") or {}).get("optionsChain", [])
+            # The API expects the root symbol without the exchange prefix, e.g., "NIFTY50"
+            api_symbol = root.split(':')[-1].split('-')[0]
+            resp = fyers.optionchain(data={"symbol": api_symbol}) or {}
+            data = (resp.get("data") or {}).get("optionsChain") or []
             if data:
                 chain = data
+                print(f"[optionchain] Successfully fetched chain for root '{api_symbol}'")
                 break
+            else:
+                print(f"[optionchain] Received empty chain for root '{api_symbol}'")
         except Exception as e:
-            print(f"[optionchain] root {root} failed: {e}")
+            print(f"[optionchain] API call for root '{root}' failed: {e}")
+
     if not chain:
-        raise RuntimeError("Optionchain response empty for NIFTY roots.")
+        raise RuntimeError("Optionchain response is empty for all attempted NIFTY roots.")
 
-    target = round_to_nearest_50(spot_ltp)
+    # Determine the earliest expiry date from the entire chain
+    try:
+        expiries = sorted(list(set(
+            dt.strptime(row['expiry'], '%Y-%m-%d') for row in chain if 'expiry' in row and row.get('expiry')
+        )))
+        if not expiries:
+            raise ValueError("No valid expiry dates found in the option chain.")
+        earliest_expiry_dt = expiries[0]
+        earliest_expiry_str = earliest_expiry_dt.strftime('%Y-%m-%d')
+    except Exception as e:
+        raise RuntimeError(f"Could not determine the earliest expiry date: {e}")
+
     opt_type = "CE" if is_ce else "PE"
-    filt = [row for row in chain if str(row.get("option_type", "")).upper() == opt_type]
+
+    # Filter the chain for the earliest expiry and correct option type
+    filt = [
+        row for row in chain
+        if str(row.get("option_type", "")).upper() == opt_type and row.get("expiry") == earliest_expiry_str
+    ]
     if not filt:
-        raise RuntimeError(f"Optionchain has no rows for type {opt_type}")
+        raise RuntimeError(f"Optionchain has no rows for type {opt_type} on the earliest expiry {earliest_expiry_str}")
 
-    def expiry_key(row):
-        exp = row.get("expiry_date", row.get("expiry"))
-        try:
-            return dt.strptime(exp, "%d%b%y") if exp and len(exp) == 7 else dt.strptime(exp, "%Y-%m-%d")
-        except Exception:
-            return dt.max
-    expiries = [r.get("expiry_date", r.get("expiry")) for r in filt if r.get("expiry_date", r.get("expiry"))]
-    if expiries:
-        earliest_row = min(filt, key=expiry_key)
-        earliest = earliest_row.get("expiry_date", earliest_row.get("expiry"))
-        filt = [r for r in filt if r.get("expiry_date", r.get("expiry")) == earliest]
-        expiry_pick = earliest
-    else:
-        expiry_pick = None
+    # Find the strike price closest to the target
+    target_strike = round_to_nearest_50(spot_ltp)
 
-    def strike_key(row):
+    def strike_distance(row):
         try:
             sp = row.get("strike_price", row.get("strikePrice"))
-            return abs(float(sp) - target)
-        except Exception:
-            return 1e12
+            return abs(float(sp) - target_strike)
+        except (ValueError, TypeError):
+            return float('inf')  # Ignore rows with invalid strike prices
 
-    best = min(filt, key=strike_key)
-    symbol = best.get("symbol") or best.get("tradingsymbol") or best.get("tsym")
+    best_match = min(filt, key=strike_distance)
+
+    symbol = best_match.get("symbol") or best_match.get("tradingsymbol") or best_match.get("tsym")
     if not symbol:
-        raise RuntimeError("Optionchain did not provide a symbol.")
-    return symbol, expiry_pick
+        raise RuntimeError(f"Could not find a valid symbol for the best match option: {best_match}")
+
+    print(f"[optionchain] Resolved: {symbol} (Expiry: {earliest_expiry_str}, Target Strike: {target_strike})")
+    return symbol, earliest_expiry_str
 
 def earliest_expiry_string(fyers: fyersModel.FyersModel) -> Optional[str]:
     """Best-effort earliest expiry from NIFTY INDEX root (preview resolver tries all anyway)."""
     try:
-        resp = fyers.optionchain(data={"symbol": "NSE:NIFTY50-INDEX"}) or {}
-        chain = (resp.get("data") or {}).get("optionChain", []) or (resp.get("data") or {}).get("optionsChain", [])
-        dates = [row.get("expiry_date", row.get("expiry")) for row in chain if row.get("expiry_date", row.get("expiry"))]
-        return sorted(set(dates))[0] if dates else None
-    except Exception:
+        # The API expects the root symbol without the exchange prefix
+        resp = fyers.optionchain(data={"symbol": "NIFTY50"}) or {}
+        chain = (resp.get("data") or {}).get("optionsChain") or []
+        if not chain:
+            return None
+
+        # Correctly parse 'YYYY-MM-DD' dates
+        expiries = sorted(list(set(
+            dt.strptime(row['expiry'], '%Y-%m-%d') for row in chain if 'expiry' in row and row.get('expiry')
+        )))
+
+        if not expiries:
+            return None
+
+        # Return the earliest date in the same 'YYYY-MM-DD' format
+        return expiries[0].strftime('%Y-%m-%d')
+    except Exception as e:
+        print(f"[expiry-check] Failed to get earliest expiry: {e}")
         return None
 
 # ============================== STATE =========================================
