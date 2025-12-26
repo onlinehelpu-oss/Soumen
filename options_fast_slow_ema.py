@@ -330,11 +330,11 @@ def run_interactive_login() -> str:
 
 
 # ---------------------------- STATE OBJECTS ----------------------------
-# Map from websocket symbol to option chain symbol
-SYMBOL_MAP = {
-    "NSE:NIFTY50-INDEX": "NSE:NIFTY50",
-    "NSE:NIFTYBANK-INDEX": "NSE:BANKNIFTY",
-    "NSE:FINNIFTY-INDEX": "NSE:FINNIFTY",
+# Map from websocket symbol to a list of potential option chain symbols to try
+SYMBOL_FALLBACK_MAP = {
+    "NSE:NIFTY50-INDEX": ["NSE:NIFTY50-INDEX", "NSE:NIFTY50", "NSE:NIFTY"],
+    "NSE:NIFTYBANK-INDEX": ["NSE:NIFTYBANK-INDEX", "NSE:BANKNIFTY", "NSE:NIFTYBANK"],
+    "NSE:FINNIFTY-INDEX": ["NSE:FINNIFTY-INDEX", "NSE:FINNIFTY"],
 }
 
 
@@ -576,40 +576,48 @@ CANDLE_MANAGER: Optional[CandleManager] = None
 # ---------------------------- OPTIONS HELPERS ----------------------------
 
 def get_option_chain(symbol: str) -> Optional[dict]:
-    """Fetches the option chain for a given underlying symbol."""
+    """Fetches the option chain for a given underlying symbol, trying fallback symbols."""
     if FYERS is None:
         return None
-    try:
-        # Use the mapped symbol for the API call
-        api_symbol = SYMBOL_MAP.get(symbol, symbol)
-        data = {"symbol": api_symbol}
-        response = FYERS.optionchain(data=data)
-        if isinstance(response, dict) and response.get("s") == "ok":
-            return response
-        _real_print(f"[options] Failed to get option chain for {api_symbol}: {response}")
-        return None
-    except Exception as e:
-        _real_print(f"[options] Error fetching option chain for {symbol}: {e}")
-        return None
+
+    potential_symbols = SYMBOL_FALLBACK_MAP.get(symbol, [symbol])
+    for api_symbol in potential_symbols:
+        try:
+            data = {"symbol": api_symbol}
+            response = FYERS.optionchain(data=data)
+            if isinstance(response, dict) and response.get("s") == "ok":
+                _real_print(f"[options] Successfully fetched option chain using symbol: {api_symbol}")
+                return response
+            else:
+                _real_print(f"[options] Failed to get option chain with symbol {api_symbol}: {response.get('message')}")
+        except Exception as e:
+            _real_print(f"[options] Error with symbol {api_symbol}: {e}")
+
+    _real_print(f"[options] All fallback symbols failed for {symbol}.")
+    return None
 
 def get_lot_size(symbol: str) -> int:
-    """Fetches the lot size for a given symbol."""
+    """Fetches the lot size for a given symbol, trying fallback symbols."""
     if FYERS is None:
         return 1
-    try:
-        api_symbol = SYMBOL_MAP.get(symbol, symbol)
-        data = {"symbols": api_symbol}
-        response = FYERS.symbol_details(data=data)
 
-        if response.get("s") == "ok":
-            details = response.get("d", {}).get(api_symbol, {})
-            lot_size = details.get("lotSize")
-            if lot_size:
-                _real_print(f"[lot_size] Lot size for {api_symbol} is {lot_size}")
-                return int(lot_size)
-    except Exception as e:
-        _real_print(f"[lot_size] Error fetching lot size for {symbol}: {e}")
-    return 1 # Default to 1 if lookup fails
+    potential_symbols = SYMBOL_FALLBACK_MAP.get(symbol, [symbol])
+    for api_symbol in potential_symbols:
+        try:
+            data = {"symbols": api_symbol}
+            response = FYERS.symbol_details(data=data)
+
+            if response.get("s") == "ok":
+                details = response.get("d", {}).get(api_symbol, {})
+                lot_size = details.get("lotSize")
+                if lot_size:
+                    _real_print(f"[lot_size] Successfully fetched lot size using symbol: {api_symbol}")
+                    return int(lot_size)
+        except Exception as e:
+            _real_print(f"[lot_size] Error with symbol {api_symbol}: {e}")
+
+    _real_print(f"[lot_size] All fallback symbols failed for {symbol}. Defaulting to 1.")
+    return 1 # Default to 1 if all fallbacks fail
 
 def select_option_contract(underlying_symbol: str, ltp: float) -> Optional[str]:
     """Selects a call option based on the STRIKE_DISTANCE from ATM."""
