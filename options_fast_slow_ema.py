@@ -332,9 +332,9 @@ def run_interactive_login() -> str:
 # ---------------------------- STATE OBJECTS ----------------------------
 # Map from websocket symbol to option chain symbol
 SYMBOL_MAP = {
-    "NSE:NIFTY50-INDEX": "NIFTY50",
-    "NSE:NIFTYBANK-INDEX": "BANKNIFTY",
-    "NSE:FINNIFTY-INDEX": "FINNIFTY",
+    "NSE:NIFTY50-INDEX": "NSE:NIFTY50",
+    "NSE:NIFTYBANK-INDEX": "NSE:BANKNIFTY",
+    "NSE:FINNIFTY-INDEX": "NSE:FINNIFTY",
 }
 
 
