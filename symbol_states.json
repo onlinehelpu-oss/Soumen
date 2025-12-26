@@ -5,7 +5,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2025-12-26T04:37:42.358020",
+    "last_candle_ts": "2025-12-26T06:45:49.868930",
     "signal_notified": false,
     "target_price": null
   },
@@ -15,7 +15,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2025-12-26T04:37:42.362087",
+    "last_candle_ts": "2025-12-26T06:45:49.879799",
     "signal_notified": false,
     "target_price": null
   },
@@ -25,7 +25,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2025-12-26T04:37:42.364744",
+    "last_candle_ts": "2025-12-26T06:45:49.882786",
     "signal_notified": false,
     "target_price": null
   }
