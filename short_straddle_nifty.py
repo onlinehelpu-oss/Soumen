@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os, json, time, datetime, hashlib
+import os, json, time, datetime, hashlib, sys
 from urllib.parse import urlparse, parse_qs, quote
 from typing import Dict, Any, Optional, Tuple
 
@@ -86,25 +86,42 @@ def validate_authcode(app_id: str, secret_id: str, auth_code: str, max_retries: 
 
 def get_access_token() -> Dict[str, str]:
     creds = load_or_prompt_creds()
-    app_id = creds["api_key"]; secret_id = creds["api_secret"]; redirect_uri = creds["redirect_url"]
-    if os.path.exists(TOKENS_DIR) and os.path.exists(TOKEN_PATH):
+    app_id = creds["api_key"]
+    secret_id = creds["api_secret"]
+    redirect_uri = creds["redirect_url"]
+
+    if os.path.exists(TOKEN_PATH):
         with open(TOKEN_PATH, "r") as f:
-            tok = json.load(f)
-        if isinstance(tok, str) and tok:
-            print("[auth] Using saved access token:", TOKEN_PATH)
-            return {"app_id": app_id, "secret_id": secret_id, "redirect_uri": redirect_uri, "access_token": tok}
-    url = build_auth_url(app_id, redirect_uri)
-    print("\nLogin URL (open in browser, complete login):\n", url)
-    user_val = input("\nPaste FULL redirect URL or just the 'code' value here: ").strip()
-    code = extract_code(user_val)
-    token_resp = validate_authcode(app_id, secret_id, code)
-    access_token = token_resp.get("access_token")
-    if not access_token:
-        raise RuntimeError(f"Unexpected token response: {token_resp}")
-    os.makedirs(TOKENS_DIR, exist_ok=True)
-    with open(TOKEN_PATH, "w") as f: json.dump(access_token, f)
-    print(f"[auth] Token saved to {TOKEN_PATH}")
-    return {"app_id": app_id, "secret_id": secret_id, "redirect_uri": redirect_uri, "access_token": access_token}
+            access_token = json.load(f)
+        print(f"Access Token loaded from file for {TODAY}")
+        return {"app_id": app_id, "access_token": access_token}
+
+    auth_url = build_auth_url(app_id, redirect_uri)
+    print("\nLogin URL (open in browser, allow & complete login):")
+    print(auth_url)
+
+    user_val = input("\nPaste the FULL redirect URL after login, or just the 'code=' value here: ").strip()
+    try:
+        auth_code = extract_code(user_val)
+    except Exception as e:
+        print(f"Could not extract code: {e}")
+        sys.exit(1)
+
+    try:
+        token_resp = validate_authcode(app_id, secret_id, auth_code)
+        access_token = token_resp.get("access_token")
+        if not access_token:
+            raise RuntimeError(f"Unexpected token response: {token_resp}")
+
+        os.makedirs(TOKENS_DIR, exist_ok=True)
+        with open(TOKEN_PATH, "w") as f:
+            json.dump(access_token, f)
+        print("\nLogin successful.")
+        print(f"Token saved to: {TOKEN_PATH}")
+        return {"app_id": app_id, "access_token": access_token}
+    except Exception as e:
+        print(f"\nLogin Failed: {e}")
+        sys.exit(1)
 
 # ============================== CONFIG ========================================
 CONFIG = {
@@ -116,8 +133,6 @@ CONFIG = {
     "tsl": 2.0,
     "lot_size": 50,
 }
-
-
 
 def get_nifty_ltp(fyers: fyersModel.FyersModel) -> float:
     """
@@ -162,7 +177,6 @@ def resolve_option_symbols(fyers: fyersModel.FyersModel, atm_strike: int) -> Tup
     pe_closest = min(pe_options, key=lambda x: abs(x['strikePrice'] - atm_strike))
 
     return ce_closest['symbol'], pe_closest['symbol']
-
 
 
 def marketorder_buy(fyers: fyersModel.FyersModel, symbol: str, quantity: int) -> str:
