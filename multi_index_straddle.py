@@ -310,6 +310,23 @@ if __name__ == "__main__":
     ACCESS_TOKEN = auth["access_token"]
     FYERS = fyersModel.FyersModel(client_id=APP_ID, is_async=False, token=ACCESS_TOKEN, log_path="")
 
+    print("\n--- Live Lot Size Check for Current Expiry ---")
+    for index_config in CONFIG["indices"]:
+        index_symbol = index_config["symbol"]
+        try:
+            # We need a symbol to check, so we find a near-ATM option
+            ltp = get_index_ltp(FYERS, index_symbol)
+            atm_strike = round_to_nearest(ltp, index_config["strike_round"])
+            ce_symbol, _ = resolve_option_symbols(FYERS, index_symbol, atm_strike)
+
+            # The actual check:
+            live_lot_size = get_lot_size(FYERS, ce_symbol)
+            print(f"[{index_symbol}] Detected Lot Size: {live_lot_size}")
+        except Exception as e:
+            print(f"[{index_symbol}] Could not perform live lot size check: {e}")
+    print("----------------------------------------------\n")
+
+
     print("\n--- Performing initial check ---")
     for index_config in CONFIG["indices"]:
         index_symbol = index_config["symbol"]
