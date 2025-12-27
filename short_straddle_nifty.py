@@ -157,7 +157,7 @@ def resolve_option_symbols(fyers: fyersModel.FyersModel, atm_strike: int) -> Tup
     if resp.get("s") != "ok":
         raise RuntimeError(f"Failed to fetch option chain: {resp.get('message')}")
 
-    chain = resp["data"]["optionChain"]
+    chain = (resp.get("data") or {}).get("optionChain", []) or (resp.get("data") or {}).get("optionsChain", [])
 
     # Find earliest expiry
     expiries = sorted(list(set(opt['expiryDate'] for opt in chain)))
