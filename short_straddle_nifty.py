@@ -150,43 +150,23 @@ def round_to_nearest_50(x: float) -> int:
 def resolve_option_symbols(fyers: fyersModel.FyersModel, atm_strike: int) -> Tuple[str, str]:
     """
     Queries FYERS option chain for NIFTY and returns (CE_symbol, PE_symbol)
-    for the nearest strike to ATM of the earliest expiry.
+    for the nearest strike to ATM. The API is expected to return the nearest expiry options.
     """
     data = {"symbol": "NSE:NIFTY50-INDEX", "strikecount": 2}
     resp = fyers.optionchain(data=data)
     if resp.get("s") != "ok":
         raise RuntimeError(f"Failed to fetch option chain: {resp.get('message')}")
 
-    data = resp.get("data", {})
-    chain = data.get("optionsChain", [])
-    expiry_data = data.get("expiryData", [])
-
-    if not chain or not expiry_data:
-        raise RuntimeError("Option chain or expiry data is missing in the API response.")
-
-    # Find the earliest expiry date
-    try:
-        expiry_dates = [dt.datetime.strptime(item['date'], '%d-%m-%Y').date() for item in expiry_data]
-        earliest_expiry = min(expiry_dates)
-    except (ValueError, KeyError) as e:
-        raise RuntimeError(f"Could not parse expiry dates: {e}")
-
-    # Format the date for symbol matching (e.g., 25DEC)
-    expiry_month = earliest_expiry.strftime('%b').upper()
-    expiry_day_year = str(earliest_expiry.year)[-2:] + expiry_month
-
-    # Filter the chain for options of the earliest expiry
-    chain = [opt for opt in chain if expiry_day_year in opt.get('symbol', '')]
-
+    chain = (resp.get("data") or {}).get("optionsChain", [])
     if not chain:
-        raise RuntimeError(f"No options found for the earliest expiry: {earliest_expiry.strftime('%d-%m-%Y')}")
+        raise RuntimeError("Option chain is missing in the API response.")
 
-    # Find closest CE and PE to the ATM strike
-    ce_options = [opt for opt in chain if opt['option_type'] == 'CE']
-    pe_options = [opt for opt in chain if opt['option_type'] == 'PE']
+    # Find closest CE and PE to the ATM strike from the provided chain
+    ce_options = [opt for opt in chain if opt.get('option_type') == 'CE']
+    pe_options = [opt for opt in chain if opt.get('option_type') == 'PE']
 
     if not ce_options or not pe_options:
-        raise RuntimeError("Could not find both CE and PE options for the earliest expiry.")
+        raise RuntimeError("Could not find both CE and PE options in the option chain response.")
 
     ce_closest = min(ce_options, key=lambda x: abs(x['strike_price'] - atm_strike))
     pe_closest = min(pe_options, key=lambda x: abs(x['strike_price'] - atm_strike))
@@ -207,7 +187,16 @@ def marketorder_buy(fyers: fyersModel.FyersModel, symbol: str, quantity: int) ->
     resp = fyers.place_order(data=data)
     if resp.get("s") == "ok":
         return resp["id"]
-    raise RuntimeError(f"Failed to place BUY order: {resp.get('message')}")
+
+    message = resp.get('message', '')
+    if "Could not authenticate the user" in message:
+        print("\n--- AUTHENTICATION ERROR ---")
+        print("Your access token is invalid for trading.")
+        print("Please delete the 'AccessToken' folder and run the script again to force a fresh login.")
+        print("--------------------------\n")
+        sys.exit(1)
+
+    raise RuntimeError(f"Failed to place BUY order: {message}")
 
 
 def marketorder_sell(fyers: fyersModel.FyersModel, symbol: str, quantity: int) -> str:
@@ -223,7 +212,16 @@ def marketorder_sell(fyers: fyersModel.FyersModel, symbol: str, quantity: int) -
     resp = fyers.place_order(data=data)
     if resp.get("s") == "ok":
         return resp["id"]
-    raise RuntimeError(f"Failed to place SELL order: {resp.get('message')}")
+
+    message = resp.get('message', '')
+    if "Could not authenticate the user" in message:
+        print("\n--- AUTHENTICATION ERROR ---")
+        print("Your access token is invalid for trading.")
+        print("Please delete the 'AccessToken' folder and run the script again to force a fresh login.")
+        print("--------------------------\n")
+        sys.exit(1)
+
+    raise RuntimeError(f"Failed to place SELL order: {message}")
 
 
 def get_order_status(fyers: fyersModel.FyersModel, order_id: str) -> Optional[Dict[str, Any]]:
@@ -375,8 +373,8 @@ if __name__ == "__main__":
             # Square-off time exit condition
             if dt.datetime.now().time() >= CONFIG["square_off_time"]:
                 print("Market close time reached. Exiting positions.")
-                marketorder_buy(FYERS, pe_symbol, qty)
                 marketorder_buy(FYERS, ce_symbol, qty)
+                marketorder_buy(FYERS, pe_symbol, qty)
                 break
 
             time.sleep(1)
