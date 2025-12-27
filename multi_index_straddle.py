@@ -393,7 +393,7 @@ if __name__ == "__main__":
 
             print(f"\n--- {index_symbol} ---")
             print(f"Sell Premium: {trade['sell_premium']:.2f}, SL: {trade['sl_premium']:.2f}")
-            print(f"Current Premium: {current_premium:.2f} (CE: {trade['ce_ltp']}, PE: {trade['pe_ltp']})")
+            print(f"Current Premium: {current_premium:.2f} (CE: {trade['ce_symbol']} @ {trade['ce_ltp']}, PE: {trade['pe_symbol']} @ {trade['pe_ltp']})")
             print(f"Gain: {(trade['sell_premium'] - current_premium):.2f}, MTM: {((trade['sell_premium'] - current_premium) * trade['qty']):.2f}")
 
             # Trailing Stop Loss (TSL)
