@@ -313,9 +313,11 @@ if __name__ == "__main__":
     print("\n--- Performing initial LTP check ---")
     for index_config in CONFIG["indices"]:
         index_symbol = index_config["symbol"]
+        strike_round = index_config["strike_round"]
         try:
             ltp = get_index_ltp(FYERS, index_symbol)
-            print(f"[{index_symbol}] Current LTP: {ltp}")
+            atm_strike = round_to_nearest(ltp, strike_round)
+            print(f"[{index_symbol}] Current LTP: {ltp}, Potential ATM Strike: {atm_strike}")
         except Exception as e:
             print(f"[{index_symbol}] Error fetching LTP: {e}")
     print("------------------------------------\n")
