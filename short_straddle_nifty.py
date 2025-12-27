@@ -157,6 +157,10 @@ def resolve_option_symbols(fyers: fyersModel.FyersModel, atm_strike: int) -> Tup
     if resp.get("s") != "ok":
         raise RuntimeError(f"Failed to fetch option chain: {resp.get('message')}")
 
+    print("--- RAW API RESPONSE ---")
+    print(resp)
+    print("------------------------")
+
     chain = (resp.get("data") or {}).get("optionChain", []) or (resp.get("data") or {}).get("optionsChain", [])
 
     def get_expiry(opt):
@@ -365,8 +369,8 @@ if __name__ == "__main__":
             # Square-off time exit condition
             if dt.datetime.now().time() >= CONFIG["square_off_time"]:
                 print("Market close time reached. Exiting positions.")
-                marketorder_buy(FYERS, ce_symbol, qty)
                 marketorder_buy(FYERS, pe_symbol, qty)
+                marketorder_buy(FYERS, ce_symbol, qty)
                 break
 
             time.sleep(1)
