@@ -159,12 +159,17 @@ def resolve_option_symbols(fyers: fyersModel.FyersModel, atm_strike: int) -> Tup
 
     chain = (resp.get("data") or {}).get("optionChain", []) or (resp.get("data") or {}).get("optionsChain", [])
 
+    def get_expiry(opt):
+        return opt.get('expiryDate') or opt.get('expiry_date') or opt.get('expiry')
+
     # Find earliest expiry
-    expiries = sorted(list(set(opt['expiryDate'] for opt in chain)))
+    expiries = sorted(list(set(get_expiry(opt) for opt in chain if get_expiry(opt))))
+    if not expiries:
+        raise RuntimeError("Could not determine expiry dates from option chain.")
     earliest_expiry = expiries[0]
 
     # Filter for earliest expiry
-    chain = [opt for opt in chain if opt['expiryDate'] == earliest_expiry]
+    chain = [opt for opt in chain if get_expiry(opt) == earliest_expiry]
 
     # Find closest CE and PE to the ATM strike
     ce_options = [opt for opt in chain if opt['optionType'] == 'CE']
