@@ -310,17 +310,20 @@ if __name__ == "__main__":
     ACCESS_TOKEN = auth["access_token"]
     FYERS = fyersModel.FyersModel(client_id=APP_ID, is_async=False, token=ACCESS_TOKEN, log_path="")
 
-    print("\n--- Performing initial LTP check ---")
+    print("\n--- Performing initial check ---")
     for index_config in CONFIG["indices"]:
         index_symbol = index_config["symbol"]
         strike_round = index_config["strike_round"]
         try:
             ltp = get_index_ltp(FYERS, index_symbol)
             atm_strike = round_to_nearest(ltp, strike_round)
-            print(f"[{index_symbol}] Current LTP: {ltp}, Potential ATM Strike: {atm_strike}")
+            ce_symbol, pe_symbol = resolve_option_symbols(FYERS, index_symbol, atm_strike)
+            print(f"[{index_symbol}] LTP: {ltp}, ATM Strike: {atm_strike}")
+            print(f"    -> Potential CE: {ce_symbol}")
+            print(f"    -> Potential PE: {pe_symbol}")
         except Exception as e:
-            print(f"[{index_symbol}] Error fetching LTP: {e}")
-    print("------------------------------------\n")
+            print(f"[{index_symbol}] Error during initial check: {e}")
+    print("--------------------------------\n")
 
     print("Waiting for trade entry time:", CONFIG["trade_entry_time"])
     while dt.datetime.now().time() < CONFIG["trade_entry_time"]:
