@@ -124,35 +124,38 @@ def get_access_token() -> Dict[str, str]:
 CONFIG = {
     "trade_entry_time": dt.time(hour=9, minute=45, second=10),
     "square_off_time": dt.time(hour=15, minute=10, second=0),
-    "strike_points": 0,  # 0 for ATM
     "lots": 1,
-    "stop_loss": 10.0,
-    "tsl": 2.0,
-    "lot_size": 50,
+    "stop_loss_pts": 10.0,
+    "tsl_pts": 2.0,
+    "indices": [
+        {"symbol": "NSE:NIFTY50-INDEX", "strike_round": 50},
+        {"symbol": "NSE:NIFTYBANK-INDEX", "strike_round": 100},
+        {"symbol": "NSE:FINNIFTY-INDEX", "strike_round": 50},
+    ]
 }
 
-def get_nifty_ltp(fyers: fyersModel.FyersModel) -> float:
+def get_index_ltp(fyers: fyersModel.FyersModel, index_symbol: str) -> float:
     """
-    Retrieves the Last Traded Price (LTP) for the NIFTY 50 index.
+    Retrieves the Last Traded Price (LTP) for a given index.
     """
-    data = {"symbols": "NSE:NIFTY50-INDEX"}
+    data = {"symbols": index_symbol}
     resp = fyers.quotes(data=data)
-    if resp.get("s") == "ok":
+    if resp.get("s") == "ok" and resp.get("d"):
         ltp = resp["d"][0]["v"]["lp"]
         return float(ltp)
-    raise RuntimeError(f"Failed to fetch NIFTY LTP: {resp.get('message')}")
+    raise RuntimeError(f"Failed to fetch LTP for {index_symbol}: {resp.get('message')}")
 
 
-def round_to_nearest_50(x: float) -> int:
-    return int(round(x / 50.0) * 50)
+def round_to_nearest(x: float, base: int) -> int:
+    return int(base * round(float(x)/base))
 
 
-def resolve_option_symbols(fyers: fyersModel.FyersModel, atm_strike: int) -> Tuple[str, str]:
+def resolve_option_symbols(fyers: fyersModel.FyersModel, index_symbol: str, atm_strike: int) -> Tuple[str, str]:
     """
-    Queries FYERS option chain for NIFTY and returns (CE_symbol, PE_symbol)
+    Queries FYERS option chain for a given index and returns (CE_symbol, PE_symbol)
     for the nearest strike to ATM. The API is expected to return the nearest expiry options.
     """
-    data = {"symbol": "NSE:NIFTY50-INDEX", "strikecount": 2}
+    data = {"symbol": index_symbol, "strikecount": 2}
     resp = fyers.optionchain(data=data)
     if resp.get("s") != "ok":
         raise RuntimeError(f"Failed to fetch option chain: {resp.get('message')}")
@@ -224,6 +227,19 @@ def marketorder_sell(fyers: fyersModel.FyersModel, symbol: str, quantity: int) -
     raise RuntimeError(f"Failed to place SELL order: {message}")
 
 
+def get_lot_size(fyers: fyersModel.FyersModel, symbol: str) -> int:
+    """
+    Retrieves the lot size for a given option symbol.
+    """
+    data = {"symbols": symbol}
+    resp = fyers.quotes(data=data)
+    if resp.get("s") == "ok" and resp.get("d"):
+        lot_size = resp["d"][0]["v"].get("lot_size")
+        if lot_size:
+            return int(lot_size)
+    raise RuntimeError(f"Failed to fetch lot size for {symbol}: {resp.get('message')}")
+
+
 def get_order_status(fyers: fyersModel.FyersModel, order_id: str) -> Optional[Dict[str, Any]]:
     """
     Fetches the status of a specific order.
@@ -247,150 +263,156 @@ def cancel_order(fyers: fyersModel.FyersModel, order_id: str):
 
 
 # ============================== STATE & WEBSOCKET =================================
-class TradeState:
+class MultiIndexState:
     def __init__(self):
-        self.ce_ltp = 0.0
-        self.pe_ltp = 0.0
-        self.ce_symbol = None
-        self.pe_symbol = None
+        self.active_trades = {}  # Key: index_symbol, Value: trade_details
 
-STATE = TradeState()
+    def add_trade(self, index_symbol, trade_details):
+        self.active_trades[index_symbol] = trade_details
+
+    def get_all_symbols(self):
+        symbols = []
+        for trade in self.active_trades.values():
+            symbols.append(trade['ce_symbol'])
+            symbols.append(trade['pe_symbol'])
+        return symbols
+
+STATE = MultiIndexState()
 fyers_socket = None
 
 def on_message(msg: Dict[str, Any]):
     symbol = msg.get("symbol")
     ltp = msg.get("ltp")
-    if symbol and ltp:
-        if symbol == STATE.ce_symbol:
-            STATE.ce_ltp = float(ltp)
-        elif symbol == STATE.pe_symbol:
-            STATE.pe_ltp = float(ltp)
+    if not (symbol and ltp):
+        return
 
-def on_error(msg): print("[ws:error]", msg)
-def on_close(msg): print("[ws:close]", msg)
+    for index_symbol, trade in STATE.active_trades.items():
+        if symbol == trade['ce_symbol']:
+            trade['ce_ltp'] = float(ltp)
+            break
+        elif symbol == trade['pe_symbol']:
+            trade['pe_ltp'] = float(ltp)
+            break
+
+def on_error(msg): print(f"[ws:error] {msg}")
+def on_close(msg): print(f"[ws:close] {msg}")
 
 def on_open():
-    if STATE.ce_symbol and STATE.pe_symbol:
-        symbols_to_subscribe = [STATE.ce_symbol, STATE.pe_symbol]
+    symbols_to_subscribe = STATE.get_all_symbols()
+    if symbols_to_subscribe:
         fyers_socket.subscribe(symbols=symbols_to_subscribe, data_type="SymbolUpdate")
         print(f"[ws:open] Subscribed to {symbols_to_subscribe}")
 
 # ============================== MAIN ==========================================
 if __name__ == "__main__":
-    # Authenticate and initialize the Fyers API client
     auth = get_access_token()
     APP_ID = auth["app_id"]
     ACCESS_TOKEN = auth["access_token"]
     FYERS = fyersModel.FyersModel(client_id=APP_ID, is_async=False, token=ACCESS_TOKEN, log_path="")
 
-    # Wait until the specified trade entry time
     print("Waiting for trade entry time:", CONFIG["trade_entry_time"])
     while dt.datetime.now().time() < CONFIG["trade_entry_time"]:
         time.sleep(1)
 
-    # 1. Get Nifty LTP and calculate the At-The-Money (ATM) strike price
-    nifty_ltp = get_nifty_ltp(FYERS)
-    print('Nifty LTP:', nifty_ltp)
-    atm_strike = round_to_nearest_50(nifty_ltp)
-    print('ATM Strike:', atm_strike)
+    # --- ENTER TRADES FOR ALL CONFIGURED INDICES ---
+    for index_config in CONFIG["indices"]:
+        index_symbol = index_config["symbol"]
+        strike_round = index_config["strike_round"]
 
-    # 2. Resolve the trading symbols for the ATM call and put options
-    ce_symbol, pe_symbol = resolve_option_symbols(FYERS, atm_strike)
-    print('CE Symbol:', ce_symbol)
-    print('PE Symbol:', pe_symbol)
+        try:
+            print(f"\n--- Processing: {index_symbol} ---")
+            ltp = get_index_ltp(FYERS, index_symbol)
+            atm_strike = round_to_nearest(ltp, strike_round)
+            print(f"LTP: {ltp}, ATM Strike: {atm_strike}")
 
-    # 3. Place market orders to sell the call and put options
-    qty = CONFIG["lots"] * CONFIG["lot_size"]
-    ce_order_id = marketorder_sell(FYERS, ce_symbol, qty)
-    pe_order_id = marketorder_sell(FYERS, pe_symbol, qty)
-    print(f"Placed SELL orders -> CE: {ce_order_id}, PE: {pe_order_id}")
+            ce_symbol, pe_symbol = resolve_option_symbols(FYERS, index_symbol, atm_strike)
+            print(f"CE Symbol: {ce_symbol}, PE Symbol: {pe_symbol}")
 
-    time.sleep(5)  # Allow time for orders to execute
+            lot_size = get_lot_size(FYERS, ce_symbol)
+            qty = CONFIG["lots"] * lot_size
+            print(f"Lot Size: {lot_size}, Quantity: {qty}")
 
-    # 4. Verify the status of the placed orders
-    ce_order = get_order_status(FYERS, ce_order_id)
-    pe_order = get_order_status(FYERS, pe_order_id)
+            ce_order_id = marketorder_sell(FYERS, ce_symbol, qty)
+            pe_order_id = marketorder_sell(FYERS, pe_symbol, qty)
+            print(f"Placed SELL orders -> CE: {ce_order_id}, PE: {pe_order_id}")
 
-    ce_filled = ce_order and ce_order['status'] == 2
-    pe_filled = pe_order and pe_order['status'] == 2
+            time.sleep(2)  # Wait for order execution
 
-    # 5. If both orders are filled, start monitoring the position
-    if ce_filled and pe_filled:
-        ce_sell_price = float(ce_order['tradedPrice'])
-        pe_sell_price = float(pe_order['tradedPrice'])
+            ce_order = get_order_status(FYERS, ce_order_id)
+            pe_order = get_order_status(FYERS, pe_order_id)
 
-        print('CE sell price:', round(ce_sell_price, 2))
-        print('PE sell price:', round(pe_sell_price, 2))
+            if ce_order and ce_order['status'] == 2 and pe_order and pe_order['status'] == 2:
+                ce_sell_price = float(ce_order['tradedPrice'])
+                pe_sell_price = float(pe_order['tradedPrice'])
+                sell_premium = ce_sell_price + pe_sell_price
 
-        sell_premium = ce_sell_price + pe_sell_price
-        print('Combined premium:', round(sell_premium, 2))
+                trade_details = {
+                    "ce_symbol": ce_symbol, "pe_symbol": pe_symbol,
+                    "ce_ltp": ce_sell_price, "pe_ltp": pe_sell_price,
+                    "qty": qty, "sell_premium": sell_premium,
+                    "premium_base": sell_premium, "sl_premium": sell_premium + CONFIG["stop_loss_pts"]
+                }
+                STATE.add_trade(index_symbol, trade_details)
+                print(f"Trade for {index_symbol} is active. Combined Premium: {sell_premium:.2f}")
+            else:
+                print(f"Orders for {index_symbol} not filled. Cleaning up...")
+                if ce_order and ce_order['filledQty'] > 0:
+                    marketorder_buy(FYERS, ce_symbol, ce_order['filledQty'])
+                if pe_order and pe_order['filledQty'] > 0:
+                    marketorder_buy(FYERS, pe_symbol, pe_order['filledQty'])
+        except Exception as e:
+            print(f"Error processing {index_symbol}: {e}")
 
-        premium_base = sell_premium
-        sl_premium = sell_premium + CONFIG["stop_loss"]
+    if not STATE.active_trades:
+        print("No trades were activated. Exiting.")
+        sys.exit(0)
 
-        # Connect to the WebSocket for real-time price updates
-        STATE.ce_symbol = ce_symbol
-        STATE.pe_symbol = pe_symbol
+    # --- CONNECT WEBSOCKET AND START MONITORING ---
+    fyers_socket = data_ws.FyersDataSocket(
+        access_token=f"{APP_ID}:{ACCESS_TOKEN}",
+        log_path="", litemode=True, write_to_file=False, reconnect=True,
+        on_connect=on_open, on_close=on_close, on_error=on_error, on_message=on_message
+    )
+    print("\n[start] Connecting WebSocket…")
+    fyers_socket.connect()
 
-        fyers_socket = data_ws.FyersDataSocket(
-            access_token=f"{APP_ID}:{ACCESS_TOKEN}",
-            log_path="", litemode=True, write_to_file=False, reconnect=True,
-            on_connect=on_open, on_close=on_close, on_error=on_error, on_message=on_message
-        )
-        print("[start] Connecting WebSocket…")
-        fyers_socket.connect()
+    while True:
+        if dt.datetime.now().time() >= CONFIG["square_off_time"]:
+            print("\nMarket close time reached. Exiting all positions.")
+            for index_symbol, trade in list(STATE.active_trades.items()):
+                print(f"Squaring off {index_symbol}")
+                marketorder_buy(FYERS, trade['ce_symbol'], trade['qty'])
+                marketorder_buy(FYERS, trade['pe_symbol'], trade['qty'])
+            break
 
-        # Wait for the initial price ticks to be received via the WebSocket
-        while STATE.ce_ltp == 0.0 or STATE.pe_ltp == 0.0:
-            print("Waiting for initial price ticks via WebSocket...")
-            time.sleep(1)
+        for index_symbol, trade in list(STATE.active_trades.items()):
+            if trade['ce_ltp'] == 0.0 or trade['pe_ltp'] == 0.0:
+                continue
 
-        # Main monitoring loop to manage the open position
-        while True:
-            current_premium = STATE.ce_ltp + STATE.pe_ltp
+            current_premium = trade['ce_ltp'] + trade['pe_ltp']
 
-            print('===============')
-            print('Combined premium: ', round(sell_premium, 2))
-            print('Stop loss: ', round(sl_premium, 2))
-            print(f'Current Premium: {round(current_premium, 2)} (CE: {STATE.ce_ltp}, PE: {STATE.pe_ltp})')
-            print('Gain: ', round((sell_premium - current_premium), 2))
-            print('MTM: ', round((sell_premium - current_premium) * qty, 2))
+            print(f"\n--- {index_symbol} ---")
+            print(f"Sell Premium: {trade['sell_premium']:.2f}, SL: {trade['sl_premium']:.2f}")
+            print(f"Current Premium: {current_premium:.2f} (CE: {trade['ce_ltp']}, PE: {trade['pe_ltp']})")
+            print(f"Gain: {(trade['sell_premium'] - current_premium):.2f}, MTM: {((trade['sell_premium'] - current_premium) * trade['qty']):.2f}")
 
-            # Trailing Stop Loss (TSL) logic
-            if current_premium < premium_base - CONFIG["tsl"]:
-                premium_decrease = premium_base - current_premium
-                premium_base = current_premium
-                sl_premium = current_premium + CONFIG["stop_loss"]
-                print(f"TSL Adjusted: New SL Premium {sl_premium}, Profit Locked {premium_decrease}")
+            # Trailing Stop Loss (TSL)
+            if current_premium < trade['premium_base'] - CONFIG["tsl_pts"]:
+                trade['premium_base'] = current_premium
+                trade['sl_premium'] = current_premium + CONFIG["stop_loss_pts"]
+                print(f"TSL Adjusted -> New SL Premium: {trade['sl_premium']:.2f}")
 
-            # Stop-loss exit condition
-            if current_premium >= sl_premium:
-                print("Exiting positions due to stop loss trigger.")
-                marketorder_buy(FYERS, ce_symbol, qty)
-                marketorder_buy(FYERS, pe_symbol, qty)
-                break
+            # Stop-loss
+            if current_premium >= trade['sl_premium']:
+                print(f"Exiting {index_symbol} due to stop loss trigger.")
+                marketorder_buy(FYERS, trade['ce_symbol'], trade['qty'])
+                marketorder_buy(FYERS, trade['pe_symbol'], trade['qty'])
+                del STATE.active_trades[index_symbol]
 
-            # Square-off time exit condition
-            if dt.datetime.now().time() >= CONFIG["square_off_time"]:
-                print("Market close time reached. Exiting positions.")
-                marketorder_buy(FYERS, ce_symbol, qty)
-                marketorder_buy(FYERS, pe_symbol, qty)
-                break
+        if not STATE.active_trades:
+            print("All trades have been closed. Exiting.")
+            break
 
-            time.sleep(1)
-    else:
-        # Handle partial fills or failures
-        print("Orders not completely filled. Cleaning up...")
-        if ce_order and ce_order['filledQty'] > 0:
-            print(f"CE order has filled quantity of {ce_order['filledQty']}. Buying back.")
-            marketorder_buy(FYERS, ce_symbol, ce_order['filledQty'])
-        elif ce_order and ce_order['status'] == 6: # pending
-             cancel_order(FYERS, ce_order_id)
-
-        if pe_order and pe_order['filledQty'] > 0:
-            print(f"PE order has filled quantity of {pe_order['filledQty']}. Buying back.")
-            marketorder_buy(FYERS, pe_symbol, pe_order['filledQty'])
-        elif pe_order and pe_order['status'] == 6: # pending
-            cancel_order(FYERS, pe_order_id)
+        time.sleep(1)
 
     print('End of Program')
