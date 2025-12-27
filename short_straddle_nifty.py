@@ -157,33 +157,39 @@ def resolve_option_symbols(fyers: fyersModel.FyersModel, atm_strike: int) -> Tup
     if resp.get("s") != "ok":
         raise RuntimeError(f"Failed to fetch option chain: {resp.get('message')}")
 
-    print("--- RAW API RESPONSE ---")
-    print(resp)
-    print("------------------------")
+    data = resp.get("data", {})
+    chain = data.get("optionsChain", [])
+    expiry_data = data.get("expiryData", [])
 
-    chain = (resp.get("data") or {}).get("optionChain", []) or (resp.get("data") or {}).get("optionsChain", [])
+    if not chain or not expiry_data:
+        raise RuntimeError("Option chain or expiry data is missing in the API response.")
 
-    def get_expiry(opt):
-        return opt.get('expiryDate') or opt.get('expiry_date') or opt.get('expiry')
+    # Find the earliest expiry date
+    try:
+        expiry_dates = [dt.datetime.strptime(item['date'], '%d-%m-%Y').date() for item in expiry_data]
+        earliest_expiry = min(expiry_dates)
+    except (ValueError, KeyError) as e:
+        raise RuntimeError(f"Could not parse expiry dates: {e}")
 
-    # Find earliest expiry
-    expiries = sorted(list(set(get_expiry(opt) for opt in chain if get_expiry(opt))))
-    if not expiries:
-        raise RuntimeError("Could not determine expiry dates from option chain.")
-    earliest_expiry = expiries[0]
+    # Format the date for symbol matching (e.g., 25DEC)
+    expiry_month = earliest_expiry.strftime('%b').upper()
+    expiry_day_year = str(earliest_expiry.year)[-2:] + expiry_month
 
-    # Filter for earliest expiry
-    chain = [opt for opt in chain if get_expiry(opt) == earliest_expiry]
+    # Filter the chain for options of the earliest expiry
+    chain = [opt for opt in chain if expiry_day_year in opt.get('symbol', '')]
+
+    if not chain:
+        raise RuntimeError(f"No options found for the earliest expiry: {earliest_expiry.strftime('%d-%m-%Y')}")
 
     # Find closest CE and PE to the ATM strike
-    ce_options = [opt for opt in chain if opt['optionType'] == 'CE']
-    pe_options = [opt for opt in chain if opt['optionType'] == 'PE']
+    ce_options = [opt for opt in chain if opt['option_type'] == 'CE']
+    pe_options = [opt for opt in chain if opt['option_type'] == 'PE']
 
     if not ce_options or not pe_options:
         raise RuntimeError("Could not find both CE and PE options for the earliest expiry.")
 
-    ce_closest = min(ce_options, key=lambda x: abs(x['strikePrice'] - atm_strike))
-    pe_closest = min(pe_options, key=lambda x: abs(x['strikePrice'] - atm_strike))
+    ce_closest = min(ce_options, key=lambda x: abs(x['strike_price'] - atm_strike))
+    pe_closest = min(pe_options, key=lambda x: abs(x['strike_price'] - atm_strike))
 
     return ce_closest['symbol'], pe_closest['symbol']
 
