@@ -310,6 +310,16 @@ if __name__ == "__main__":
     ACCESS_TOKEN = auth["access_token"]
     FYERS = fyersModel.FyersModel(client_id=APP_ID, is_async=False, token=ACCESS_TOKEN, log_path="")
 
+    print("\n--- Performing initial LTP check ---")
+    for index_config in CONFIG["indices"]:
+        index_symbol = index_config["symbol"]
+        try:
+            ltp = get_index_ltp(FYERS, index_symbol)
+            print(f"[{index_symbol}] Current LTP: {ltp}")
+        except Exception as e:
+            print(f"[{index_symbol}] Error fetching LTP: {e}")
+    print("------------------------------------\n")
+
     print("Waiting for trade entry time:", CONFIG["trade_entry_time"])
     while dt.datetime.now().time() < CONFIG["trade_entry_time"]:
         time.sleep(1)
