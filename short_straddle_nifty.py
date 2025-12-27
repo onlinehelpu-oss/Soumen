@@ -5,10 +5,7 @@ from urllib.parse import urlparse, parse_qs, quote
 from typing import Dict, Any, Optional, Tuple
 
 import requests
-import pandas as pd
-import numpy as np
-import pytz
-from datetime import datetime as dt, timedelta
+import datetime as dt
 
 from fyers_apiv3 import fyersModel
 from fyers_apiv3.FyersWebsocket import data_ws
@@ -173,6 +170,9 @@ def resolve_option_symbols(fyers: fyersModel.FyersModel, atm_strike: int) -> Tup
     ce_options = [opt for opt in chain if opt['optionType'] == 'CE']
     pe_options = [opt for opt in chain if opt['optionType'] == 'PE']
 
+    if not ce_options or not pe_options:
+        raise RuntimeError("Could not find both CE and PE options for the earliest expiry.")
+
     ce_closest = min(ce_options, key=lambda x: abs(x['strikePrice'] - atm_strike))
     pe_closest = min(pe_options, key=lambda x: abs(x['strikePrice'] - atm_strike))
 
@@ -272,7 +272,7 @@ if __name__ == "__main__":
 
     # Wait until the specified trade entry time
     print("Waiting for trade entry time:", CONFIG["trade_entry_time"])
-    while dt.now().time() < CONFIG["trade_entry_time"]:
+    while dt.datetime.now().time() < CONFIG["trade_entry_time"]:
         time.sleep(1)
 
     # 1. Get Nifty LTP and calculate the At-The-Money (ATM) strike price
@@ -358,7 +358,7 @@ if __name__ == "__main__":
                 break
 
             # Square-off time exit condition
-            if dt.now().time() >= CONFIG["square_off_time"]:
+            if dt.datetime.now().time() >= CONFIG["square_off_time"]:
                 print("Market close time reached. Exiting positions.")
                 marketorder_buy(FYERS, ce_symbol, qty)
                 marketorder_buy(FYERS, pe_symbol, qty)
