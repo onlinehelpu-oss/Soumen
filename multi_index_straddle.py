@@ -150,41 +150,82 @@ def round_to_nearest(x: float, base: int) -> int:
     return int(base * round(float(x)/base))
 
 
+import re
+from datetime import datetime
+
+def parse_expiry_from_symbol(symbol: str) -> Optional[datetime]:
+    # For Monthly Contracts like 'NSE:NIFTY25DEC25950PE'
+    # The expiry is the last day of that month.
+    monthly_match = re.search(r'(\d{2})([A-Z]{3})', symbol)
+    if monthly_match:
+        try:
+            year_str, month_str = monthly_match.groups()
+            # Create a date for the 1st of the month, then find the last day
+            temp_date = datetime.strptime(f"20{year_str}-{month_str}-01", '%Y-%b-%d')
+            import calendar
+            _, last_day = calendar.monthrange(temp_date.year, temp_date.month)
+            return temp_date.replace(day=last_day)
+        except (ValueError, ImportError):
+            pass # Fall through to weekly check
+
+    # For Weekly Contracts like 'NSE:NIFTY2490525950PE' (YYMDD format)
+    weekly_match = re.search(r'(\d{2})(\d)(\d{2})', symbol)
+    if weekly_match:
+        try:
+            year_str, month_digit, day_str = weekly_match.groups()
+            # The month is a single digit: 1-9 for Jan-Sep, O,N,D for Oct,Nov,Dec
+            month_map = {'1': 'Jan', '2': 'Feb', '3': 'Mar', '4': 'Apr', '5': 'May',
+                         '6': 'Jun', '7': 'Jul', '8': 'Aug', '9': 'Sep', 'O': 'Oct',
+                         'N': 'Nov', 'D': 'Dec'}
+
+            month_str = month_map.get(month_digit.upper())
+            if month_str:
+                return datetime.strptime(f"20{year_str}-{month_str}-{day_str}", '%Y-%b-%d')
+
+        except (ValueError, KeyError):
+            pass
+
+    return None
+
+
 def resolve_option_symbols(fyers: fyersModel.FyersModel, index_symbol: str, atm_strike: int) -> Tuple[str, str]:
     """
     Queries FYERS option chain for a given index. It first identifies the earliest
-    expiry date available and then returns the (CE_symbol, PE_symbol) for the
-    strike closest to ATM for that specific expiry.
+    expiry date by parsing the symbol string, then returns the (CE_symbol, PE_symbol)
+    for the strike closest to ATM for that specific expiry.
     """
-    data = {"symbol": index_symbol, "strikecount": 12}  # Fetch a wider range
+    data = {"symbol": index_symbol, "strikecount": 12}
     resp = fyers.optionchain(data=data)
 
     if resp.get("s") != "ok":
         raise RuntimeError(f"Failed to fetch option chain for {index_symbol}: {resp.get('message', 'No message')}")
 
-    # The key can be 'optionChain' or 'optionsChain', handle both
-    chain = (resp.get("data") or {}).get("optionsChain")
-    if chain is None:
-        chain = (resp.get("data") or {}).get("optionChain", [])
+    chain = (resp.get("data") or {}).get("optionsChain", (resp.get("data") or {}).get("optionChain", []))
 
     if not chain:
-        raise RuntimeError(f"Option chain for {index_symbol} is empty in the API response.")
+        raise RuntimeError(f"Option chain for {index_symbol} is empty.")
 
-    # 1. Find the earliest expiry date from the entire chain
-    try:
-        earliest_expiry_timestamp = min(opt['expiry'] for opt in chain if 'expiry' in opt)
-    except (ValueError, KeyError):
-        raise RuntimeError(f"Could not determine the earliest expiry for {index_symbol}.")
+    # Add parsed expiry date to each option
+    for opt in chain:
+        opt['parsed_expiry'] = parse_expiry_from_symbol(opt.get('symbol', ''))
 
-    # 2. Filter the chain to include only options with that earliest expiry
-    nearest_expiry_options = [opt for opt in chain if opt.get('expiry') == earliest_expiry_timestamp]
+    # Filter out any options where we couldn't parse the expiry
+    valid_options = [opt for opt in chain if opt.get('parsed_expiry')]
+    if not valid_options:
+        raise RuntimeError(f"Could not parse expiry from any option symbols for {index_symbol}.")
 
-    # 3. From the filtered list, find the closest CE and PE to the ATM strike
+    # 1. Find the earliest expiry date
+    earliest_expiry = min(opt['parsed_expiry'] for opt in valid_options)
+
+    # 2. Filter for options with that earliest expiry
+    nearest_expiry_options = [opt for opt in valid_options if opt['parsed_expiry'] == earliest_expiry]
+
+    # 3. Find the closest CE and PE to the ATM strike from that filtered list
     ce_options = [opt for opt in nearest_expiry_options if opt.get('option_type') == 'CE']
     pe_options = [opt for opt in nearest_expiry_options if opt.get('option_type') == 'PE']
 
     if not ce_options or not pe_options:
-        raise RuntimeError(f"Could not find both CE and PE options for the nearest expiry of {index_symbol}.")
+        raise RuntimeError(f"Could not find both CE/PE options for the nearest expiry of {index_symbol}.")
 
     ce_closest = min(ce_options, key=lambda x: abs(x.get('strike_price', float('inf')) - atm_strike))
     pe_closest = min(pe_options, key=lambda x: abs(x.get('strike_price', float('inf')) - atm_strike))
