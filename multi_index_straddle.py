@@ -154,43 +154,36 @@ import re
 from datetime import datetime
 
 def parse_expiry_from_symbol(symbol: str) -> Optional[datetime]:
-    # Extracts base symbol name e.g. NIFTY from NSE:NIFTY25DEC25950PE
-    base_match = re.search(r'NSE:([A-Z]+)', symbol)
-    if not base_match:
+    # This single regex handles both weekly (YYMDD) and monthly (YYMMM) formats.
+    # e.g., NIFTY24905... -> ('24', '9', '05')
+    # e.g., NIFTY25DEC... -> ('25', 'DEC', None)
+    match = re.search(r'([A-Z]+)(\d{2})([A-Z]{3}|[1-9OND])(\d{2})?', symbol)
+    if not match:
         return None
 
-    date_strike_part = symbol[len(base_match.group(0)):]
+    _, year_str, month_str, day_str = match.groups()
 
-    # For Monthly Contracts like '25DEC25950PE'
-    monthly_match = re.match(r'(\d{2})([A-Z]{3})', date_strike_part)
-    if monthly_match:
-        year_str, month_str = monthly_match.groups()
-        # The day is part of the strike price, not the date code.
-        # Monthly contracts expire on the last Thursday. We'll find it.
-        try:
-            temp_date = datetime.strptime(f"20{year_str}-{month_str}-01", '%Y-%b-%d')
+    month_map = {
+        '1':'Jan','2':'Feb','3':'Mar','4':'Apr','5':'May','6':'Jun',
+        '7':'Jul','8':'Aug','9':'Sep','O':'Oct','N':'Nov','D':'Dec'
+    }
+
+    try:
+        if month_str.isalpha(): # Monthly contract like 'DEC'
+            month_full = month_str
+            # Monthly options expire on the last Thursday of the month.
+            temp_date = datetime.strptime(f"20{year_str}-{month_full}-01", '%Y-%b-%d')
             import calendar
             month_calendar = calendar.monthcalendar(temp_date.year, temp_date.month)
             last_thursday = [week[calendar.THURSDAY] for week in month_calendar if week[calendar.THURSDAY] != 0][-1]
             return temp_date.replace(day=last_thursday)
-        except (ValueError, ImportError):
-            return None
 
-    # For Weekly Contracts like '2490525950PE' (YYMDD format)
-    weekly_match = re.match(r'(\d{2})([1-9OND])(\d{2})', date_strike_part)
-    if weekly_match:
-        try:
-            year_str, month_char, day_str = weekly_match.groups()
-            month_map = {
-                '1': 'Jan', '2': 'Feb', '3': 'Mar', '4': 'Apr', '5': 'May', '6': 'Jun',
-                '7': 'Jul', '8': 'Aug', '9': 'Sep', 'O': 'Oct', 'N': 'Nov', 'D': 'Dec'
-            }
-            month_str = month_map[month_char]
-            return datetime.strptime(f"20{year_str}-{month_str}-{day_str}", '%Y-%b-%d')
-        except (ValueError, KeyError):
-            return None
+        else: # Weekly contract like '9' for Sep
+            month_full = month_map[month_str]
+            return datetime.strptime(f"20{year_str}-{month_full}-{day_str}", '%Y-%b-%d')
 
-    return None
+    except (ValueError, KeyError, ImportError):
+        return None
 
 
 def resolve_option_symbols(fyers: fyersModel.FyersModel, index_symbol: str, atm_strike: int) -> Tuple[str, str]:
