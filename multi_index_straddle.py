@@ -154,36 +154,45 @@ import re
 from datetime import datetime
 
 def parse_expiry_from_symbol(symbol: str) -> Optional[datetime]:
-    # For Monthly Contracts like 'NSE:NIFTY25DEC25950PE'
-    # The expiry is the last day of that month.
-    monthly_match = re.search(r'(\d{2})([A-Z]{3})', symbol)
+    # Extracts base symbol name e.g. NIFTY from NSE:NIFTY25DEC25950PE
+    base_match = re.search(r'NSE:([A-Z]+)', symbol)
+    if not base_match:
+        return None
+    base_symbol = base_match.group(1)
+
+    # Everything after the base symbol e.g. 25DEC25950PE
+    date_strike_part = symbol[len(base_match.group(0)):]
+
+    # For Monthly Contracts like '25DEC25950PE'
+    monthly_match = re.match(r'(\d{2})([A-Z]{3})', date_strike_part)
     if monthly_match:
         try:
             year_str, month_str = monthly_match.groups()
-            # Create a date for the 1st of the month, then find the last day
+            # Monthly options expire on the last Thursday of the month.
+            # We'll create a date and find that last Thursday.
             temp_date = datetime.strptime(f"20{year_str}-{month_str}-01", '%Y-%b-%d')
             import calendar
-            _, last_day = calendar.monthrange(temp_date.year, temp_date.month)
-            return temp_date.replace(day=last_day)
+            month_calendar = calendar.monthcalendar(temp_date.year, temp_date.month)
+            # Last Thursday is in the last or second to last week
+            last_thursday = [week[calendar.THURSDAY] for week in month_calendar if week[calendar.THURSDAY] != 0][-1]
+            return temp_date.replace(day=last_thursday)
         except (ValueError, ImportError):
-            pass # Fall through to weekly check
+            pass  # Let it fall through
 
-    # For Weekly Contracts like 'NSE:NIFTY2490525950PE' (YYMDD format)
-    weekly_match = re.search(r'(\d{2})(\d)(\d{2})', symbol)
+    # For Weekly Contracts like '2490525950PE' (YYMDD format)
+    # Year(2) Month(1) Day(2) -> 24 9 05
+    weekly_match = re.match(r'(\d{2})([1-9OND])(\d{2})', date_strike_part)
     if weekly_match:
         try:
-            year_str, month_digit, day_str = weekly_match.groups()
-            # The month is a single digit: 1-9 for Jan-Sep, O,N,D for Oct,Nov,Dec
-            month_map = {'1': 'Jan', '2': 'Feb', '3': 'Mar', '4': 'Apr', '5': 'May',
-                         '6': 'Jun', '7': 'Jul', '8': 'Aug', '9': 'Sep', 'O': 'Oct',
-                         'N': 'Nov', 'D': 'Dec'}
-
-            month_str = month_map.get(month_digit.upper())
-            if month_str:
-                return datetime.strptime(f"20{year_str}-{month_str}-{day_str}", '%Y-%b-%d')
-
+            year_str, month_char, day_str = weekly_match.groups()
+            month_map = {
+                '1': 'Jan', '2': 'Feb', '3': 'Mar', '4': 'Apr', '5': 'May', '6': 'Jun',
+                '7': 'Jul', '8': 'Aug', '9': 'Sep', 'O': 'Oct', 'N': 'Nov', 'D': 'Dec'
+            }
+            month_str = month_map[month_char]
+            return datetime.strptime(f"20{year_str}-{month_str}-{day_str}", '%Y-%b-%d')
         except (ValueError, KeyError):
-            pass
+            pass # Should not happen if regex is correct
 
     return None
 
@@ -289,11 +298,19 @@ def get_lot_size(fyers: fyersModel.FyersModel, symbol: str) -> int:
     """
     data = {"symbols": symbol}
     resp = fyers.quotes(data=data)
+
     if resp.get("s") == "ok" and resp.get("d"):
-        lot_size = resp["d"][0]["v"].get("lot_size")
-        if lot_size:
-            return int(lot_size)
-    raise RuntimeError(f"Failed to fetch lot size for {symbol}: {resp.get('message')}")
+        quotes_data = resp["d"]
+        if quotes_data and isinstance(quotes_data, list) and len(quotes_data) > 0:
+            instrument_data = quotes_data[0]
+            if instrument_data.get("n") == symbol and instrument_data.get("s") == "ok":
+                lot_size = instrument_data.get("v", {}).get("lot_size")
+                if lot_size is not None:
+                    return int(lot_size)
+
+    # If we reach here, something went wrong. Provide a detailed error.
+    error_message = resp.get('message', 'No specific error message from API.')
+    raise RuntimeError(f"Failed to fetch or parse lot size for {symbol}. API response: {error_message} | Full response: {resp}")
 
 
 def get_order_status(fyers: fyersModel.FyersModel, order_id: str) -> Optional[Dict[str, Any]]:
