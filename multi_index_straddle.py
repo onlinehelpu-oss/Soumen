@@ -154,79 +154,55 @@ import re
 from datetime import datetime
 
 def parse_expiry_from_symbol(symbol: str) -> Optional[datetime]:
-    # Extracts base symbol name e.g. NIFTY from NSE:NIFTY25DEC25950PE
-    base_match = re.search(r'NSE:([A-Z]+)', symbol)
-    if not base_match:
-        return None
-    base_symbol = base_match.group(1)
+    try:
+        # Extracts base symbol name e.g. NIFTY from NSE:NIFTY25DEC25950PE
+        base_match = re.search(r'NSE:([A-Z]+)', symbol)
+        if not base_match: return None
 
-    # Everything after the base symbol e.g. 25DEC25950PE
-    date_strike_part = symbol[len(base_match.group(0)):]
+        date_strike_part = symbol[len(base_match.group(0)):]
 
-    # For Monthly Contracts like '25DEC25950PE'
-    monthly_match = re.match(r'(\d{2})([A-Z]{3})', date_strike_part)
-    if monthly_match:
-        try:
+        # For Monthly Contracts like '25DEC25950PE'
+        monthly_match = re.match(r'(\d{2})([A-Z]{3})', date_strike_part)
+        if monthly_match:
             year_str, month_str = monthly_match.groups()
-            # Monthly options expire on the last Thursday of the month.
-            # We'll create a date and find that last Thursday.
             temp_date = datetime.strptime(f"20{year_str}-{month_str}-01", '%Y-%b-%d')
             import calendar
-            month_calendar = calendar.monthcalendar(temp_date.year, temp_date.month)
-            # Last Thursday is in the last or second to last week
-            last_thursday = [week[calendar.THURSDAY] for week in month_calendar if week[calendar.THURSDAY] != 0][-1]
+            _, last_day = calendar.monthrange(temp_date.year, temp_date.month)
+            last_thursday = max([week[calendar.THURSDAY] for week in calendar.monthcalendar(temp_date.year, temp_date.month) if week[calendar.THURSDAY] != 0])
             return temp_date.replace(day=last_thursday)
-        except (ValueError, ImportError):
-            pass  # Let it fall through
 
-    # For Weekly Contracts like '2490525950PE' (YYMDD format)
-    # Year(2) Month(1) Day(2) -> 24 9 05
-    weekly_match = re.match(r'(\d{2})([1-9OND])(\d{2})', date_strike_part)
-    if weekly_match:
-        try:
+        # For Weekly Contracts like '2490525950PE' (YYMDD format)
+        weekly_match = re.match(r'(\d{2})([1-9OND])(\d{2})', date_strike_part)
+        if weekly_match:
             year_str, month_char, day_str = weekly_match.groups()
-            month_map = {
-                '1': 'Jan', '2': 'Feb', '3': 'Mar', '4': 'Apr', '5': 'May', '6': 'Jun',
-                '7': 'Jul', '8': 'Aug', '9': 'Sep', 'O': 'Oct', 'N': 'Nov', 'D': 'Dec'
-            }
+            month_map = {'1':'Jan','2':'Feb','3':'Mar','4':'Apr','5':'May','6':'Jun','7':'Jul','8':'Aug','9':'Sep','O':'Oct','N':'Nov','D':'Dec'}
             month_str = month_map[month_char]
             return datetime.strptime(f"20{year_str}-{month_str}-{day_str}", '%Y-%b-%d')
-        except (ValueError, KeyError):
-            pass # Should not happen if regex is correct
-
+    except Exception:
+        return None
     return None
 
-
 def resolve_option_symbols(fyers: fyersModel.FyersModel, index_symbol: str, atm_strike: int) -> Tuple[str, str]:
-    """
-    Queries FYERS option chain for a given index. It first identifies the earliest
-    expiry date by parsing the symbol string, then returns the (CE_symbol, PE_symbol)
-    for the strike closest to ATM for that specific expiry.
-    """
     data = {"symbol": index_symbol, "strikecount": 12}
     resp = fyers.optionchain(data=data)
 
     if resp.get("s") != "ok":
         raise RuntimeError(f"Failed to fetch option chain for {index_symbol}: {resp.get('message', 'No message')}")
 
-    chain = (resp.get("data") or {}).get("optionsChain", (resp.get("data") or {}).get("optionChain", []))
-
+    chain = (resp.get("data") or {}).get("optionsChain", [])
     if not chain:
         raise RuntimeError(f"Option chain for {index_symbol} is empty.")
 
-    # Add parsed expiry date to each option
     for opt in chain:
         opt['parsed_expiry'] = parse_expiry_from_symbol(opt.get('symbol', ''))
 
-    # Filter out any options where we couldn't parse the expiry
     valid_options = [opt for opt in chain if opt.get('parsed_expiry')]
     if not valid_options:
         raise RuntimeError(f"Could not parse expiry from any option symbols for {index_symbol}.")
 
-    # 1. Find the earliest expiry date
     earliest_expiry = min(opt['parsed_expiry'] for opt in valid_options)
+    print(f"[{index_symbol}] Earliest expiry found: {earliest_expiry.date()}")
 
-    # 2. Filter for options with that earliest expiry
     nearest_expiry_options = [opt for opt in valid_options if opt['parsed_expiry'] == earliest_expiry]
 
     # 3. Find the closest CE and PE to the ATM strike from that filtered list
@@ -296,17 +272,15 @@ def get_lot_size(fyers: fyersModel.FyersModel, symbol: str) -> int:
     """
     Retrieves the lot size for a given option symbol.
     """
-    data = {"symbols": symbol}
-    resp = fyers.quotes(data=data)
+    data = {"symbol": symbol}
+    resp = fyers.get_symbol_master(data=data)
 
     if resp.get("s") == "ok" and resp.get("d"):
-        quotes_data = resp["d"]
-        if quotes_data and isinstance(quotes_data, list) and len(quotes_data) > 0:
-            instrument_data = quotes_data[0]
-            if instrument_data.get("n") == symbol and instrument_data.get("s") == "ok":
-                lot_size = instrument_data.get("v", {}).get("lot_size")
-                if lot_size is not None:
-                    return int(lot_size)
+        symbol_data = resp["d"]
+        if symbol_data and isinstance(symbol_data, dict):
+            lot_size = symbol_data.get(symbol, {}).get("lot_size")
+            if lot_size is not None:
+                return int(lot_size)
 
     # If we reach here, something went wrong. Provide a detailed error.
     error_message = resp.get('message', 'No specific error message from API.')
