@@ -6,9 +6,87 @@ from typing import Dict, Any, Optional, Tuple
 
 import requests
 import datetime as dt
+import pandas as pd
+import io
 
 from fyers_apiv3 import fyersModel
 from fyers_apiv3.FyersWebsocket import data_ws
+
+
+# ============================== SYMBOL MASTER =================================
+class SymbolMaster:
+    """
+    Handles downloading, caching, and looking up instrument details from the
+    Fyers symbol master CSV file.
+    """
+    CACHE_FILE = "fno_symbol_master.csv"
+    CACHE_EXPIRY_HOURS = 24
+
+    def __init__(self, fyers: fyersModel.FyersModel):
+        self._fyers = fyers
+        self._df = None
+        self._ensure_cache_updated()
+
+    def _is_cache_valid(self) -> bool:
+        if not os.path.exists(self.CACHE_FILE):
+            return False
+
+        last_mod_time = os.path.getmtime(self.CACHE_FILE)
+        expiry_time = last_mod_time + self.CACHE_EXPIRY_HOURS * 3600
+        return time.time() < expiry_time
+
+    def _download_master(self):
+        print("[SymbolMaster] Cache is invalid or missing. Downloading new symbol master...")
+        resp = self._fyers.broker_config()
+
+        if resp.get("s") != "ok":
+            raise RuntimeError(f"Failed to fetch broker config: {resp.get('message')}")
+
+        fno_details = next((item for item in resp.get("data", {}).get("symbolMaster", []) if item["feed_name"] == "FNO"), None)
+        if not fno_details or "url" not in fno_details:
+            raise RuntimeError("Could not find FNO symbol master URL in broker config.")
+
+        url = fno_details["url"]
+        headers = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' }
+        try:
+            r = requests.get(url, headers=headers, timeout=30)
+            r.raise_for_status()
+
+            with open(self.CACHE_FILE, "wb") as f:
+                f.write(r.content)
+            print(f"[SymbolMaster] Successfully downloaded and saved to '{self.CACHE_FILE}'")
+        except requests.RequestException as e:
+            raise RuntimeError(f"Failed to download symbol master from {url}: {e}")
+
+    def _ensure_cache_updated(self):
+        if not self._is_cache_valid():
+            self._download_master()
+            self._df = None # Force reload on next access
+
+    def _load_df(self):
+        if self._df is None:
+            print("[SymbolMaster] Loading symbol master into memory...")
+            try:
+                self._df = pd.read_csv(self.CACHE_FILE, header=None)
+                self._df.columns = [
+                    'exchange', 'symbol_id', 'symbol', 'instrument_type', 'lot_size',
+                    'tick_size', 'isin', 'trading_segment', 'expiry_date', 'strike_price',
+                    'option_type', 'underlying_symbol', 'description'
+                ]
+                self._df.set_index('symbol', inplace=True)
+                print("[SymbolMaster] Load complete.")
+            except Exception as e:
+                raise RuntimeError(f"Failed to load or parse '{self.CACHE_FILE}': {e}")
+
+    def get_lot_size(self, symbol: str) -> int:
+        self._load_df()
+        try:
+            lot_size = self._df.loc[symbol, 'lot_size']
+            return int(lot_size)
+        except KeyError:
+            raise RuntimeError(f"Symbol '{symbol}' not found in the symbol master.")
+        except (ValueError, TypeError):
+             raise RuntimeError(f"Could not parse lot size for '{symbol}'.")
 
 
 # ============================== LOGIN (v3 api-t1) =============================
@@ -152,16 +230,26 @@ def round_to_nearest(x: float, base: int) -> int:
 
 import re
 from datetime import datetime
+import calendar
 
 def parse_expiry_from_symbol(symbol: str) -> Optional[datetime]:
-    # This single regex handles both weekly (YYMDD) and monthly (YYMMM) formats.
-    # e.g., NIFTY24905... -> ('24', '9', '05')
-    # e.g., NIFTY25DEC... -> ('25', 'DEC', None)
     match = re.search(r'([A-Z]+)(\d{2})([A-Z]{3}|[1-9OND])(\d{2})?', symbol)
     if not match:
         return None
 
     _, year_str, month_str, day_str = match.groups()
+
+    # Make the year calculation robust to century changes (e.g., '99' -> '00')
+    current_year_full = datetime.now().year
+    current_century = (current_year_full // 100) * 100
+    symbol_year_two_digit = int(year_str)
+    current_year_two_digit = current_year_full % 100
+
+    full_year = current_century + symbol_year_two_digit
+    # Heuristic: If the symbol year is much smaller than the current year
+    # (e.g., current is 99, symbol is 01), it's next century.
+    if symbol_year_two_digit < current_year_two_digit and current_year_two_digit - symbol_year_two_digit > 80:
+        full_year += 100
 
     month_map = {
         '1':'Jan','2':'Feb','3':'Mar','4':'Apr','5':'May','6':'Jun',
@@ -171,23 +259,20 @@ def parse_expiry_from_symbol(symbol: str) -> Optional[datetime]:
     try:
         if month_str.isalpha(): # Monthly contract like 'DEC'
             month_full = month_str
-            # Monthly options expire on the last Thursday of the month.
-            temp_date = datetime.strptime(f"20{year_str}-{month_full}-01", '%Y-%b-%d')
-            import calendar
+            temp_date = datetime.strptime(f"{full_year}-{month_full}-01", '%Y-%b-%d')
             month_calendar = calendar.monthcalendar(temp_date.year, temp_date.month)
             last_thursday = [week[calendar.THURSDAY] for week in month_calendar if week[calendar.THURSDAY] != 0][-1]
             return temp_date.replace(day=last_thursday)
-
         else: # Weekly contract like '9' for Sep
             month_full = month_map[month_str]
-            return datetime.strptime(f"20{year_str}-{month_full}-{day_str}", '%Y-%b-%d')
-
-    except (ValueError, KeyError, ImportError):
+            return datetime.strptime(f"{full_year}-{month_full}-{day_str}", '%Y-%b-%d')
+    except (ValueError, KeyError):
         return None
 
 
 def resolve_option_symbols(fyers: fyersModel.FyersModel, index_symbol: str, atm_strike: int) -> Tuple[str, str]:
-    data = {"symbol": index_symbol, "strikecount": 12}
+    # By removing "strikecount", we request the full option chain, including all expiries.
+    data = {"symbol": index_symbol}
     resp = fyers.optionchain(data=data)
 
     if resp.get("s") != "ok":
@@ -206,20 +291,30 @@ def resolve_option_symbols(fyers: fyersModel.FyersModel, index_symbol: str, atm_
 
     today = datetime.now().date()
     future_options = [opt for opt in valid_options if opt['parsed_expiry'].date() >= today]
-    if not future_options:
-        raise RuntimeError(f"Could not find any future expiry dates for {index_symbol}.")
 
-    earliest_expiry = min(opt['parsed_expiry'] for opt in future_options)
-    print(f"[{index_symbol}] Nearest future expiry found: {earliest_expiry.date()}")
+    target_expiry = None
+    if future_options:
+        # If we have future options, find the earliest one
+        target_expiry = min(opt['parsed_expiry'] for opt in future_options)
+        print(f"[{index_symbol}] Nearest future expiry found: {target_expiry.date()}")
+    else:
+        # Fallback: No future options found, use the latest available expired option
+        all_expiries = [opt['parsed_expiry'] for opt in valid_options]
+        if all_expiries:
+            target_expiry = max(all_expiries)
+            print(f"[{index_symbol}] WARNING: No future expiry found. Falling back to latest available expiry: {target_expiry.date()}")
+        else:
+             raise RuntimeError(f"Could not find any valid expiry dates for {index_symbol}.")
 
-    nearest_expiry_options = [opt for opt in future_options if opt['parsed_expiry'] == earliest_expiry]
+    # Now, filter options based on the selected target_expiry
+    nearest_expiry_options = [opt for opt in valid_options if opt['parsed_expiry'] == target_expiry]
 
-    # 3. Find the closest CE and PE to the ATM strike from that filtered list
+    # Find the closest CE and PE to the ATM strike from that filtered list
     ce_options = [opt for opt in nearest_expiry_options if opt.get('option_type') == 'CE']
     pe_options = [opt for opt in nearest_expiry_options if opt.get('option_type') == 'PE']
 
     if not ce_options or not pe_options:
-        raise RuntimeError(f"Could not find both CE/PE options for the nearest expiry of {index_symbol}.")
+        raise RuntimeError(f"Could not find both CE/PE options for the selected expiry of {index_symbol}.")
 
     ce_closest = min(ce_options, key=lambda x: abs(x.get('strike_price', float('inf')) - atm_strike))
     pe_closest = min(pe_options, key=lambda x: abs(x.get('strike_price', float('inf')) - atm_strike))
@@ -275,26 +370,6 @@ def marketorder_sell(fyers: fyersModel.FyersModel, symbol: str, quantity: int) -
         sys.exit(1)
 
     raise RuntimeError(f"Failed to place SELL order: {message}")
-
-
-def get_lot_size(fyers: fyersModel.FyersModel, symbol: str) -> int:
-    """
-    Retrieves the lot size for a given option symbol using the quotes endpoint.
-    This version correctly parses the nested structure of the response.
-    """
-    data = {"symbols": symbol}
-    resp = fyers.quotes(data=data)
-
-    if resp.get("s") == "ok":
-        quotes_data = resp.get("d")
-        if quotes_data and isinstance(quotes_data, list) and quotes_data[0].get("s") == "ok":
-            lot_size = quotes_data[0].get("v", {}).get("lot_size")
-            if lot_size is not None:
-                return int(lot_size)
-
-    # If lot_size is not found, provide a detailed error.
-    error_message = resp.get('message', 'No specific error message from API.')
-    raise RuntimeError(f"Failed to fetch or parse lot size for {symbol}. API Response: {resp}")
 
 
 def get_order_status(fyers: fyersModel.FyersModel, order_id: str) -> Optional[Dict[str, Any]]:
@@ -367,37 +442,31 @@ if __name__ == "__main__":
     ACCESS_TOKEN = auth["access_token"]
     FYERS = fyersModel.FyersModel(client_id=APP_ID, is_async=False, token=ACCESS_TOKEN, log_path="")
 
-    print("\n--- Live Lot Size Check for Current Expiry ---")
-    for index_config in CONFIG["indices"]:
-        index_symbol = index_config["symbol"]
-        try:
-            # We need a symbol to check, so we find a near-ATM option
-            ltp = get_index_ltp(FYERS, index_symbol)
-            atm_strike = round_to_nearest(ltp, index_config["strike_round"])
-            ce_symbol, _ = resolve_option_symbols(FYERS, index_symbol, atm_strike)
+    # Initialize the SymbolMaster to download/load the cache.
+    try:
+        SYMBOL_MASTER = SymbolMaster(FYERS)
+    except Exception as e:
+        print(f"FATAL: Could not initialize SymbolMaster: {e}")
+        sys.exit(1)
 
-            # The actual check:
-            live_lot_size = get_lot_size(FYERS, ce_symbol)
-            print(f"[{index_symbol}] Detected Lot Size: {live_lot_size}")
-        except Exception as e:
-            print(f"[{index_symbol}] Could not perform live lot size check: {e}")
-    print("----------------------------------------------\n")
-
-
-    print("\n--- Performing initial check ---")
+    print("\n--- Performing Pre-trade Symbol and Lot Size Check ---")
     for index_config in CONFIG["indices"]:
         index_symbol = index_config["symbol"]
         strike_round = index_config["strike_round"]
         try:
             ltp = get_index_ltp(FYERS, index_symbol)
             atm_strike = round_to_nearest(ltp, strike_round)
+            # Resolve symbols first
             ce_symbol, pe_symbol = resolve_option_symbols(FYERS, index_symbol, atm_strike)
-            print(f"[{index_symbol}] LTP: {ltp}, ATM Strike: {atm_strike}")
+            # Then get lot size from our reliable master
+            lot_size = SYMBOL_MASTER.get_lot_size(ce_symbol)
+
+            print(f"[{index_symbol}] LTP: {ltp}, ATM Strike: {atm_strike}, Lot Size: {lot_size}")
             print(f"    -> Potential CE: {ce_symbol}")
             print(f"    -> Potential PE: {pe_symbol}")
         except Exception as e:
-            print(f"[{index_symbol}] Error during initial check: {e}")
-    print("--------------------------------\n")
+            print(f"[{index_symbol}] Error during pre-trade check: {e}")
+    print("----------------------------------------------------\n")
 
     print("Waiting for trade entry time:", CONFIG["trade_entry_time"])
     while dt.datetime.now().time() < CONFIG["trade_entry_time"]:
@@ -417,7 +486,7 @@ if __name__ == "__main__":
             ce_symbol, pe_symbol = resolve_option_symbols(FYERS, index_symbol, atm_strike)
             print(f"CE Symbol: {ce_symbol}, PE Symbol: {pe_symbol}")
 
-            lot_size = get_lot_size(FYERS, ce_symbol)
+            lot_size = SYMBOL_MASTER.get_lot_size(ce_symbol)
             qty = CONFIG["lots"] * lot_size
             print(f"Lot Size: {lot_size}, Quantity: {qty}")
 
