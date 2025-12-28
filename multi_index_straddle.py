@@ -154,33 +154,44 @@ import re
 from datetime import datetime
 
 def parse_expiry_from_symbol(symbol: str) -> Optional[datetime]:
-    try:
-        # Extracts base symbol name e.g. NIFTY from NSE:NIFTY25DEC25950PE
-        base_match = re.search(r'NSE:([A-Z]+)', symbol)
-        if not base_match: return None
+    # Extracts base symbol name e.g. NIFTY from NSE:NIFTY25DEC25950PE
+    base_match = re.search(r'NSE:([A-Z]+)', symbol)
+    if not base_match:
+        return None
 
-        date_strike_part = symbol[len(base_match.group(0)):]
+    date_strike_part = symbol[len(base_match.group(0)):]
 
-        # For Monthly Contracts like '25DEC25950PE'
-        monthly_match = re.match(r'(\d{2})([A-Z]{3})', date_strike_part)
-        if monthly_match:
-            year_str, month_str = monthly_match.groups()
+    # For Monthly Contracts like '25DEC25950PE'
+    monthly_match = re.match(r'(\d{2})([A-Z]{3})', date_strike_part)
+    if monthly_match:
+        year_str, month_str = monthly_match.groups()
+        # The day is part of the strike price, not the date code.
+        # Monthly contracts expire on the last Thursday. We'll find it.
+        try:
             temp_date = datetime.strptime(f"20{year_str}-{month_str}-01", '%Y-%b-%d')
             import calendar
-            _, last_day = calendar.monthrange(temp_date.year, temp_date.month)
-            last_thursday = max([week[calendar.THURSDAY] for week in calendar.monthcalendar(temp_date.year, temp_date.month) if week[calendar.THURSDAY] != 0])
+            month_calendar = calendar.monthcalendar(temp_date.year, temp_date.month)
+            last_thursday = [week[calendar.THURSDAY] for week in month_calendar if week[calendar.THURSDAY] != 0][-1]
             return temp_date.replace(day=last_thursday)
+        except (ValueError, ImportError):
+            return None
 
-        # For Weekly Contracts like '2490525950PE' (YYMDD format)
-        weekly_match = re.match(r'(\d{2})([1-9OND])(\d{2})', date_strike_part)
-        if weekly_match:
+    # For Weekly Contracts like '2490525950PE' (YYMDD format)
+    weekly_match = re.match(r'(\d{2})([1-9OND])(\d{2})', date_strike_part)
+    if weekly_match:
+        try:
             year_str, month_char, day_str = weekly_match.groups()
-            month_map = {'1':'Jan','2':'Feb','3':'Mar','4':'Apr','5':'May','6':'Jun','7':'Jul','8':'Aug','9':'Sep','O':'Oct','N':'Nov','D':'Dec'}
+            month_map = {
+                '1': 'Jan', '2': 'Feb', '3': 'Mar', '4': 'Apr', '5': 'May', '6': 'Jun',
+                '7': 'Jul', '8': 'Aug', '9': 'Sep', 'O': 'Oct', 'N': 'Nov', 'D': 'Dec'
+            }
             month_str = month_map[month_char]
             return datetime.strptime(f"20{year_str}-{month_str}-{day_str}", '%Y-%b-%d')
-    except Exception:
-        return None
+        except (ValueError, KeyError):
+            return None
+
     return None
+
 
 def resolve_option_symbols(fyers: fyersModel.FyersModel, index_symbol: str, atm_strike: int) -> Tuple[str, str]:
     data = {"symbol": index_symbol, "strikecount": 12}
@@ -200,10 +211,15 @@ def resolve_option_symbols(fyers: fyersModel.FyersModel, index_symbol: str, atm_
     if not valid_options:
         raise RuntimeError(f"Could not parse expiry from any option symbols for {index_symbol}.")
 
-    earliest_expiry = min(opt['parsed_expiry'] for opt in valid_options)
-    print(f"[{index_symbol}] Earliest expiry found: {earliest_expiry.date()}")
+    today = datetime.now().date()
+    future_options = [opt for opt in valid_options if opt['parsed_expiry'].date() >= today]
+    if not future_options:
+        raise RuntimeError(f"Could not find any future expiry dates for {index_symbol}.")
 
-    nearest_expiry_options = [opt for opt in valid_options if opt['parsed_expiry'] == earliest_expiry]
+    earliest_expiry = min(opt['parsed_expiry'] for opt in future_options)
+    print(f"[{index_symbol}] Nearest future expiry found: {earliest_expiry.date()}")
+
+    nearest_expiry_options = [opt for opt in future_options if opt['parsed_expiry'] == earliest_expiry]
 
     # 3. Find the closest CE and PE to the ATM strike from that filtered list
     ce_options = [opt for opt in nearest_expiry_options if opt.get('option_type') == 'CE']
@@ -270,21 +286,22 @@ def marketorder_sell(fyers: fyersModel.FyersModel, symbol: str, quantity: int) -
 
 def get_lot_size(fyers: fyersModel.FyersModel, symbol: str) -> int:
     """
-    Retrieves the lot size for a given option symbol.
+    Retrieves the lot size for a given option symbol using the quotes endpoint.
+    This version correctly parses the nested structure of the response.
     """
-    data = {"symbol": symbol}
-    resp = fyers.get_symbol_master(data=data)
+    data = {"symbols": symbol}
+    resp = fyers.quotes(data=data)
 
-    if resp.get("s") == "ok" and resp.get("d"):
-        symbol_data = resp["d"]
-        if symbol_data and isinstance(symbol_data, dict):
-            lot_size = symbol_data.get(symbol, {}).get("lot_size")
+    if resp.get("s") == "ok":
+        quotes_data = resp.get("d")
+        if quotes_data and isinstance(quotes_data, list) and quotes_data[0].get("s") == "ok":
+            lot_size = quotes_data[0].get("v", {}).get("lot_size")
             if lot_size is not None:
                 return int(lot_size)
 
-    # If we reach here, something went wrong. Provide a detailed error.
+    # If lot_size is not found, provide a detailed error.
     error_message = resp.get('message', 'No specific error message from API.')
-    raise RuntimeError(f"Failed to fetch or parse lot size for {symbol}. API response: {error_message} | Full response: {resp}")
+    raise RuntimeError(f"Failed to fetch or parse lot size for {symbol}. API Response: {resp}")
 
 
 def get_order_status(fyers: fyersModel.FyersModel, order_id: str) -> Optional[Dict[str, Any]]:
