@@ -37,7 +37,7 @@ class SymbolMaster:
 
     def _download_master(self):
         print("[SymbolMaster] Cache is invalid or missing. Downloading new symbol master...")
-        resp = self._fyers.get_broker_config()
+        resp = self._fyers.broker_config()
 
         if resp.get("s") != "ok":
             raise RuntimeError(f"Failed to fetch broker config: {resp.get('message')}")
@@ -154,7 +154,7 @@ def validate_authcode(app_id: str, secret_id: str, auth_code: str, max_retries: 
             if r.status_code == 503:
                 sleep_s = min(2 ** attempt, 30)
                 print(f"[{attempt}/{max_retries}] 503 from auth server. Retrying in {sleep_s}s...")
-                time.sleep(sleep_s);
+                time.sleep(sleep_s)
                 continue
             r.raise_for_status()
             data = r.json()
