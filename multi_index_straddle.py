@@ -37,7 +37,7 @@ class SymbolMaster:
 
     def _download_master(self):
         print("[SymbolMaster] Cache is invalid or missing. Downloading new symbol master...")
-        resp = self._fyers.broker_config()
+        resp = self._fyers.get_broker_config()
 
         if resp.get("s") != "ok":
             raise RuntimeError(f"Failed to fetch broker config: {resp.get('message')}")
