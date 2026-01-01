@@ -322,6 +322,13 @@ def run_interactive_login() -> str:
 
 
 # ---------------------------- OPTION HELPERS ----------------------------
+OPTION_ROOT_MAP = {
+    "NSE:NIFTY50-INDEX": "NSE:NIFTY",
+    "NSE:NIFTYBANK-INDEX": "NSE:BANKNIFTY",
+    "NSE:FINNIFTY-INDEX": "NSE:FINNIFTY",
+}
+
+
 def get_strike_increment(symbol: str) -> int:
     s = symbol.upper()
     if "BANKNIFTY" in s:
@@ -342,11 +349,12 @@ def get_option_details(symbol: str, ltp: float) -> Optional[dict]:
     if FYERS is None:
         return None
     try:
-        chain_resp = FYERS.optionchain({"symbol": symbol})
+        option_root = OPTION_ROOT_MAP.get(symbol, symbol)
+        chain_resp = FYERS.optionchain({"symbol": option_root})
         data = chain_resp.get("data", {})
         chain = data.get("optionChain") or data.get("optionsChain", [])
         if not chain:
-            _real_print(f"[{symbol}] Option chain is empty.")
+            _real_print(f"[{symbol}] Option chain is empty for root {option_root}.")
             return None
 
         # Handle both 'expiry_date' and 'expiry' keys
