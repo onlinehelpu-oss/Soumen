@@ -413,7 +413,7 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, underlying: str, ltp: fl
         return None
 
     try:
-        payload = {"symbol": underlying, "strikecount": 20}  # Increased strike count
+        payload = {"symbol": underlying, "strikecount": 20}
         resp = fyers.optionchain(data=payload)
         if not resp or resp.get("s") != "ok":
             _real_print(f"[debug-options] Failed option chain response: {resp}")
@@ -421,7 +421,7 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, underlying: str, ltp: fl
 
         _real_print(f"[debug-options] Option chain API response received.")
         data = resp.get("data", {})
-        chain = data.get("optionsChain", [])
+        chain = data.get("optionsChain", []) or data.get("optionChain", [])
         expiry_data = data.get("expiryData", [])
 
     except Exception as e:
@@ -432,44 +432,20 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, underlying: str, ltp: fl
         _real_print(f"[debug-options] Option chain or expiry data is empty for {underlying}.")
         return None
 
-    nearest_expiry_str = expiry_data[0]['date']
-    _real_print(f"[debug-options] Nearest expiry: {nearest_expiry_str}")
+    nearest_expiry_value = expiry_data[0]['value']
+    _real_print(f"[debug-options] Nearest expiry: {nearest_expiry_value}")
 
     target_strike = calculate_itm_strike(ltp, config["strike_step"])
     _real_print(f"[debug-options] Target ITM strike: {target_strike}")
 
-    # Fyers symbol format: NSE:BANKNIFTY2470349000CE (YYM expiring day DD)
-    fy_sym = config["fy_sym"]
-    try:
-        dt_obj = dt.strptime(nearest_expiry_str, "%d-%m-%Y")
-        yr_short = str(dt_obj.year)[-2:]
-
-        # Fyers month codes: 1-9 for Jan-Sep, O for Oct, N for Nov, D for Dec
-        month_codes = {
-            1: '1', 2: '2', 3: '3', 4: '4', 5: '5', 6: '6',
-            7: '7', 8: '8', 9: '9', 10: 'O', 11: 'N', 12: 'D'
-        }
-        month_code = month_codes.get(dt_obj.month)
-        if not month_code:
-            _real_print(f"[debug-options] Invalid month number {dt_obj.month} from expiry {nearest_expiry_str}")
-            return None
-
-        day_str = dt_obj.strftime('%d')
-        date_prefix = f"{fy_sym}{yr_short}{month_code}{day_str}"
-    except Exception as e:
-        _real_print(f"[debug-options] Error creating date prefix from '{nearest_expiry_str}': {e}")
-        return None
-
-    _real_print(f"[debug-options] Searching for CE candidates with prefix '{date_prefix}' and strike {target_strike}")
-
-    # Filter all available Call options for the nearest expiry
+    # Filter all available Call options for the nearest expiry date
     all_ce_for_expiry = [
         row for row in chain
-        if row.get("option_type") == "CE" and row.get("symbol", "").startswith(f"NSE:{date_prefix}")
+        if row.get("option_type") == "CE" and row.get("expiry_date") == nearest_expiry_value
     ]
 
     if not all_ce_for_expiry:
-        _real_print(f"[debug-options] No Call options found at all for expiry prefix {date_prefix}.")
+        _real_print(f"[debug-options] No Call options found at all for expiry {nearest_expiry_value}.")
         return None
 
     # Try to find an exact match for the target ITM strike
@@ -494,7 +470,7 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, underlying: str, ltp: fl
         return closest
 
     # If NO ITM strikes are available, fall back to the closest available strike (ATM or OTM)
-    _real_print(f"[debug-options] No ITM CE options found for expiry {nearest_expiry_str}.")
+    _real_print(f"[debug-options] No ITM CE options found for expiry {nearest_expiry_value}.")
     available_strikes = sorted([opt.get("strike_price") for opt in all_ce_for_expiry if opt.get("strike_price")])
     _real_print(f"[debug-options] Available CE strikes for this expiry: {available_strikes}")
 
