@@ -411,6 +411,7 @@ class SymbolState:
 
 
 SYMBOL_STATES: Dict[str, SymbolState] = {s: SymbolState(s) for s in SYMBOLS}
+STATE_LOCK = threading.Lock()
 
 # ---------------------------- LOGGING UTIL ----------------------------
 if not os.path.exists(LOG_FILE):
@@ -789,25 +790,26 @@ def compute_swing_low_for_signal(state: SymbolState, lookback: int) -> float:
 
 
 def on_completed_candle(symbol: str, candle: dict):
-    st = SYMBOL_STATES.get(symbol)
-    if st is None:
-        return
-    try:
-        row = {"open": candle["open"], "high": candle["high"],
-               "low": candle["low"], "close": candle["close"], "volume": candle["volume"]}
-        idx = pd.to_datetime(candle["ts"])
-        df = st.data
-        if df is None or df.empty:
-            df = pd.DataFrame([row], index=[idx])
-        else:
-            df = pd.concat([df, pd.DataFrame([row], index=[idx])])
-            df = df.tail(2000)
-        df.index.name = "datetime"
-        st.data = compute_indicators(df)
-        st.last_candle_ts = idx
-    except Exception:
-        return
-    evaluate_on_new_candle(st)
+    with STATE_LOCK:
+        st = SYMBOL_STATES.get(symbol)
+        if st is None:
+            return
+        try:
+            row = {"open": candle["open"], "high": candle["high"],
+                   "low": candle["low"], "close": candle["close"], "volume": candle["volume"]}
+            candle_ts = pd.to_datetime(candle["ts"])
+            df = st.data
+            if df is None or df.empty:
+                df = pd.DataFrame([row], index=[candle_ts])
+            else:
+                df = pd.concat([df, pd.DataFrame([row], index=[candle_ts])])
+                df = df.tail(2000)
+            df.index.name = "datetime"
+            st.data = compute_indicators(df)
+            st.last_candle_ts = candle_ts
+            evaluate_on_new_candle(st, candle_ts)
+        except Exception as e:
+            _real_print(f"[{symbol}] Error processing candle: {e}")
 
 
 # ---------------------------- LTP / Tick handler ----------------------------
@@ -831,49 +833,50 @@ def on_tick(tick: dict):
     if CANDLE_MANAGER:
         CANDLE_MANAGER.process_tick({"symbol": symbol, "ltp": ltp, "vtt": vtt, "timestamp": ts})
 
-    state = SYMBOL_STATES.get(symbol)
-    if state is None:
-        return
+    with STATE_LOCK:
+        state = SYMBOL_STATES.get(symbol)
+        if state is None:
+            return
 
-    # --- ENTRY LOGIC (Strict next-candle) ---
-    if state.status == "entry_pending" and state.signal_candle is not None:
-        sig_ts = pd.to_datetime(state.signal_candle["ts"])
-        next_candle_ts = sig_ts + timedelta(minutes=TIMEFRAME_MIN)
-        current_candle_ts = ts.replace(second=0, microsecond=0, minute=(ts.minute // TIMEFRAME_MIN) * TIMEFRAME_MIN)
+        # --- ENTRY LOGIC (Strict next-candle) ---
+        if state.status == "entry_pending" and state.signal_candle is not None:
+            sig_ts = pd.to_datetime(state.signal_candle["ts"])
+            next_candle_ts = sig_ts + timedelta(minutes=TIMEFRAME_MIN)
+            current_candle_ts = ts.replace(second=0, microsecond=0, minute=(ts.minute // TIMEFRAME_MIN) * TIMEFRAME_MIN)
 
-        if current_candle_ts > next_candle_ts:
-            _real_print(f"[{symbol}] ENTRY SIGNAL EXPIRED (next candle passed).")
-            state.status = "watch"
-            state.signal_candle = None
-        elif current_candle_ts == next_candle_ts and ltp > state.signal_candle["high"]:
-            opt = get_option_details(symbol, ltp)
-            if not opt:
-                _real_print(f"[{symbol}] Could not get option details. Aborting entry.")
+            if current_candle_ts > next_candle_ts:
+                _real_print(f"[{symbol}] ENTRY SIGNAL EXPIRED (next candle passed).")
                 state.status = "watch"
                 state.signal_candle = None
-                return
+            elif current_candle_ts == next_candle_ts and ltp > state.signal_candle["high"]:
+                opt = get_option_details(symbol, ltp)
+                if not opt:
+                    _real_print(f"[{symbol}] Could not get option details. Aborting entry.")
+                    state.status = "watch"
+                    state.signal_candle = None
+                    return
 
-            qty = FIXED_LOTS * opt["lot_size"]
-            resp = place_market_order(opt["symbol"], qty, side=1)  # side=1 for BUY
-            if resp.get("s") == "ok":
-                state.status = "position"
-                state.entry_price = ltp
-                state.option_symbol = opt["symbol"]
-                state.qty = qty
-                state.lot_size = opt["lot_size"]
-                state.just_entered = True
+                qty = FIXED_LOTS * opt["lot_size"]
+                resp = place_market_order(opt["symbol"], qty, side=1)  # side=1 for BUY
+                if resp.get("s") == "ok":
+                    state.status = "position"
+                    state.entry_price = ltp
+                    state.option_symbol = opt["symbol"]
+                    state.qty = qty
+                    state.lot_size = opt["lot_size"]
+                    state.just_entered = True
 
-                if SL_MODE == "signal_low":
-                    state.stop_price = float(state.signal_candle["low"])
+                    if SL_MODE == "signal_low":
+                        state.stop_price = float(state.signal_candle["low"])
+                    else:
+                        swing = compute_swing_low_for_signal(state, SWING_LOOKBACK)
+                        state.stop_price = float(state.signal_candle["low"]) if pd.isna(swing) else swing
+
+                    _real_print(f"[ENTRY CONFIRMED] {symbol} @ {ltp:.2f} | Bought {qty} of {opt['symbol']} | SL={state.stop_price:.2f}")
                 else:
-                    swing = compute_swing_low_for_signal(state, SWING_LOOKBACK)
-                    state.stop_price = float(state.signal_candle["low"]) if pd.isna(swing) else swing
-
-                _real_print(f"[ENTRY CONFIRMED] {symbol} @ {ltp:.2f} | Bought {qty} of {opt['symbol']} | SL={state.stop_price:.2f}")
-            else:
-                _real_print(f"[{symbol}] ENTRY FAILED: {resp.get('message')}")
-                state.status = "cooldown"
-            state.signal_candle = None
+                    _real_print(f"[{symbol}] ENTRY FAILED: {resp.get('message')}")
+                    state.status = "cooldown"
+                state.signal_candle = None
 
     # --- EXIT LOGIC (Stop-loss or EMA signal) ---
     if state.status == "position" and not state.just_entered:
@@ -913,16 +916,17 @@ def on_tick(tick: dict):
         # ---------------------------- STRATEGY EVALUATOR ----------------------------
 
 
-def evaluate_on_new_candle(st: SymbolState):
+def evaluate_on_new_candle(st: SymbolState, candle_ts: pd.Timestamp):
     df = st.data
     if df is None or df.empty:
         return
 
-    last_ts = st.last_candle_ts
-    if last_ts is None:
+    try:
+        curr = df.loc[candle_ts]
+    except KeyError:
+        _real_print(f"[{st.symbol}] Could not find completed candle at {candle_ts} in dataframe.")
         return
 
-    curr = df.loc[last_ts]
     curr_open = float(curr["open"])
     curr_low = float(curr["low"])
     curr_high = float(curr["high"])
@@ -1219,25 +1223,37 @@ def _recreate_fyers_and_ws():
 
 
 def _serialize_state():
-    out = {}
-    for sym, st in SYMBOL_STATES.items():
-        out[sym] = {
-            "status": st.status,
-            "entry_price": st.entry_price,
-            "stop_price": st.stop_price,
-            "option_symbol": st.option_symbol,
-            "option_entry_price": st.option_entry_price,
-            "qty": st.qty,
-            "lot_size": st.lot_size,
-            "last_candle_ts": st.last_candle_ts.isoformat() if st.last_candle_ts else None,
-        }
-    return out
+    with STATE_LOCK:
+        out = {}
+        for sym, st in SYMBOL_STATES.items():
+            # Convert timestamp in signal candle to string for JSON serialization
+            sig_candle = st.signal_candle
+            if sig_candle and 'ts' in sig_candle and isinstance(sig_candle['ts'], pd.Timestamp):
+                sig_candle['ts'] = sig_candle['ts'].isoformat()
+
+            exit_sig_candle = st.exit_signal_candle
+            if exit_sig_candle and 'ts' in exit_sig_candle and isinstance(exit_sig_candle['ts'], pd.Timestamp):
+                exit_sig_candle['ts'] = exit_sig_candle['ts'].isoformat()
+
+            out[sym] = {
+                "status": st.status,
+                "signal_candle": sig_candle,
+                "exit_signal_candle": exit_sig_candle,
+                "entry_price": st.entry_price,
+                "stop_price": st.stop_price,
+                "option_symbol": st.option_symbol,
+                "option_entry_price": st.option_entry_price,
+                "qty": st.qty,
+                "lot_size": st.lot_size,
+            }
+        return out
 
 
 def save_state_to_disk():
     try:
+        state_data = _serialize_state()
         with open(STATE_DUMP, "w") as f:
-            json.dump(_serialize_state(), f, indent=2)
+            json.dump(state_data, f, indent=2, default=str)
     except Exception as e:
         _real_print("[state] Failed to save state:", e)
 
@@ -1248,18 +1264,20 @@ def load_state_from_disk():
     try:
         with open(STATE_DUMP, "r") as f:
             raw = json.load(f)
-        for sym, info in raw.items():
-            if sym not in SYMBOL_STATES:
-                continue
-            st = SYMBOL_STATES[sym]
-            st.status = info.get("status", "watch")
-            st.entry_price = info.get("entry_price", 0.0)
-            st.stop_price = info.get("stop_price", 0.0)
-            st.option_symbol = info.get("option_symbol")
-            st.option_entry_price = info.get("option_entry_price", 0.0)
-            st.qty = info.get("qty", 0)
-            st.lot_size = info.get("lot_size", 1)
-            # Don't load last_candle_ts, let it warm up
+        with STATE_LOCK:
+            for sym, info in raw.items():
+                if sym not in SYMBOL_STATES:
+                    continue
+                st = SYMBOL_STATES[sym]
+                st.status = info.get("status", "watch")
+                st.signal_candle = info.get("signal_candle")
+                st.exit_signal_candle = info.get("exit_signal_candle")
+                st.entry_price = info.get("entry_price", 0.0)
+                st.stop_price = info.get("stop_price", 0.0)
+                st.option_symbol = info.get("option_symbol")
+                st.option_entry_price = info.get("option_entry_price", 0.0)
+                st.qty = info.get("qty", 0)
+                st.lot_size = info.get("lot_size", 1)
     except Exception as e:
         _real_print("[state] Failed to load state:", e)
 
