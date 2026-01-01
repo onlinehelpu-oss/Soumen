@@ -37,13 +37,16 @@ except Exception:
     data_ws = None
 
 # ============================== CONFIGURATION ==============================
-TIMEFRAME_MIN = 5  # 5-minute timeframe for better signals
+TIMEFRAME_MIN = 5  # Any TF in minutes (1,2,3,5,10,15,30,60,...)
 
-EXIT_EMA = 50
-ENTRY_FAST_EMA = 9
-ENTRY_SLOW_EMA = 15
-MIN_RANGE_PCT = 0.0
-EMA_BUFFER = 0.0
+EXIT_EMA = 50  # Exit EMA (red candle cross & close below this)
+
+# EMAs dedicated for ENTRY signal (default 5 and 20 but configurable)Fast EMA
+ENTRY_FAST_EMA = 9  # e.g., EMA 5  (fast)
+ENTRY_SLOW_EMA = 15  # e.g., EMA 20 (slow)
+
+MIN_RANGE_PCT = 0.0  # tiny-candle filter (0.001 = 0.1%), 0.0 = off
+EMA_BUFFER = 0.0  # optional extra buffer above/below EMAs
 REQUIRE_GREEN_SIGNAL = True
 
 # Spot indices to track
@@ -64,12 +67,15 @@ LOG_FILE = "trade_log.csv"
 STATE_DUMP = "symbol_states.json"
 PARTIAL_CANDLES_FILE = "partial_candles.json"
 
-# Risk Management
-FIXED_QTY = 1  # 1 lot per trade
+# Strike selection: 0=ATM, 1=1st OTM, -1=1st ITM
+STRIKE_DISTANCE = 0
 
 # Position management
-SL_MODE = "signal_low"
-SWING_LOOKBACK = 5
+SL_MODE = "signal_low"  # "signal_low" or "swing_low"
+SWING_LOOKBACK = 5  # used for swing-low
+SWING_HIGH_LOOKBACK = 50  # used for target swing-high
+LOT_MULTIPLIER = 1 # Lot multiplier
+
 MAX_CONCURRENT_POS = 3
 DAILY_MAX_LOSS = 50000.0
 TRADING_ENABLED = True
@@ -88,6 +94,13 @@ TOKENS_DIR = "AccessToken"
 TODAY = str(datetime.date.today())
 TOKEN_PATH = os.path.join(TOKENS_DIR, f"{TODAY}.json")
 SETTINGS_FILE = "settings.json"
+
+# Re-auth guard to avoid infinite recursion
+REAUTH_ATTEMPTS = 0
+MAX_REAUTH_ATTEMPTS = 3
+
+# Default product type: "INTRADAY", "CNC", "MARGIN", "CO", "BO"
+PRODUCT_TYPE = "INTRADAY"
 
 
 # ============================== OPTION SPECIFIC FUNCTIONS ==============================
@@ -108,42 +121,32 @@ def round_to_nearest_strike(spot_price: float, index_symbol: str) -> int:
 def resolve_option_symbol(fyers: fyersModel.FyersModel, index_symbol: str, is_ce: bool, spot_ltp: float) -> Tuple[
     str, Optional[str], float]:
     """
-    Find the nearest CE/PE option for given index
+    Find the nearest CE/PE option for given index, supporting ITM/OTM selection.
     Returns: (option_symbol, expiry_date, strike_price)
     """
-    # Map index to correct root symbol for Fyers option chain
     root_map = {
         "NSE:NIFTY50-INDEX": "NSE:NIFTY50-INDEX",
         "NSE:NIFTYBANK-INDEX": "NSE:NIFTYBANK-INDEX",
         "NSE:FINNIFTY-INDEX": "NSE:FINNIFTY-INDEX",
     }
-
     root = root_map.get(index_symbol)
     if not root:
         raise RuntimeError(f"No root symbol mapped for {index_symbol}")
 
     opt_type = "CE" if is_ce else "PE"
-    target_strike = round_to_nearest_strike(spot_ltp, index_symbol)
-
-    print(f"[optionchain] Looking for {opt_type} option for {index_symbol}")
-    print(f"[optionchain] Spot: {spot_ltp:.2f}, Target Strike: {target_strike}")
-    print(f"[optionchain] Using root symbol: {root}")
+    print(f"[optionchain] Looking for {opt_type} option for {index_symbol} with strike distance {STRIKE_DISTANCE}")
+    print(f"[optionchain] Spot: {spot_ltp:.2f}, Using root symbol: {root}")
 
     try:
         resp = fyers.optionchain(data={"symbol": root}) or {}
         data = (resp.get("data") or {}).get("optionsChain") or []
-
         if not data:
             raise RuntimeError(f"Optionchain response empty for root: {root}")
 
-        print(f"[optionchain] Found {len(data)} options in chain")
-
-        # Filter for option type
         filt = [row for row in data if str(row.get("option_type", "")).upper() == opt_type]
         if not filt:
             raise RuntimeError(f"Optionchain has no rows for type {opt_type}")
 
-        # Find earliest expiry
         def expiry_key(row):
             exp = row.get("expiry")
             try:
@@ -151,26 +154,34 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, index_symbol: str, is_ce
             except Exception:
                 return dt.max
 
-        # Get earliest expiry
         earliest_expiry = min(filt, key=expiry_key).get("expiry")
         filt = [r for r in filt if r.get("expiry") == earliest_expiry]
 
-        # Find nearest strike to target
-        def strike_key(row):
-            try:
-                sp = row.get("strike_price", row.get("strikePrice"))
-                return abs(float(sp) - target_strike)
-            except Exception:
-                return 1e12
+        all_strikes = sorted(list(set(float(r.get("strike_price", r.get("strikePrice"))) for r in filt)))
+        if not all_strikes:
+            raise RuntimeError("No strikes found for the earliest expiry.")
 
-        best = min(filt, key=strike_key)
+        atm_strike = min(all_strikes, key=lambda s: abs(s - spot_ltp))
+        target_strike = atm_strike
+
+        if STRIKE_DISTANCE != 0:
+            try:
+                atm_index = all_strikes.index(atm_strike)
+                effective_distance = STRIKE_DISTANCE if is_ce else -STRIKE_DISTANCE
+                target_index = atm_index + effective_distance
+
+                if 0 <= target_index < len(all_strikes):
+                    target_strike = all_strikes[target_index]
+                else:
+                    print(f"[optionchain] Warning: Strike distance {STRIKE_DISTANCE} is out of bounds. Falling back to ATM.")
+            except (ValueError, IndexError):
+                print(f"[optionchain] Error finding strike with distance {STRIKE_DISTANCE}. Falling back to ATM.")
+
+        print(f"[optionchain] ATM Strike: {atm_strike}, Target Strike: {target_strike}")
+
+        best = min(filt, key=lambda row: abs(float(row.get("strike_price", row.get("strikePrice"))) - target_strike))
         symbol = best.get("symbol") or best.get("tradingsymbol") or best.get("tsym")
         strike = float(best.get("strike_price", best.get("strikePrice", target_strike)))
-
-        # Get option LTP for debugging
-        option_ltp = best.get("ltp") or best.get("last_price") or best.get("lastPrice")
-        if option_ltp:
-            print(f"[optionchain] Option LTP: {option_ltp}")
 
         if not symbol:
             raise RuntimeError("Optionchain did not provide a symbol.")
@@ -338,12 +349,13 @@ class SymbolState:
         self.status = "watch"  # watch, entry_pending, position, cooldown
         self.signal_candle = None
         self.signal_close_ts = None
-        self.spot_entry_price = 0.0  # Spot price at entry (for reference)
-        self.spot_stop_price = 0.0  # Stop loss in spot terms (for reference)
-        self.option_stop_price = 0.0  # Stop loss in option terms (ACTUALLY USED)
-        self.option_target_price = 0.0  # Target in option terms (ACTUALLY USED)
-        self.option_high_price = 0.0  # Highest option price reached (for trailing stop)
-        self.qty = 0  # Number of shares (lots * lot_size)
+        self.spot_entry_price = 0.0
+        self.spot_stop_price = 0.0
+        self.spot_target_price = 0.0
+        self.option_stop_price = 0.0
+        self.option_target_price = 0.0
+        self.option_high_price = 0.0
+        self.qty = 0
         self.gtt_order_id = None
 
         # Exit tracking
@@ -710,9 +722,9 @@ def handle_spot_tick(symbol: str, ltp: float, ts: dt):
                         state.expiry = expiry
 
                         # Calculate quantity
-                        qty = state.lot_size * FIXED_QTY
+                        qty = state.lot_size * LOT_MULTIPLIER
 
-                        print(f"[entry] Lot size: {state.lot_size}, Qty: {qty} shares ({FIXED_QTY} lots)")
+                        print(f"[entry] Lot size: {state.lot_size}, Qty: {qty} shares ({LOT_MULTIPLIER} lots)")
 
                         # Place order
                         resp = place_market_order(option_symbol, qty, side=1)
@@ -733,17 +745,25 @@ def handle_spot_tick(symbol: str, ltp: float, ts: dt):
                                 state.option_entry_price = ltp * 0.007  # 0.7% estimate
                                 print(f"[entry] Estimated option price: ₹{state.option_entry_price:.2f}")
 
-                            # Spot stop for reference only (not used for exits)
+                            # Set stop loss based on SL_MODE
                             if SL_MODE == "signal_low":
                                 state.spot_stop_price = float(state.signal_candle["low"])
-                            else:
-                                state.spot_stop_price = ltp
+                            elif SL_MODE == "swing_low":
+                                recent_lows = state.data['low'].tail(SWING_LOOKBACK)
+                                state.spot_stop_price = recent_lows.min()
+
+                            # Set target based on swing high
+                            recent_highs = state.data['high'].tail(SWING_HIGH_LOOKBACK)
+                            state.spot_target_price = recent_highs.max()
 
                             print(f"\n[ENTRY CONFIRMED] {symbol} -> {option_symbol}")
                             print(f"  Spot Price: {ltp:.2f}")
                             print(f"  Option Entry: ₹{state.option_entry_price:.2f}")
-                            print(f"  Qty: {state.qty} shares ({FIXED_QTY} lots)")
+                            print(f"  Spot SL: {state.spot_stop_price:.2f}")
+                            print(f"  Spot Target: {state.spot_target_price:.2f}")
+                            print(f"  Qty: {state.qty} shares ({LOT_MULTIPLIER} lots)")
                             print(f"  Strike: {strike}, Expiry: {expiry}")
+
                             # Clear signal
                             state.signal_candle = None
                             state.signal_close_ts = None
@@ -764,41 +784,47 @@ def handle_spot_tick(symbol: str, ltp: float, ts: dt):
             import traceback
             traceback.print_exc()
 
-    # EXIT LOGIC - SPOT-BASED EXIT
-    if state.status == "position" and state.exit_pending and state.exit_signal_candle is not None:
-        try:
-            # Check if we're in the next candle after the exit signal
+    # EXIT LOGIC - Multi-Condition Spot-Based Exit
+    if state.status == "position":
+        exit_reason = None
+
+        # 1. Stop Loss Check
+        if state.spot_stop_price > 0 and ltp <= state.spot_stop_price:
+            exit_reason = f"STOP LOSS HIT: LTP {ltp:.2f} <= SL {state.spot_stop_price:.2f}"
+
+        # 2. Target Check
+        elif state.spot_target_price > 0 and ltp >= state.spot_target_price:
+            exit_reason = f"TARGET HIT: LTP {ltp:.2f} >= Target {state.spot_target_price:.2f}"
+
+        # 3. EMA Exit Signal Check
+        elif state.exit_pending and state.exit_signal_candle is not None:
             exit_sig_start = pd.to_datetime(state.exit_signal_candle["ts"])
             next_allowed_start = exit_sig_start + pd.Timedelta(minutes=TIMEFRAME_MIN)
-
             current_ts = pd.to_datetime(ts)
             candle_start = CANDLE_MANAGER._floor_ts(current_ts.to_pydatetime())
 
             if pd.to_datetime(candle_start) >= next_allowed_start:
-                # Check for breakdown below exit signal low
                 exit_signal_low = float(state.exit_signal_candle["low"])
-                if ltp < exit_signal_low and is_market_hours():
-                    print(f"\n[{symbol}] EXIT TRIGGERED: LTP {ltp:.2f} < exit_signal_low {exit_signal_low:.2f}")
+                if ltp < exit_signal_low:
+                    exit_reason = f"EMA EXIT TRIGGERED: LTP {ltp:.2f} < Exit Low {exit_signal_low:.2f}"
 
-                    # Place exit order
-                    resp = place_market_order(state.option_symbol, state.qty, side=-1)
-
-                    if isinstance(resp, dict) and resp.get("s") == "ok":
-                        print(f"[EXIT CONFIRMED] {symbol} -> {state.option_symbol}")
-                        # Log P&L based on last known option price
-                        if state.option_ltp > 0:
-                            pnl = (state.option_ltp - state.option_entry_price) * state.qty
-                            print(f"  Approx P&L: ₹{pnl:.2f}")
-                        state.status = "cooldown"
-                        state.reset_position()
-                    else:
-                        print(f"[EXIT FAILED] {symbol}: {resp}")
-                        # Optionally, retry or handle failed exit
-
-        except Exception as e:
-            print(f"[handle_spot_tick:exit] error: {e}")
-            import traceback
-            traceback.print_exc()
+        if exit_reason and is_market_hours():
+            print(f"\n[{symbol}] {exit_reason}")
+            try:
+                resp = place_market_order(state.option_symbol, state.qty, side=-1)
+                if isinstance(resp, dict) and resp.get("s") == "ok":
+                    print(f"[EXIT CONFIRMED] {symbol} -> {state.option_symbol}")
+                    if state.option_ltp > 0:
+                        pnl = (state.option_ltp - state.option_entry_price) * state.qty
+                        print(f"  Approx P&L: ₹{pnl:.2f}")
+                    state.status = "cooldown"
+                    state.reset_position()
+                else:
+                    print(f"[EXIT FAILED] {symbol}: {resp}")
+            except Exception as e:
+                print(f"[handle_spot_tick:exit] error: {e}")
+                import traceback
+                traceback.print_exc()
 
 
 def handle_option_tick(symbol: str, ltp: float, ts: dt):
@@ -864,18 +890,17 @@ def evaluate_on_new_candle(st: SymbolState):
 
     # ENTRY SIGNAL (BULLISH)
     if st.status == "watch" and is_market_hours():
+        # Strict body cross logic
         ema_sequence_ok = ema_fast > ema_slow
-        rising_slow_ema = ema_slow > ema_slow_prev
-
-        lowest_ema = min(ema_fast, ema_slow)
-        highest_ema = max(ema_fast, ema_slow)
-
-        open_below_both = curr_open < lowest_ema
-        closed_above_both = curr_close > (highest_ema + EMA_BUFFER)
+        body_opens_below = curr_open < min(ema_fast, ema_slow)
+        body_closes_above = curr_close > max(ema_fast, ema_slow) + EMA_BUFFER
         green_ok = (not REQUIRE_GREEN_SIGNAL) or (curr_close > curr_open)
 
-        if (ema_sequence_ok and rising_slow_ema and open_below_both and
-                closed_above_both and green_ok):
+        # Tiny candle filter
+        min_range = curr_close * MIN_RANGE_PCT
+        range_ok = (curr_high - curr_low) >= min_range
+
+        if ema_sequence_ok and body_opens_below and body_closes_above and green_ok and range_ok:
             st.signal_candle = {
                 "ts": curr.name,
                 "open": curr_open,
@@ -1008,7 +1033,7 @@ def warmup_data():
 # ============================== MAIN ==============================
 def main():
     global FYERS, FYERS_SOCKET, ACCESS_TOKEN, CANDLE_MANAGER
-    global TIMEFRAME_MIN, EXIT_EMA, ENTRY_FAST_EMA, ENTRY_SLOW_EMA, FIXED_QTY
+    global TIMEFRAME_MIN, EXIT_EMA, ENTRY_FAST_EMA, ENTRY_SLOW_EMA, LOT_MULTIPLIER
     global TRADING_ENABLED
 
     # Parse arguments
@@ -1017,7 +1042,7 @@ def main():
     parser.add_argument("--exit-ema", type=int, default=EXIT_EMA)
     parser.add_argument("--entry-fast-ema", type=int, default=ENTRY_FAST_EMA)
     parser.add_argument("--entry-slow-ema", type=int, default=ENTRY_SLOW_EMA)
-    parser.add_argument("--fixed-qty", type=int, default=FIXED_QTY, help="Number of lots per trade")
+    parser.add_argument("--lot-multiplier", type=int, default=LOT_MULTIPLIER, help="Number of lots per trade")
     parser.add_argument("--test", action="store_true", help="Test mode without live connection")
     parser.add_argument("--no-trade", action="store_true", help="Disable trading")
 
@@ -1028,7 +1053,7 @@ def main():
     EXIT_EMA = args.exit_ema
     ENTRY_FAST_EMA = args.entry_fast_ema
     ENTRY_SLOW_EMA = args.entry_slow_ema
-    FIXED_QTY = args.fixed_qty
+    LOT_MULTIPLIER = args.lot_multiplier
 
     if args.no_trade:
         TRADING_ENABLED = False
@@ -1039,7 +1064,7 @@ def main():
     print(f"Timeframe: {TIMEFRAME_MIN} minutes")
     print(f"Entry EMAs: Fast={ENTRY_FAST_EMA}, Slow={ENTRY_SLOW_EMA}")
     print(f"Exit EMA: {EXIT_EMA}")
-    print(f"Lot Size per trade: {FIXED_QTY}")
+    print(f"Lot Size per trade: {LOT_MULTIPLIER}")
     print(f"Spot Indices: {SPOT_INDICES}")
     print(f"Fyers Lot Sizes: NIFTY=65, BANKNIFTY=30, FINNIFTY=60")
     print(f"Trading Enabled: {TRADING_ENABLED}")
