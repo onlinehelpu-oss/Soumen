@@ -928,6 +928,7 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
             return
 
         if CANDLE_MANAGER._floor_ts(tick_ts) == next_candle_start and ltp > state.signal_candle["high"]:
+            state.status = "entry_triggered"
             _real_print(f"[{symbol}] Breakout detected at {ltp:.2f}. Resolving option symbol...")
             option_details = resolve_option_symbol(FYERS, symbol, ltp)
 
