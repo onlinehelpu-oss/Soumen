@@ -343,7 +343,8 @@ def get_option_details(symbol: str, ltp: float) -> Optional[dict]:
         return None
     try:
         chain_resp = FYERS.optionchain({"symbol": symbol})
-        chain = chain_resp.get("data", {}).get("optionChain", [])
+        data = chain_resp.get("data", {})
+        chain = data.get("optionChain") or data.get("optionsChain", [])
         if not chain:
             _real_print(f"[{symbol}] Option chain is empty.")
             return None
