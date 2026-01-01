@@ -803,7 +803,9 @@ def on_completed_candle(symbol: str, candle: dict):
                 df = pd.DataFrame([row], index=[candle_ts])
             else:
                 df = pd.concat([df, pd.DataFrame([row], index=[candle_ts])])
-                df = df.tail(2000)
+            # Remove duplicate candles, keeping the latest one
+            df = df[~df.index.duplicated(keep='last')]
+            df = df.tail(2000)
             df.index.name = "datetime"
             st.data = compute_indicators(df)
             st.last_candle_ts = candle_ts
