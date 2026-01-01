@@ -622,18 +622,18 @@ def get_lot_size(symbol: str) -> int:
 def select_option_contract(underlying_symbol: str, ltp: float) -> Optional[str]:
     """Selects a call option based on the STRIKE_DISTANCE from ATM."""
     chain = get_option_chain(underlying_symbol)
-    if not chain or not chain.get("d"):
+    if not chain or not chain.get("data"):
         return None
 
     try:
-        expiry_data = chain["d"].get("expiryData", [])
+        expiry_data = chain["data"].get("expiryData", [])
         if not expiry_data:
             _real_print("[options] No expiry data found in option chain.")
             return None
 
         # Find the nearest expiry date string
         current_expiry_str = expiry_data[0]['expiry']
-        options = chain["d"].get("optionsChain", [])
+        options = chain["data"].get("optionsChain", [])
 
         # Filter for all Call options of the nearest expiry
         calls = []
