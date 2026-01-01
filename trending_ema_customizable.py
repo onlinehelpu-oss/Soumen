@@ -25,8 +25,7 @@
     * EXIT_EMA – only for exit.
 
 - Position sizing:
-    * POSITION_MODE = "qty": fixed quantity per trade (FIXED_QTY, default 1).
-    * POSITION_MODE = "alloc": alloc-based: qty = ALLOC_DEFAULT // entry_price.
+    * Fixed lots per trade (FIXED_LOTS).
 
 - Fyers v3 login:
     * Uses api-t1 endpoints with appIdHash.
@@ -323,9 +322,9 @@ def run_interactive_login() -> str:
 
 # ---------------------------- OPTION HELPERS ----------------------------
 OPTION_ROOT_MAP = {
-    "NSE:NIFTY50-INDEX": "NSE:NIFTY",
-    "NSE:NIFTYBANK-INDEX": "NSE:BANKNIFTY",
-    "NSE:FINNIFTY-INDEX": "NSE:FINNIFTY",
+    "NSE:NIFTY50-INDEX": "NIFTY",
+    "NSE:NIFTYBANK-INDEX": "BANKNIFTY",
+    "NSE:FINNIFTY-INDEX": "FINNIFTY",
 }
 
 
@@ -360,18 +359,32 @@ def get_option_details(symbol: str, ltp: float) -> Optional[dict]:
         # Handle both 'expiry_date' and 'expiry' keys
         get_expiry = lambda c: c.get("expiry_date") or c.get("expiry")
 
-        expiries = sorted(list(set(get_expiry(c) for c in chain if get_expiry(c))))
-        if not expiries:
-            _real_print(f"[{symbol}] No expiry dates found in option chain.")
+        # Parse expiry strings to dates for correct sorting
+        expiry_dates = []
+        for c in chain:
+            exp_str = get_expiry(c)
+            if exp_str:
+                try:
+                    # Handle different date formats from Fyers API
+                    expiry_dates.append(pd.to_datetime(exp_str).date())
+                except (ValueError, TypeError):
+                    continue
+
+        if not expiry_dates:
+            _real_print(f"[{symbol}] No valid expiry dates found in option chain.")
             return None
-        nearest_expiry = expiries[0]
+
+        expiries = sorted(list(set(expiry_dates)))
+        nearest_expiry_date = expiries[0]
+        # Convert back to string in the format Fyers expects for filtering
+        nearest_expiry = nearest_expiry_date.strftime('%Y-%m-%d')
 
         atm = get_atm_strike(ltp, symbol)
         strike_inc = get_strike_increment(symbol)
         target_strike = atm + (STRIKE_DISTANCE * strike_inc)
 
         ce_chain = [c for c in chain if
-                    get_expiry(c) == nearest_expiry and c.get("option_type") == "CE"]
+                    pd.to_datetime(get_expiry(c)).date() == nearest_expiry_date and c.get("option_type") == "CE"]
         if not ce_chain:
             _real_print(f"[{symbol}] No CE options for expiry {nearest_expiry}")
             return None
