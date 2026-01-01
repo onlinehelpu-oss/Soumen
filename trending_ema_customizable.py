@@ -182,9 +182,9 @@ def history(fyers: fyersModel.FyersModel, symbol: str, res: int, start: dt, end:
     return candles_df(r)
 
 # ============================== OPTIONCHAIN RESOLVER ==========================
-def resolve_option_symbol(fyers: fyersModel.FyersModel, is_ce: bool, spot_ltp: float) -> Tuple[str, Optional[str]]:
+def resolve_option_symbol(fyers: fyersModel.FyersModel, is_ce: bool, spot_ltp: float) -> Tuple[str, Optional[str], int]:
     """
-    Queries FYERS option chain for NIFTY and returns (symbol, 'YYYY-MM-DD' expiry)
+    Queries FYERS option chain for NIFTY and returns (symbol, 'YYYY-MM-DD' expiry, lot_size)
     for nearest 50-strike of earliest expiry for the requested type (CE/PE).
     """
     chain = []
@@ -230,9 +230,13 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, is_ce: bool, spot_ltp: f
 
     best = min(filt, key=strike_key)
     symbol = best.get("symbol") or best.get("tradingsymbol") or best.get("tsym")
+    lot_size = int(best.get("lot_size", 0))
     if not symbol:
         raise RuntimeError("Optionchain did not provide a symbol.")
-    return symbol, expiry_pick
+    if lot_size == 0:
+        print(f"[optionchain] Warning: Lot size for {symbol} is 0, falling back to default.")
+        lot_size = nifty_lot_size_for_date(dt.now(IST))
+    return symbol, expiry_pick, lot_size
 
 def earliest_expiry_string(fyers: fyersModel.FyersModel) -> Optional[str]:
     """Best-effort earliest expiry from NIFTY INDEX root (preview resolver tries all anyway)."""
@@ -368,7 +372,7 @@ def on_message(msg: Dict[str, Any]):
                 exp = earliest_expiry_string(FYERS)
                 if exp:
                     print("[expiry-check] Earliest expiry (bot will use):", exp)
-                ce_sym, _ = resolve_option_symbol(FYERS, is_ce=True, spot_ltp=ltp)
+                ce_sym, _, _ = resolve_option_symbol(FYERS, is_ce=True, spot_ltp=ltp)
                 print(f"[preview] CE≈ {ce_sym}")
             except Exception as e:
                 print("[preview] failed:", e)
@@ -379,10 +383,7 @@ def on_message(msg: Dict[str, Any]):
         if (c["open"] > ema5 and c["high"] > ema5 and c["low"] > ema5 and c["close"] > ema5
                 and ltp < (float(c["low"]) - ENTRY_BUFFER)):
             try:
-                ce_symbol, exp_yyyy_mm_dd = resolve_option_symbol(FYERS, is_ce=True, spot_ltp=ltp)
-                lots = nifty_lot_size_for_date(
-                    dt.strptime(exp_yyyy_mm_dd, "%Y-%m-%d") if exp_yyyy_mm_dd else now_local
-                )
+                ce_symbol, _, lots = resolve_option_symbol(FYERS, is_ce=True, spot_ltp=ltp)
                 resp = place_market_sell(ce_symbol, qty=lots)  # ENTRY = SELL CE
                 if resp.get("s") == "ok":
                     STATE.spos = STATE.sflag = 1
