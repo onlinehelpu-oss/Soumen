@@ -349,7 +349,10 @@ def get_option_details(symbol: str, ltp: float) -> Optional[dict]:
             _real_print(f"[{symbol}] Option chain is empty.")
             return None
 
-        expiries = sorted(list(set(c["expiry_date"] for c in chain)))
+        # Handle both 'expiry_date' and 'expiry' keys
+        get_expiry = lambda c: c.get("expiry_date") or c.get("expiry")
+
+        expiries = sorted(list(set(get_expiry(c) for c in chain if get_expiry(c))))
         if not expiries:
             _real_print(f"[{symbol}] No expiry dates found in option chain.")
             return None
@@ -360,18 +363,18 @@ def get_option_details(symbol: str, ltp: float) -> Optional[dict]:
         target_strike = atm + (STRIKE_DISTANCE * strike_inc)
 
         ce_chain = [c for c in chain if
-                    c["expiry_date"] == nearest_expiry and c["option_type"] == "CE"]
+                    get_expiry(c) == nearest_expiry and c.get("option_type") == "CE"]
         if not ce_chain:
             _real_print(f"[{symbol}] No CE options for expiry {nearest_expiry}")
             return None
 
-        closest_ce = min(ce_chain, key=lambda c: abs(c["strike_price"] - target_strike))
+        closest_ce = min(ce_chain, key=lambda c: abs(c.get("strike_price", float('inf')) - target_strike))
         lot_size = int(closest_ce.get("lot_size", 1))
 
         return {
-            "symbol": closest_ce["symbol"],
+            "symbol": closest_ce.get("symbol"),
             "lot_size": lot_size,
-            "strike": closest_ce["strike_price"],
+            "strike": closest_ce.get("strike_price"),
             "expiry": nearest_expiry
         }
     except Exception as e:
