@@ -432,8 +432,9 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, underlying: str, ltp: fl
         _real_print(f"[debug-options] Option chain or expiry data is empty for {underlying}.")
         return None
 
-    nearest_expiry_date = expiry_data[0]['date']
-    _real_print(f"[debug-options] Nearest expiry: {nearest_expiry_date}")
+    nearest_expiry_display = expiry_data[0]['date']
+    nearest_expiry_value = expiry_data[0]['value']
+    _real_print(f"[debug-options] Nearest expiry: {nearest_expiry_display}")
 
     target_strike = calculate_itm_strike(ltp, config["strike_step"])
     _real_print(f"[debug-options] Target ITM strike: {target_strike}")
@@ -441,11 +442,11 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, underlying: str, ltp: fl
     # Filter all available Call options for the nearest expiry date
     all_ce_for_expiry = [
         row for row in chain
-        if row.get("option_type") == "CE" and row.get("expiry_date") == nearest_expiry_date
+        if row.get("option_type") == "CE" and row.get("expiry_date") == nearest_expiry_value
     ]
 
     if not all_ce_for_expiry:
-        _real_print(f"[debug-options] No Call options found at all for expiry {nearest_expiry_date}.")
+        _real_print(f"[debug-options] No Call options found at all for expiry {nearest_expiry_display}.")
         return None
 
     # Try to find an exact match for the target ITM strike
