@@ -386,19 +386,20 @@ class DataProcessor:
                                             'high': 'High', 'low': 'Low', 'volume': 'Volume'})
 
         # Basic features
-        data['Returns'] = data['Close'].pct_change()
+        close_prices = data['Close']
+        data['Returns'] = close_prices.pct_change()
 
         # Moving averages
         for period in [5, 10, 20, 50]:
-            data[f'SMA_{period}'] = data['Close'].rolling(window=period).mean()
-            data[f'EMA_{period}'] = data['Close'].ewm(span=period, adjust=False).mean()
+            data[f'SMA_{period}'] = close_prices.rolling(window=period).mean()
+            data[f'EMA_{period}'] = close_prices.ewm(span=period, adjust=False).mean()
 
             # Correctly calculate the ratio as a new Series
             sma = data[f'SMA_{period}'].replace(0, np.nan)
-            data[f'Price_SMA_Ratio_{period}'] = data['Close'] / sma
+            data[f'Price_SMA_Ratio_{period}'] = close_prices / sma
 
         # RSI
-        delta = data['Close'].diff()
+        delta = close_prices.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss.replace(0, np.nan)
@@ -774,18 +775,22 @@ def main():
                 print("\n⚠ Please authenticate first (Option 1)")
                 continue
 
-            symbol = input("\nEnter stock symbol (e.g., RELIANCE, TCS, INFY): ").strip().upper()
-            if not symbol.endswith('.NS'):
-                symbol += '.NS'
+            symbol_input = input("\nEnter a SINGLE stock symbol (e.g., RELIANCE): ").strip().upper()
+            if ',' in symbol_input or ' ' in symbol_input:
+                print("❌ Please enter only one symbol at a time.")
+                continue
 
-            bot = TradingBot(api, symbol)
+            if not symbol_input.endswith('.NS'):
+                symbol_input += '.NS'
 
-            print(f"\n🔄 Training model for {symbol}...")
+            bot = TradingBot(api, symbol_input)
+
+            print(f"\n🔄 Training model for {symbol_input}...")
             print("Note: Using fallback data if Fyers API fails")
             if bot.train_model():
-                print(f"\n✅ Model trained successfully for {symbol}")
+                print(f"\n✅ Model trained successfully for {symbol_input}")
             else:
-                print(f"\n❌ Failed to train model for {symbol}")
+                print(f"\n❌ Failed to train model for {symbol_input}")
                 print("\n💡 Install yfinance for better data:")
                 print("pip install yfinance")
 
