@@ -83,6 +83,7 @@ class FyersAuthV3:
             self.redirect_url = config.get('redirect_url', self.redirect_url)
             if self.app_id and self.secret_key:
                 print(f"✓ Loaded credentials from {CONFIG_FILE}")
+                print(f"  - Using Redirect URL: {self.redirect_url}")
                 return True
             else:
                 print("! Incomplete credentials in config file. Please provide them now.")
@@ -756,15 +757,16 @@ def main():
             print(f"Current Symbol: {current_symbol}")
             print("-" * 60)
         print("1. Authenticate with Fyers")
-        print("2. Select Stock Symbol")
-        print("3. Train Model")
-        print("4. Get Trading Signal")
-        print("5. Execute Trade")
-        print("6. Account Summary")
-        print("7. Exit")
+        print("2. Update Credentials")
+        print("3. Select Stock Symbol")
+        print("4. Train Model")
+        print("5. Get Trading Signal")
+        print("6. Execute Trade")
+        print("7. Account Summary")
+        print("8. Exit")
         print("=" * 60)
 
-        choice = input("\nSelect option (1-7): ").strip()
+        choice = input("\nSelect option (1-8): ").strip()
 
         if choice == '1':
             # Authenticate
@@ -777,6 +779,12 @@ def main():
                     print("⚠ Connection test failed, but proceeding...")
 
         elif choice == '2':
+            # Force update credentials
+            if os.path.exists(CONFIG_FILE):
+                os.remove(CONFIG_FILE)
+            auth.setup_credentials()
+
+        elif choice == '3':
             # Select Symbol
             if not api:
                 print("⚠ Please authenticate first (Option 1)")
@@ -789,10 +797,10 @@ def main():
             else:
                 print("❌ Invalid symbol.")
 
-        elif choice == '3':
+        elif choice == '4':
             # Train model
             if not bot:
-                print("⚠ Please select a stock symbol first (Option 2)")
+                print("⚠ Please select a stock symbol first (Option 3)")
                 continue
 
             if bot.train():
@@ -800,10 +808,10 @@ def main():
             else:
                 print(f"\n❌ Failed to train model for {current_symbol}")
 
-        elif choice == '4':
+        elif choice == '5':
             # Get signal
             if not bot:
-                print("⚠ Please select a stock symbol first (Option 2)")
+                print("⚠ Please select a stock symbol first (Option 3)")
                 continue
 
             signal = bot.get_signal()
@@ -820,10 +828,10 @@ def main():
             else:
                 print("\n❌ Failed to get trading signal")
 
-        elif choice == '5':
+        elif choice == '6':
             # Execute trade
             if not bot:
-                print("⚠ Please select a stock symbol first (Option 2)")
+                print("⚠ Please select a stock symbol first (Option 3)")
                 continue
 
             signal = bot.get_signal()
@@ -832,7 +840,7 @@ def main():
             else:
                 print("❌ No valid signal to execute")
 
-        elif choice == '6':
+        elif choice == '7':
             # Account summary
             if not api:
                 print("⚠ Please authenticate first (Option 1)")
@@ -865,7 +873,7 @@ def main():
                 print(f"  Exchange: {market_data.get('exchange', 'NSE')}")
                 print(f"  Status: {market_data.get('status', 'Unknown')}")
 
-        elif choice == '7':
+        elif choice == '8':
             print("\n👋 Thank you for using Fyers Trading System!")
             break
 
