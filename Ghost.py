@@ -412,8 +412,8 @@ class DataProcessor:
 
         # Bollinger Bands
         bb_period = 20
-        data['BB_Middle'] = data['Close'].rolling(window=bb_period).mean()
-        bb_std = data['Close'].rolling(window=bb_period).std()
+        data['BB_Middle'] = close_prices.rolling(window=bb_period).mean()
+        bb_std = close_prices.rolling(window=bb_period).std()
         data['BB_Upper'] = data['BB_Middle'] + (bb_std * 2)
         data['BB_Lower'] = data['BB_Middle'] - (bb_std * 2)
         data['BB_Width'] = (data['BB_Upper'] - data['BB_Lower']) / data['BB_Middle'].replace(0, np.nan)
