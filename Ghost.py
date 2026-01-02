@@ -359,7 +359,10 @@ class FyersAPI:
                 return None
 
         except requests.exceptions.RequestException as e:
-            log_message(f"Historical data request failed: {str(e)}", "ERROR")
+            if e.response and e.response.status_code == 422:
+                log_message("Historical data request failed (422 Error). Your system's clock may be set to a future date.", "ERROR")
+            else:
+                log_message(f"Historical data request failed: {str(e)}", "ERROR")
             return None
 
     def place_order(self, order_data):
@@ -387,6 +390,8 @@ class DataProcessor:
 
         # Basic features
         close_prices = data['Close']
+        if isinstance(close_prices, pd.DataFrame):
+            close_prices = close_prices.iloc[:, 0]
         data['Returns'] = close_prices.pct_change()
 
         # Moving averages
