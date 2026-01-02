@@ -417,12 +417,16 @@ class DataProcessor:
         data['BB_Upper'] = data['BB_Middle'] + (bb_std * 2)
         data['BB_Lower'] = data['BB_Middle'] - (bb_std * 2)
         data['BB_Width'] = (data['BB_Upper'] - data['BB_Lower']) / data['BB_Middle'].replace(0, np.nan)
-        data['BB_Position'] = (data['Close'] - data['BB_Lower']) / (data['BB_Upper'] - data['BB_Lower']).replace(0,
+        data['BB_Position'] = (close_prices - data['BB_Lower']) / (data['BB_Upper'] - data['BB_Lower']).replace(0,
                                                                                                                  np.nan)
 
         # Volume
-        data['Volume_SMA'] = data['Volume'].rolling(window=20).mean()
-        data['Volume_Ratio'] = data['Volume'] / data['Volume_SMA'].replace(0, np.nan)
+        volume_prices = data['Volume']
+        if isinstance(volume_prices, pd.DataFrame):
+            volume_prices = volume_prices.iloc[:, 0]
+        data['Volume_SMA'] = volume_prices.rolling(window=20).mean()
+        data['Volume_Ratio'] = volume_prices / data['Volume_SMA'].replace(0, np.nan)
+
 
         # Fill NaN values
         data = data.fillna(method='ffill').fillna(method='bfill').fillna(0)
@@ -435,7 +439,10 @@ class DataProcessor:
 
     def create_labels(self, df, forward_days=1, threshold=0.002):
         """Create target labels"""
-        future_returns = df['Close'].pct_change(periods=forward_days).shift(-forward_days)
+        close_prices = df['Close']
+        if isinstance(close_prices, pd.DataFrame):
+            close_prices = close_prices.iloc[:, 0]
+        future_returns = close_prices.pct_change(periods=forward_days).shift(-forward_days)
         labels = (future_returns > threshold).astype(int)
         labels = labels.fillna(0)
         return labels
