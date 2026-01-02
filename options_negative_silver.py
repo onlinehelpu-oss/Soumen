@@ -428,44 +428,66 @@ def ensure_access_token():
 
 def is_bearish_shooting_star_candle(o, h, l, c, prev_o, prev_c, min_range_pct=0.0015):
     """
-    RED shooting-star / pin-bar with:
-      - Previous candle GREEN
-      - Range filter to avoid tiny bars
-      - Close < Open (red)
-      - upper wick significantly longer than body and lower wick smaller than body
+    RED shooting-star / pin-bar defined by strict percentage-based geometry.
+    - Previous candle GREEN
+    - Current candle RED
+    - Geometry Constraints (as % of total candle range H-L):
+      - Upper Wick: 55% - 90%
+      - Body:       5% - 20%
+      - Lower Wick: 0% - 12%
     """
-    try:
-        if c == 0:
-            return False
-    except Exception:
-        return False
-    rng = h - l
-    if rng <= 0:
-        return False
-    if (rng / max(abs(c), 1e-9)) < min_range_pct:
-        return False
-    if prev_c <= prev_o:  # prev must be green
-        return False
-    if not (c < o):       # red only
+    # --- Initial Filters ---
+    if c == 0 or h <= l:
         return False
 
-    body = abs(o - c)
-    upper_longer_than_body = (h - o) > body
-    lower_shorter_than_body  = (c - l) < body
-    return upper_longer_than_body and lower_shorter_than_body
+    total_range = h - l
+    if (total_range / max(abs(c), 1e-9)) < min_range_pct:
+        return False
+
+    if prev_c <= prev_o:  # Previous candle must be green
+        return False
+
+    if c >= o:            # Current candle must be red
+        return False
+
+    # --- Strict Geometric Calculation ---
+    # Calculate components as a percentage of the total candle range
+    upper_wick_pct = ((h - o) / total_range) * 100
+    body_pct = ((o - c) / total_range) * 100
+    lower_wick_pct = ((c - l) / total_range) * 100
+
+    # Check if all components are within the defined percentage boundaries
+    is_valid_geometry = (
+        (55 <= upper_wick_pct <= 90) and
+        (5 <= body_pct <= 20) and
+        (0 <= lower_wick_pct <= 12)
+    )
+
+    return is_valid_geometry
 
 
 def flag_bearish_shooting_star(df: pd.DataFrame, min_range_pct=0.0015):
     o, h, l, c = df["Open"], df["High"], df["Low"], df["Close"]
     prev_o, prev_c = o.shift(1), c.shift(1)
-    rng = h - l
-    cond_range = (rng / c) >= min_range_pct
+
+    total_range = h - l
+    # Avoid division by zero for zero-range candles
+    total_range_safe = total_range.where(total_range > 0, 1e-9)
+
+    upper_wick_pct = ((h - o) / total_range_safe) * 100
+    body_pct = ((o - c) / total_range_safe) * 100
+    lower_wick_pct = ((c - l) / total_range_safe) * 100
+
+    cond_min_range = (total_range / c.abs().where(c != 0, 1e-9)) >= min_range_pct
     cond_prev_green = prev_c > prev_o
     cond_red = c < o
-    body = (o - c).abs()
-    cond_upper = (h - o) > body
-    cond_lower = (c - l) < body
-    df["BearishShoot"] = cond_range & cond_prev_green & cond_red & cond_upper & cond_lower
+    cond_geom = (
+        (upper_wick_pct >= 55) & (upper_wick_pct <= 90) &
+        (body_pct >= 5) & (body_pct <= 20) &
+        (lower_wick_pct >= 0) & (lower_wick_pct <= 12)
+    )
+
+    df["BearishShoot"] = cond_min_range & cond_prev_green & cond_red & cond_geom
     return df
 
 # ===================== ORDER HELPERS =====================
@@ -855,27 +877,32 @@ def main():
 def run_tests():
     print("Running tests for bearish shooting-star detector...")
 
-    # Test 1: clear bearish shooting star
-    # prev candle: green (o=100, c=102)
-    # signal candle: red with long upper wick: o=102, h=110, l=101.5, c=100.5
-    assert is_bearish_shooting_star_candle(102.0, 110.0, 101.5, 100.5, 100.0, 102.0) is True
+    # Test 1: Valid shooting star with perfect geometry
+    # Total Range = 10 (110-100)
+    # Upper Wick = 8 (110-102) -> 80%
+    # Body = 1.5 (102-100.5) -> 15%
+    # Lower Wick = 0.5 (100.5-100) -> 5%
+    assert is_bearish_shooting_star_candle(102.0, 110.0, 100.0, 100.5, 98.0, 100.0) is True, "Test 1 Failed"
 
-    # Test 2: not shooting star because prev not green
-    assert is_bearish_shooting_star_candle(102.0, 110.0, 101.5, 100.5, 102.0, 101.0) is False
+    # Test 2: Fails because upper wick is too short (50%)
+    assert is_bearish_shooting_star_candle(107.0, 112.0, 102.0, 105.0, 100.0, 102.0) is False, "Test 2 Failed"
 
-    # Test 3: not shooting star because current not red
-    assert is_bearish_shooting_star_candle(100.0, 105.0, 99.5, 102.0, 99.0, 100.0) is False
+    # Test 3: Fails because body is too large (30%)
+    assert is_bearish_shooting_star_candle(108.0, 110.0, 98.0, 105.0, 100.0, 102.0) is False, "Test 3 Failed"
 
-    # DataFrame flagging test
+    # Test 4: Fails because lower wick is too long (20%)
+    assert is_bearish_shooting_star_candle(108.0, 110.0, 98.0, 107.0, 100.0, 102.0) is False, "Test 4 Failed"
+
+    # DataFrame flagging test with a valid case
     data = {
-        'Open': [100.0, 102.0],
-        'High': [102.5, 110.0],
-        'Low': [99.5, 101.5],
-        'Close': [102.0, 100.5]
+        'Open': [98.0, 102.0],
+        'High': [100.0, 110.0],
+        'Low': [97.0, 100.0],
+        'Close': [100.0, 100.5]
     }
     df = pd.DataFrame(data)
     df = flag_bearish_shooting_star(df)
-    assert df['BearishShoot'].iloc[1] == True
+    assert df['BearishShoot'].iloc[1] == True, "DataFrame test failed"
 
     print("All tests passed ✅")
 
