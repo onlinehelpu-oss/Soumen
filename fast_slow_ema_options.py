@@ -56,11 +56,11 @@ SPOT_INDICES = [
     "NSE:FINNIFTY-INDEX"
 ]
 
-# Correct Fyers lot sizes (Updated)
+# Correct Fyers lot sizes (January 2024)
 MIN_LOT_SIZES = {
-    "NSE:NIFTY50-INDEX": 25,   # NIFTY: 25 shares per lot
-    "NSE:NIFTYBANK-INDEX": 15, # BANKNIFTY: 15 shares per lot
-    "NSE:FINNIFTY-INDEX": 25,  # FINNIFTY: 25 shares per lot
+    "NSE:NIFTY50-INDEX": 65,  # NIFTY: 65 shares per lot
+    "NSE:NIFTYBANK-INDEX": 30,  # BANKNIFTY: 30 shares per lot
+    "NSE:FINNIFTY-INDEX": 60,  # FINNIFTY: 60 shares per lot
 }
 
 LOG_FILE = "trade_log.csv"
@@ -139,8 +139,7 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, index_symbol: str, is_ce
 
     try:
         resp = fyers.optionchain(data={"symbol": root}) or {}
-        option_data = resp.get("data", {})
-        data = option_data.get("optionsChain") or option_data.get("optionChain") or []
+        data = (resp.get("data") or {}).get("optionsChain") or []
         if not data:
             raise RuntimeError(f"Optionchain response empty for root: {root}")
 
@@ -149,16 +148,14 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, index_symbol: str, is_ce
             raise RuntimeError(f"Optionchain has no rows for type {opt_type}")
 
         def expiry_key(row):
-            exp = row.get("expiry") or row.get("expiry_date")
+            exp = row.get("expiry")
             try:
                 return dt.strptime(exp, "%Y-%m-%d")
             except Exception:
                 return dt.max
 
-        earliest_expiry_row = min(filt, key=expiry_key)
-        earliest_expiry = earliest_expiry_row.get("expiry") or earliest_expiry_row.get("expiry_date")
-
-        filt = [r for r in filt if (r.get("expiry") or r.get("expiry_date")) == earliest_expiry]
+        earliest_expiry = min(filt, key=expiry_key).get("expiry")
+        filt = [r for r in filt if r.get("expiry") == earliest_expiry]
 
         all_strikes = sorted(list(set(float(r.get("strike_price", r.get("strikePrice"))) for r in filt)))
         if not all_strikes:
@@ -757,9 +754,24 @@ def handle_spot_tick(symbol: str, ltp: float, ts: dt):
                                 recent_lows = state.data['low'].tail(SWING_LOOKBACK)
                                 state.spot_stop_price = recent_lows.min()
 
-                            # Set target based on 1:1 Risk/Reward
-                            risk = ltp - state.spot_stop_price
-                            state.spot_target_price = ltp + risk
+                            # Set target based on the nearest historical swing high above the entry price
+                            historical_highs = state.data['high'].iloc[:-1]  # Exclude current candle data
+                            higher_swing_highs = historical_highs[historical_highs > ltp]
+
+                            if not higher_swing_highs.empty:
+                                state.spot_target_price = higher_swing_highs.min()
+                                print(f"[target] Using nearest swing high target: {state.spot_target_price:.2f}")
+                            else:
+                                # Fallback to 1:1.5 Risk/Reward if no higher swing high is found
+                                risk = ltp - state.spot_stop_price
+                                if risk > 0:
+                                    reward = risk * 1.5
+                                    state.spot_target_price = ltp + reward
+                                    print(f"[target] No higher swing high found. Using 1:1.5 R/R target: {state.spot_target_price:.2f}")
+                                else:
+                                    # Handle case where risk is zero or negative to avoid illogical target
+                                    state.spot_target_price = ltp * 1.01 # Default to 1% target
+                                    print(f"[target] Risk was zero or negative. Defaulting to 1% target: {state.spot_target_price:.2f}")
 
                             print(f"\n[ENTRY CONFIRMED] {symbol} -> {option_symbol}")
                             print(f"  Spot Price: {ltp:.2f}")
@@ -1074,8 +1086,7 @@ def main():
     print(f"Exit EMA: {EXIT_EMA}")
     print(f"Lot Size per trade: {LOT_MULTIPLIER}")
     print(f"Spot Indices: {SPOT_INDICES}")
-    lot_sizes_str = ", ".join([f"{k.split(':')[1].split('-')[0]}={v}" for k, v in MIN_LOT_SIZES.items()])
-    print(f"Fyers Lot Sizes: {lot_sizes_str}")
+    print(f"Fyers Lot Sizes: NIFTY=65, BANKNIFTY=30, FINNIFTY=60")
     print(f"Trading Enabled: {TRADING_ENABLED}")
     print("=" * 80 + "\n")
 
