@@ -140,7 +140,7 @@ TODAY_PATH = os.path.join(TOKENS_DIR, f"{TODAY}.json")
 API_HOST = "https://api-t1.fyers.in"
 
 # ===================== WATCHLIST =====================
-BASE_INDICES = [
+SPOT_INDICES = [
     'NSE:NIFTY50-INDEX',
     'NSE:NIFTYBANK-INDEX',
     'NSE:FINNIFTY-INDEX'
@@ -151,7 +151,7 @@ BASE_INDICES = [
 # -1 = 1 strike ITM, -2 = 2 strikes ITM etc.
 #  0 = ATM (At-the-Money)
 # +1 = 1 strike OTM etc.
-STRIKE_DISTANCE = -2
+STRIKE_DISTANCE = 0
 
 # Map from websocket index symbol to the shorter name used in option chain API
 INDEX_MAP = {
@@ -723,7 +723,10 @@ def monitor_loop(fy, dry_run=False):
                         trade = active_trades.get(sym)
                         if not trade:
                             continue
-                        qty = trade.get("qty", DEFAULT_QTY)
+                        qty = trade.get("qty")
+                        if not qty:
+                            print(f"[{now_dt:%H:%M:%S}] ⚠️ Qty not found for {sym}, cannot force-exit.")
+                            continue
                         try:
                             print(f"[{now_dt:%H:%M:%S}] 🔔 Force exiting {sym} (COVER BUY market) qty={qty}")
                             exit_short_by_buy_market(fy, sym, qty, dry_run=dry_run)
@@ -806,7 +809,7 @@ def main():
     # --- Dynamic Watchlist Creation ---
     print("Building dynamic watchlist of ITM options...")
     dynamic_watchlist = []
-    for index_sym in BASE_INDICES:
+    for index_sym in SPOT_INDICES:
         option_sym = get_option_contract(fy, index_sym, STRIKE_DISTANCE)
         if option_sym:
             dynamic_watchlist.append(option_sym)
