@@ -71,7 +71,8 @@ class FyersAuthV3:
         print("FYERS API CREDENTIALS SETUP")
         print("=" * 60)
         print("\nGet credentials from: https://myapi.fyers.in/dashboard")
-        print("\nNote: For Redirect URL, use: https://127.0.0.1:5000/")
+        print("\nIMPORTANT: The Redirect URL you enter must EXACTLY match the one")
+        print("           configured in your Fyers App Dashboard.")
 
         # Try to load from file
         if os.path.exists(CONFIG_FILE):
@@ -80,12 +81,16 @@ class FyersAuthV3:
             self.app_id = config.get('app_id')
             self.secret_key = config.get('secret_key')
             self.redirect_url = config.get('redirect_url', self.redirect_url)
-            print(f"✓ Loaded credentials from {CONFIG_FILE}")
-            return True
+            if self.app_id and self.secret_key:
+                print(f"✓ Loaded credentials from {CONFIG_FILE}")
+                return True
+            else:
+                print("! Incomplete credentials in config file. Please provide them now.")
 
         # Get credentials from user
         self.app_id = input("\nEnter App ID (e.g., XXXXXXXXXX-100): ").strip()
         self.secret_key = input("Enter Secret Key: ").strip()
+        self.redirect_url = input(f"Enter Redirect URL [default: {self.redirect_url}]: ").strip() or self.redirect_url
 
         save = input("\nSave credentials for future use? (y/n): ").strip().lower()
         if save == 'y':
