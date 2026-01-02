@@ -757,9 +757,9 @@ def handle_spot_tick(symbol: str, ltp: float, ts: dt):
                                 recent_lows = state.data['low'].tail(SWING_LOOKBACK)
                                 state.spot_stop_price = recent_lows.min()
 
-                            # Set target based on swing high
-                            recent_highs = state.data['high'].tail(SWING_HIGH_LOOKBACK)
-                            state.spot_target_price = recent_highs.max()
+                            # Set target based on 1:1 Risk/Reward
+                            risk = ltp - state.spot_stop_price
+                            state.spot_target_price = ltp + risk
 
                             print(f"\n[ENTRY CONFIRMED] {symbol} -> {option_symbol}")
                             print(f"  Spot Price: {ltp:.2f}")
