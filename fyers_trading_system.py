@@ -91,7 +91,14 @@ class FyersAuthV3:
         # Get credentials from user
         self.app_id = input("\nEnter App ID (e.g., XXXXXXXXXX-100): ").strip()
         self.secret_key = input("Enter Secret Key: ").strip()
-        self.redirect_url = input(f"Enter Redirect URL [default: {self.redirect_url}]: ").strip() or self.redirect_url
+
+        while True:
+            print("\n(Check for http vs https and trailing slashes. Must be an exact match.)")
+            self.redirect_url = input(f"Enter Redirect URL [default: {self.redirect_url}]: ").strip() or self.redirect_url
+            print(f"\nYou have entered: '{self.redirect_url}'")
+            confirm = input("Is this correct? (y/n): ").strip().lower()
+            if confirm == 'y':
+                break
 
         save = input("\nSave credentials for future use? (y/n): ").strip().lower()
         if save == 'y':
@@ -108,6 +115,7 @@ class FyersAuthV3:
 
     def generate_auth_code(self):
         """Generate authentication URL for user"""
+        print(f"\n- Generating auth link with Redirect URL: {self.redirect_url}")
         base_url = "https://api-t1.fyers.in/api/v3/generate-authcode"
 
         params = {
