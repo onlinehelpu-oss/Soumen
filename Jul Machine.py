@@ -410,10 +410,10 @@ class FyersAPI:
 
     def place_order(self, order_data):
         """Place an order - DEMO MODE - UNCOMMENT FOR REAL TRADING"""
-        log_message(f"DEMO: Would place order: {order_data}", "INFO")
-        return {"s": "ok", "message": "DEMO MODE - Order not placed"}
+        #log_message(f"DEMO: Would place order: {order_data}", "INFO")
+        #return {"s": "ok", "message": "DEMO MODE - Order not placed"}
         # Uncomment below for real trading
-        # return self._make_request('POST', 'orders', data=order_data)
+        return self._make_request('POST', 'orders', data=order_data)
 
 
 class FyersWebSocket:
