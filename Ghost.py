@@ -43,6 +43,25 @@ TOKEN_PATH = os.path.join(TOKENS_DIR, f"{TODAY}.json")
 for directory in [TOKENS_DIR, MODELS_DIR, DATA_DIR, LOG_DIR]:
     os.makedirs(directory, exist_ok=True)
 
+# SYMBOL LIST
+# List of symbols to train models for
+SYMBOL_LIST = [
+    # NSE Equities
+    "ACC", "ADANIENT", "ADANIPORTS", "AMBUJACEM", "APOLLOHOSP", "ASIANPAINT",
+    "AXISBANK", "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV", "BHARTIARTL",
+    "BPCL", "BRITANNIA", "CIPLA", "COALINDIA", "DIVISLAB", "DRREDDY",
+    "EICHERMOT", "GRASIM", "HCLTECH", "HDFCBANK", "HDFCLIFE", "HEROMOTOCO",
+    "HINDALCO", "HINDUNILVR", "ICICIBANK", "INDUSINDBK", "INFY", "ITC",
+    "JSWSTEEL", "KOTAKBANK", "LT", "LTIM", "M&M", "MARUTI", "NESTLEIND",
+    "NTPC", "ONGC", "POWERGRID", "RELIANCE", "SBILIFE", "SBIN", "SUNPHARMA",
+    "TATACONSUM", "TATAMOTORS", "TATASTEEL", "TCS", "TECHM", "TITAN",
+    "ULTRACEMCO", "UPL", "WIPRO",
+
+    # MCX Futures (Example format, check Fyers symbol format)
+    "CRUDEOIL", "NATURALGAS", "GOLD", "SILVER", "COPPER", "ZINC", "LEAD",
+    "NICKEL", "ALUMINIUM"
+]
+
 
 def log_message(message, level="INFO"):
     """Log messages to file"""
@@ -509,13 +528,16 @@ class TradingModel:
 
     def save(self, symbol):
         """Save model to file"""
-        model_file = os.path.join(MODELS_DIR, f"{symbol}_model.joblib")
+        # Clean symbol for filename
+        clean_symbol = symbol.replace(':', '_').replace('-', '_')
+        model_file = os.path.join(MODELS_DIR, f"{clean_symbol}_model.joblib")
         joblib.dump(self.model, model_file)
         return model_file
 
     def load(self, symbol):
         """Load model from file"""
-        model_file = os.path.join(MODELS_DIR, f"{symbol}_model.joblib")
+        clean_symbol = symbol.replace(':', '_').replace('-', '_')
+        model_file = os.path.join(MODELS_DIR, f"{clean_symbol}_model.joblib")
         if os.path.exists(model_file):
             self.model = joblib.load(model_file)
             return True
@@ -527,20 +549,35 @@ class TradingBot:
 
     def __init__(self, api, symbol):
         self.api = api
-        self.symbol = self._format_symbol(symbol)
+        # Raw symbol (e.g., RELIANCE) is passed, formatting happens in methods
+        self.raw_symbol = symbol
+        self.fyers_symbol = self._format_fyers_symbol(symbol)
         self.model = TradingModel()
         self.processor = DataProcessor()
 
-    def _format_symbol(self, symbol):
-        """Format symbol for Fyers API"""
-        symbol = symbol.replace('.NS', '')
+    def _format_fyers_symbol(self, symbol):
+        """Format symbol for Fyers API, handling NSE and MCX"""
+        symbol = symbol.upper().replace('.NS', '')
+
+        # Heuristic to detect MCX symbols
+        mcx_keywords = ["CRUDEOIL", "NATURALGAS", "GOLD", "SILVER", "COPPER", "ZINC", "LEAD", "NICKEL", "ALUMINIUM"]
+        if any(keyword in symbol for keyword in mcx_keywords):
+            # This is a simplification. Real MCX symbols need expiry details.
+            # For historical data, a generic continuous future might work.
+            # Example: MCX:CRUDEOIL24APRFUT - needs to be dynamically resolved.
+            # For now, we'll create a placeholder format.
+            log_message(f"MCX symbol detected: {symbol}. Note: Futures require specific expiry details for trading.", "WARNING")
+            # This will likely fail for live trading, but might work for some historical data pulls
+            return f"MCX:{symbol}M1" # Placeholder for generic monthly future
+
+        # Default to NSE Equity
         return f"NSE:{symbol}-EQ"
 
     def fetch_historical_data_fyers(self, days=365, resolution="D"):
         """Fetch historical data from Fyers API"""
         try:
             response = self.api.get_historical_data(
-                symbol=self.symbol,
+                symbol=self.fyers_symbol,
                 days=days,
                 resolution=resolution
             )
@@ -551,56 +588,38 @@ class TradingBot:
                     df = pd.DataFrame(candles, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
                     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
                     df.set_index('timestamp', inplace=True)
-                    log_message(f"Fetched {len(df)} candles for {self.symbol} from Fyers")
+                    log_message(f"Fetched {len(df)} candles for {self.fyers_symbol} from Fyers")
                     return df
 
         except Exception as e:
-            log_message(f"Fyers API error: {str(e)}", "ERROR")
+            log_message(f"Fyers API error for {self.fyers_symbol}: {str(e)}", "ERROR")
 
         return None
 
     def fetch_historical_data_yahoo(self, days=365):
-        """Fallback to Yahoo Finance for historical data"""
-        try:
-            # Extract symbol name (e.g., "TCS" from "NSE:TCS-EQ")
-            symbol_name = self.symbol.replace('NSE:', '').replace('-EQ', '')
-            yahoo_symbol = f"{symbol_name}.NS"
+        """Fallback to Yahoo Finance for historical data (NSE only)"""
+        # Yahoo Finance fallback only works for NSE stocks
+        if not self.fyers_symbol.startswith("NSE:"):
+            log_message(f"Yahoo Finance fallback skipped for non-NSE symbol: {self.fyers_symbol}", "WARNING")
+            return None
 
+        try:
+            yahoo_symbol = f"{self.raw_symbol}.NS"
             log_message(f"Trying Yahoo Finance for {yahoo_symbol}")
 
-            # Use yfinance library if available, otherwise fallback
-            try:
-                import yfinance as yf
-                end_date = dt.now()
-                start_date = end_date - datetime.timedelta(days=days)
+            import yfinance as yf
+            end_date = dt.now()
+            start_date = end_date - datetime.timedelta(days=days)
 
-                data = yf.download(yahoo_symbol, start=start_date, end=end_date, progress=False)
+            data = yf.download(yahoo_symbol, start=start_date, end=end_date, progress=False)
 
-                if not data.empty:
-                    data = data.rename(columns={'Open': 'Open', 'High': 'High',
-                                                'Low': 'Low', 'Close': 'Close',
-                                                'Volume': 'Volume'})
-                    log_message(f"Fetched {len(data)} candles for {self.symbol} from Yahoo Finance")
-                    return data
-
-            except ImportError:
-                log_message("yfinance not installed, using web API", "WARNING")
-
-                # Alternative: Use pandas datareader
-                try:
-                    import pandas_datareader.data as web
-                    end_date = dt.now()
-                    start_date = end_date - datetime.timedelta(days=days)
-
-                    data = web.DataReader(yahoo_symbol, 'yahoo', start_date, end_date)
-                    if not data.empty:
-                        log_message(f"Fetched {len(data)} candles via pandas datareader")
-                        return data
-                except:
-                    pass
+            if not data.empty:
+                data = data.rename(columns={'Open': 'Open', 'High': 'High', 'Low': 'Low', 'Close': 'Close', 'Volume': 'Volume'})
+                log_message(f"Fetched {len(data)} candles for {self.raw_symbol} from Yahoo Finance")
+                return data
 
         except Exception as e:
-            log_message(f"Yahoo Finance error: {str(e)}", "ERROR")
+            log_message(f"Yahoo Finance error for {self.raw_symbol}: {str(e)}", "ERROR")
 
         return None
 
@@ -609,11 +628,11 @@ class TradingBot:
         data = self.fetch_historical_data_fyers(days, resolution)
 
         if data is None or len(data) < 50:
-            log_message("Fyers data unavailable, trying Yahoo Finance...", "WARNING")
+            log_message("Fyers data unavailable or insufficient, trying Yahoo Finance...", "WARNING")
             data = self.fetch_historical_data_yahoo(days)
 
         if data is None:
-            log_message(f"Failed to fetch data for {self.symbol}", "ERROR")
+            log_message(f"Failed to fetch any data for {self.raw_symbol}", "ERROR")
             return None
 
         return data
@@ -623,7 +642,7 @@ class TradingBot:
         data = self.fetch_historical_data(days=365)
 
         if data is None or len(data) < 100:
-            log_message("Insufficient data for training", "ERROR")
+            log_message(f"Insufficient data for training {self.raw_symbol}", "ERROR")
             return False
 
         # Calculate indicators
@@ -635,13 +654,16 @@ class TradingBot:
         # Prepare features
         X, y = self.processor.prepare_features(data_with_features, labels)
 
+        if len(X) < 50:
+             log_message(f"Not enough training samples after processing for {self.raw_symbol}", "ERROR")
+             return False
+
         # Split data
         split_idx = int(len(X) * 0.8)
         X_train, X_test = X[:split_idx], X[split_idx:]
         y_train, y_test = y[:split_idx], y[split_idx:]
 
-        log_message(f"Training samples: {len(X_train)}")
-        log_message(f"Testing samples: {len(X_test)}")
+        log_message(f"Training {self.raw_symbol} with {len(X_train)} samples...")
 
         # Train model
         self.model.train(X_train, y_train, X_test, y_test)
@@ -650,74 +672,57 @@ class TradingBot:
         predictions, _ = self.model.predict(X_test)
         accuracy = accuracy_score(y_test, predictions)
 
-        log_message(f"Model Accuracy: {accuracy:.2%}")
+        log_message(f"Model Accuracy for {self.raw_symbol}: {accuracy:.2%}")
 
-        # Save model
-        symbol_name = self.symbol.replace('NSE:', '').replace('-EQ', '')
-        model_path = self.model.save(symbol_name)
-
-        # Save scaler
-        scaler_path = os.path.join(MODELS_DIR, f"{symbol_name}_scaler.pkl")
+        # Save model and scaler
+        model_path = self.model.save(self.raw_symbol)
+        scaler_path = os.path.join(MODELS_DIR, f"{self.raw_symbol}_scaler.pkl")
         with open(scaler_path, 'wb') as f:
             pickle.dump(self.processor.scaler, f)
 
-        log_message(f"Model saved to {model_path}")
-        log_message(f"Scaler saved to {scaler_path}")
+        log_message(f"Model saved: {model_path}")
+        log_message(f"Scaler saved: {scaler_path}")
 
         return True
 
     def get_signal(self):
         """Get trading signal"""
-        # Try to load existing model
-        symbol_name = self.symbol.replace('NSE:', '').replace('-EQ', '')
-        if not self.model.load(symbol_name):
-            log_message("No trained model found", "ERROR")
+        if not self.model.load(self.raw_symbol):
+            log_message(f"No trained model found for {self.raw_symbol}", "ERROR")
             return None
 
-        # Load scaler
-        scaler_path = os.path.join(MODELS_DIR, f"{symbol_name}_scaler.pkl")
-        if os.path.exists(scaler_path):
-            with open(scaler_path, 'rb') as f:
-                self.processor.scaler = pickle.load(f)
+        scaler_path = os.path.join(MODELS_DIR, f"{self.raw_symbol}_scaler.pkl")
+        if not os.path.exists(scaler_path):
+            log_message(f"No scaler found for {self.raw_symbol}", "ERROR")
+            return None
+        with open(scaler_path, 'rb') as f:
+            self.processor.scaler = pickle.load(f)
 
-        # Get recent data
         data = self.fetch_historical_data(days=60, resolution="D")
-        if data is None or len(data) < 10:
+        if data is None or len(data) < 20:
             return None
 
-        # Calculate indicators
         data_with_features = self.processor.calculate_indicators(data)
-
-        # Prepare latest features
         X_latest = data_with_features[self.processor.feature_names].iloc[-1:].copy()
         X_latest = X_latest.fillna(0)
         X_scaled = self.processor.scaler.transform(X_latest)
 
-        # Make prediction
         prediction, probability = self.model.predict(X_scaled)
         confidence = max(probability[0])
+        signal = 'BUY' if prediction[0] == 1 else 'SELL'
 
-        signal_map = {0: 'SELL', 1: 'BUY'}
-        signal = signal_map[prediction[0]]
-
-        # Try to get current price from Fyers
-        current_price = None
+        current_price = data['Close'].iloc[-1]
         try:
-            quote_response = self.api.get_quotes(self.symbol)
-            if quote_response and quote_response.get('s') == 'ok':
-                quote_data = quote_response.get('d', [{}])[0]
-                current_price = quote_data.get('v', {}).get('lp')
+            quote = self.api.get_quotes(self.fyers_symbol)
+            if quote and quote.get('s') == 'ok':
+                current_price = quote.get('d', [{}])[0].get('v', {}).get('lp', current_price)
         except:
-            # Use last close price if quote fails
-            if not data.empty:
-                current_price = data['Close'].iloc[-1]
+            pass
 
         return {
-            'symbol': self.symbol,
+            'symbol': self.fyers_symbol,
             'signal': signal,
             'confidence': float(confidence),
-            'buy_probability': float(probability[0][1]),
-            'sell_probability': float(probability[0][0]),
             'price': current_price,
             'timestamp': dt.now().strftime('%Y-%m-%d %H:%M:%S')
         }
@@ -726,11 +731,10 @@ class TradingBot:
 def main():
     """Main function"""
     print("\n" + "=" * 70)
-    print("FYERS ALGO TRADING SYSTEM - FIXED API VERSION")
+    print("FYERS ALGO TRADING SYSTEM - MULTI-SYMBOL TRAINER")
     print("=" * 70)
-
     print("\n⚠ IMPORTANT: Install required packages for fallback data:")
-    print("pip install yfinance pandas_datareader")
+    print("pip install yfinance")
     print("=" * 70)
 
     auth = FyersAuthV3()
@@ -739,95 +743,79 @@ def main():
 
     while True:
         print("\n" + "=" * 70)
-        print("MAIN MENU - ALL OPTIONS WORKING")
+        print("MAIN MENU")
         print("=" * 70)
         print("1. 🔐 Authenticate with Fyers")
-        print("2. 🏋️ Train model for stock")
-        print("3. 📈 Get trading signal")
-        print("4. 💰 Execute trade")
+        print("2. 🏋️ Train a SINGLE symbol")
+        print("3. 🤖 Train ALL symbols in the list")
+        print("4. 📈 Get trading signal for a symbol")
         print("5. 📊 Account summary")
         print("6. 🚪 Exit")
         print("=" * 70)
 
-        try:
-            choice = input("\nSelect option (1-6): ").strip()
-        except KeyboardInterrupt:
-            print("\n\n⚠ Program interrupted")
-            break
-        except Exception as e:
-            print(f"\n⚠ Input error: {str(e)}")
-            choice = '1'
+        choice = input("\nSelect option (1-6): ").strip()
 
         if choice == '1':
-            # Authenticate
             if auth.authenticate():
-                # Load token from file
-                try:
-                    with open(TOKEN_PATH, "r") as f:
-                        access_token = json.load(f)
-
-                    api = FyersAPI(auth.app_id, access_token)
-
-                    # Test connection
-                    if api.test_connection():
-                        print("\n" + "=" * 70)
-                        print("✅ SUCCESS! Connected to Fyers API")
-                        print("=" * 70)
-
-                        # Show profile
-                        profile = api.get_profile()
-                        if profile and profile.get('s') == 'ok':
-                            data = profile.get('data', {})
-                            print(f"\n👤 Welcome, {data.get('name', 'User')}!")
-                            print(f"📋 Client ID: {data.get('client_id', 'N/A')}")
-                            print(f"💰 Account Type: {data.get('fy_id', 'N/A')}")
-                    else:
-                        print("\n⚠ Connected but API test failed")
-                        print("You can still try training models with fallback data")
-                except Exception as e:
-                    print(f"\n❌ Error setting up API: {str(e)}")
+                api = FyersAPI(auth.app_id, auth.access_token)
+                if api.test_connection():
+                    print("\n✅ SUCCESS! Connected to Fyers API")
+                else:
+                    print("\n⚠ Connected but API test failed. Fallback data will be used.")
             else:
                 print("\n❌ Authentication failed")
 
-        elif choice == '2':
-            # Train model
+        elif choice == '2' or choice == '3':
             if not api:
                 print("\n⚠ Please authenticate first (Option 1)")
                 continue
 
-            symbol_input = input("\nEnter a SINGLE stock symbol (e.g., RELIANCE): ").strip().upper()
-            if ',' in symbol_input or ' ' in symbol_input:
-                print("❌ Please enter only one symbol at a time.")
-                continue
-
-            if not symbol_input.endswith('.NS'):
-                symbol_input += '.NS'
-
-            bot = TradingBot(api, symbol_input)
-
-            print(f"\n🔄 Training model for {symbol_input}...")
-            print("Note: Using fallback data if Fyers API fails")
-            if bot.train_model():
-                print(f"\n✅ Model trained successfully for {symbol_input}")
+            symbols_to_train = []
+            if choice == '2':
+                symbol_input = input("\nEnter a SINGLE stock/commodity symbol (e.g., RELIANCE): ").strip().upper()
+                if symbol_input:
+                    symbols_to_train.append(symbol_input)
             else:
-                print(f"\n❌ Failed to train model for {symbol_input}")
-                print("\n💡 Install yfinance for better data:")
-                print("pip install yfinance")
+                print(f"\nPreparing to train all {len(SYMBOL_LIST)} symbols.")
+                if input("This may take a long time. Continue? (y/n): ").strip().lower() != 'y':
+                    continue
+                symbols_to_train = SYMBOL_LIST
 
-        elif choice == '3':
-            # Get trading signal
+            successful_trains = 0
+            failed_trains = []
+
+            for i, symbol in enumerate(symbols_to_train):
+                print("\n" + "=" * 70)
+                print(f"[{i+1}/{len(symbols_to_train)}] TRAINING: {symbol}")
+                print("=" * 70)
+                try:
+                    bot = TradingBot(api, symbol)
+                    if bot.train_model():
+                        successful_trains += 1
+                    else:
+                        failed_trains.append(symbol)
+                except Exception as e:
+                    log_message(f"CRITICAL ERROR training {symbol}: {e}", "ERROR")
+                    failed_trains.append(symbol)
+                time.sleep(1) # Add a small delay to avoid hitting API rate limits
+
+            print("\n" + "=" * 70)
+            print("TRAINING SUMMARY")
+            print("=" * 70)
+            print(f"✅ Successful: {successful_trains}")
+            print(f"❌ Failed: {len(failed_trains)}")
+            if failed_trains:
+                print(f"Failed symbols: {', '.join(failed_trains)}")
+            print("=" * 70)
+
+        elif choice == '4':
             if not api:
                 print("\n⚠ Please authenticate first (Option 1)")
                 continue
 
-            if not bot:
-                symbol = input("\nEnter stock symbol (e.g., RELIANCE.NS): ").strip().upper()
-                if not symbol.endswith('.NS'):
-                    symbol += '.NS'
-
-                bot = TradingBot(api, symbol)
-
-            print(f"\n🔍 Analyzing {bot.symbol}...")
+            symbol = input("\nEnter symbol to get signal for (e.g., RELIANCE): ").strip().upper()
+            bot = TradingBot(api, symbol)
+            print(f"\n🔍 Analyzing {symbol}...")
             signal = bot.get_signal()
 
             if signal:
@@ -837,52 +825,14 @@ def main():
                 print(f"Symbol: {signal['symbol']}")
                 print(f"Signal: {signal['signal']}")
                 print(f"Confidence: {signal['confidence']:.1%}")
-                print(f"Buy Probability: {signal['buy_probability']:.1%}")
-                print(f"Sell Probability: {signal['sell_probability']:.1%}")
                 if signal['price']:
-                    print(f"Current Price: ₹{signal['price']:.2f}")
+                    print(f"Indicative Price: ₹{signal['price']:.2f}")
                 print(f"Time: {signal['timestamp']}")
-
-                # Trading suggestion
-                if signal['confidence'] > 0.75:
-                    print(f"\n💡 STRONG SIGNAL - Good trading opportunity")
-                elif signal['confidence'] > 0.6:
-                    print(f"\n💡 MODERATE SIGNAL - Consider trading")
-                else:
-                    print(f"\n💡 WEAK SIGNAL - Wait for better setup")
                 print("=" * 70)
             else:
-                print("\n❌ Failed to get trading signal")
-                print("Try training the model first (Option 2)")
-
-        elif choice == '4':
-            # Execute trade (Demo)
-            if not api:
-                print("\n⚠ Please authenticate first (Option 1)")
-                continue
-
-            if not bot:
-                print("\n⚠ Please get a signal first (Option 3)")
-                continue
-
-            signal = bot.get_signal()
-            if not signal:
-                print("\n❌ No valid signal")
-                continue
-
-            print("\n" + "=" * 70)
-            print("💰 TRADE EXECUTION (DEMO MODE)")
-            print("=" * 70)
-            print(f"Symbol: {signal['symbol']}")
-            print(f"Action: {signal['signal']}")
-            print(f"Confidence: {signal['confidence']:.1%}")
-            print(f"Price: ₹{signal['price']:.2f}")
-            print("\n⚠ REAL ORDER PLACEMENT IS DISABLED")
-            print("To enable real trading, uncomment order placement code")
-            print("=" * 70)
+                print("\n❌ Failed to get signal. Model might need training (Option 2 or 3).")
 
         elif choice == '5':
-            # Account summary
             if not api:
                 print("\n⚠ Please authenticate first (Option 1)")
                 continue
@@ -891,46 +841,25 @@ def main():
             print("📊 ACCOUNT SUMMARY")
             print("=" * 70)
 
-            # Get funds
             funds = api.get_funds()
             if funds and funds.get('s') == 'ok':
-                fund_data = funds.get('fund_limit', {})
-                print(f"\n💰 FUNDS:")
-                print(f"  Total Equity: ₹{fund_data.get('total_equity', 0):,.2f}")
-                print(f"  Available Margin: ₹{fund_data.get('available_margin', 0):,.2f}")
-                print(f"  Used Margin: ₹{fund_data.get('used_margin', 0):,.2f}")
+                fund_data = funds.get('fund_limit', [{}])[0]
+                print(f"\n💰 Funds:")
+                print(f"  Available Margin: ₹{fund_data.get('equityAmount', 0):,.2f}")
             else:
-                print(f"\n💰 Funds data not available")
+                print("\n💰 Could not fetch funds.")
 
-            # Get positions
             positions = api.get_positions()
-            if positions and positions.get('s') == 'ok':
-                net_positions = positions.get('netPositions', [])
-                if net_positions:
-                    print(f"\n📈 OPEN POSITIONS:")
-                    for pos in net_positions:
-                        if pos.get('qty', 0) != 0:
-                            symbol = pos.get('symbol', '')
-                            qty = pos.get('qty', 0)
-                            avg_price = pos.get('avg_price', 0)
-                            current_price = pos.get('current_price', avg_price)
-                            pnl = pos.get('pl', 0)
-                            print(f"  {symbol}:")
-                            print(f"    Quantity: {qty}")
-                            print(f"    Avg Price: ₹{avg_price:.2f}")
-                            print(f"    Current: ₹{current_price:.2f}")
-                            print(f"    P&L: ₹{pnl:+,.2f}")
-                else:
-                    print(f"\n📈 No open positions")
+            if positions and positions.get('s') == 'ok' and positions.get('netPositions'):
+                print(f"\n📈 Open Positions:")
+                for pos in positions['netPositions']:
+                    print(f"  - {pos['symbol']}: Qty={pos['qty']}, P&L=₹{pos['pl']:.2f}")
             else:
-                print(f"\n📈 Positions data not available")
-
+                print(f"\n📈 No open positions.")
             print("=" * 70)
 
         elif choice == '6':
-            print("\n" + "=" * 70)
-            print("👋 Thank you for using Fyers Trading System!")
-            print("=" * 70)
+            print("\n👋 Exiting...")
             break
 
         else:
@@ -945,7 +874,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n\n⚠ Program interrupted")
     except Exception as e:
-        print(f"\n❌ Error: {str(e)}")
+        print(f"\n❌ Unhandled Error: {str(e)}")
         import traceback
-
         traceback.print_exc()
