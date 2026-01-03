@@ -53,20 +53,7 @@ def get_current_date():
         print("Falling back to local system time.")
         local_date = datetime.date.today()
 
-        # This is a safeguard against a misconfigured system clock. The user's log
-        # shows their clock is set to 2026, which causes a 422 API error.
-        # This check provides a clear, actionable error message instead.
-        # We assume the script is not intended to run more than a year from its development date (2024).
-        if local_date.year > 2025:
-            print("\n" + "="*70)
-            print("❌ FATAL ERROR: Your system clock appears to be set to a future year.")
-            print(f"   System date detected: {local_date}")
-            print("   This will cause API requests to fail.")
-            print("   Please correct your computer's date and time before running the script.")
-            print("="*70)
-            sys.exit(1) # Exit the script with an error code
-
-        print(f"⚠️  WARNING: Using local system date: {local_date}. Please ensure it is correct.")
+        print(f"⚠️  WARNING: Using local system date: {local_date}. Please be aware that if this date is incorrect, API calls may fail.")
         return local_date
 
 # Configuration
