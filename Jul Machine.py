@@ -34,22 +34,41 @@ import pickle
 import webbrowser
 import websocket
 import ssl
+from fyers_apiv3.FyersWebsocket import FyersDataSocket
 
 def get_current_date():
-    """Fetch the current date from worldtimeapi.org to avoid system clock issues."""
+    """
+    Fetch the current date from worldtimeapi.org to avoid system clock issues.
+    If the API fails, fall back to the local system time but validate it.
+    If the system time is in the future, exit with a clear error.
+    """
     try:
-        response = requests.get("http://worldtimeapi.org/api/timezone/Asia/Kolkata", timeout=5)
+        response = requests.get("http://worldtimeapi.org/api/timezone/Asia/Kolkata", timeout=10)
         response.raise_for_status()
         data = response.json()
-        return datetime.datetime.fromisoformat(data['datetime']).date()
-    except requests.RequestException as e:
-        print(f"Could not fetch date from worldtimeapi: {e}")
-        print("Falling back to local system time. Please check your system clock.")
-        return datetime.date.today()
-    except Exception as e:
-        print(f"Error processing date from worldtimeapi: {e}")
-        print("Falling back to local system time. Please check your system clock.")
-        return datetime.date.today()
+        online_date = datetime.datetime.fromisoformat(data['datetime']).date()
+        print(f"✅ Successfully fetched current date: {online_date}")
+        return online_date
+    except (requests.RequestException, json.JSONDecodeError, KeyError) as e:
+        print(f"Could not fetch or parse date from worldtimeapi: {e}")
+        print("Falling back to local system time.")
+        local_date = datetime.date.today()
+
+        # This is a safeguard against a misconfigured system clock. The user's log
+        # shows their clock is set to 2026, which causes a 422 API error.
+        # This check provides a clear, actionable error message instead.
+        # We assume the script is not intended to run more than a year from its development date (2024).
+        if local_date.year > 2025:
+            print("\n" + "="*70)
+            print("❌ FATAL ERROR: Your system clock appears to be set to a future year.")
+            print(f"   System date detected: {local_date}")
+            print("   This will cause API requests to fail.")
+            print("   Please correct your computer's date and time before running the script.")
+            print("="*70)
+            sys.exit(1) # Exit the script with an error code
+
+        print(f"⚠️  WARNING: Using local system date: {local_date}. Please ensure it is correct.")
+        return local_date
 
 # Configuration
 CONFIG_FILE = "fyers_login_details.json"
@@ -412,7 +431,7 @@ class FyersAPI:
 
 
 class FyersWebSocket:
-    """Fyers WebSocket client for real-time data"""
+    """Fyers WebSocket client for real-time data - v3 COMPATIBLE"""
 
     def __init__(self, app_id, access_token, symbols=None):
         self.app_id = app_id
@@ -422,8 +441,8 @@ class FyersWebSocket:
         self.connected = False
         self.data_queue = queue.Queue()
         self.callbacks = []
-        self.reconnect_timer = None
         self.running = False
+        self.ws_thread = None
 
     def on_message(self, ws, message):
         """Handle incoming WebSocket messages"""
@@ -431,22 +450,27 @@ class FyersWebSocket:
             data = json.loads(message)
             log_message(f"WebSocket message: {data}", "DEBUG")
 
-            # Process different message types
-            if 'symbol' in data:
-                # Quote data
-                self.data_queue.put(data)
-                for callback in self.callbacks:
-                    callback(data)
-            elif 'message' in data:
-                # Status message
-                log_message(f"WebSocket: {data['message']}", "INFO")
-            elif 's' in data and data['s'] == 'ok':
-                # Success response
-                log_message("WebSocket subscription successful", "INFO")
-            elif 'code' in data and data['code'] == 200:
-                # Connection successful
-                self.connected = True
-                log_message("✅ WebSocket connected successfully", "INFO")
+            # v3 sends data in a list for symbolData
+            if isinstance(data, list):
+                for item in data:
+                    # Reformats the quote to be compatible with the TradingBot's expected format
+                    formatted_quote = {
+                        'symbol': item.get('symbol'),
+                        'ltp': item.get('ltp'),
+                        'volume': item.get('volume'),
+                        'timestamp': item.get('timestamp', int(time.time()))
+                    }
+                    self.data_queue.put(formatted_quote)
+                    for callback in self.callbacks:
+                        callback(formatted_quote)
+            elif isinstance(data, dict):
+                if data.get('s') == 'ok':
+                    log_message(f"WebSocket status: {data.get('message', 'OK')}", "INFO")
+                    if data.get('code') == 200: # Welcome message
+                        self.connected = True
+                        log_message("✅ WebSocket connected successfully", "INFO")
+                elif data.get('s') == 'error':
+                    log_message(f"WebSocket error: {data.get('message')}", "ERROR")
 
         except Exception as e:
             log_message(f"Error processing WebSocket message: {str(e)}", "ERROR")
@@ -460,8 +484,6 @@ class FyersWebSocket:
         """Handle WebSocket closure"""
         log_message(f"WebSocket closed: {close_status_code} - {close_msg}", "WARNING")
         self.connected = False
-
-        # Attempt to reconnect
         if self.running:
             log_message("Attempting to reconnect WebSocket...", "INFO")
             time.sleep(WEBSOCKET_RECONNECT_DELAY)
@@ -470,20 +492,23 @@ class FyersWebSocket:
     def on_open(self, ws):
         """Handle WebSocket opening"""
         log_message("WebSocket opened, subscribing to symbols...", "INFO")
-
-        # Subscribe to symbols
         if self.symbols:
             subscribe_message = {
-                "symbol": self.symbols,
-                "dataType": "symbolUpdate"
+                "T": "SUB_L2",
+                "d": self.symbols
             }
             ws.send(json.dumps(subscribe_message))
             log_message(f"Subscribed to symbols: {self.symbols}", "INFO")
 
     def connect(self):
         """Connect to Fyers WebSocket"""
+        if self.running and self.ws_thread and self.ws_thread.is_alive():
+            return True
         try:
-            ws_url = f"{WEBSOCKET_URL}?authorization={self.app_id}:{self.access_token}"
+            access_token_formatted = f"{self.app_id}:{self.access_token}"
+            data_type = "symbolData"
+            ws_url = f"{WEBSOCKET_URL}?access_token={access_token_formatted}&data_type={data_type}"
+
             self.ws = websocket.WebSocketApp(
                 ws_url,
                 on_open=self.on_open,
@@ -491,24 +516,19 @@ class FyersWebSocket:
                 on_error=self.on_error,
                 on_close=self.on_close
             )
-
-            # Start WebSocket in a separate thread
             self.running = True
-            ws_thread = threading.Thread(target=self.ws.run_forever,
-                                         kwargs={'sslopt': {"cert_reqs": ssl.CERT_NONE}})
-            ws_thread.daemon = True
-            ws_thread.start()
+            self.ws_thread = threading.Thread(target=self.ws.run_forever, kwargs={'sslopt': {"cert_reqs": ssl.CERT_NONE}})
+            self.ws_thread.daemon = True
+            self.ws_thread.start()
 
-            # Wait for connection
-            for _ in range(10):  # Wait up to 10 seconds
+            for _ in range(15):
                 if self.connected:
                     return True
                 time.sleep(1)
-
             return self.connected
-
         except Exception as e:
             log_message(f"Failed to connect WebSocket: {str(e)}", "ERROR")
+            self.running = False
             return False
 
     def disconnect(self):
@@ -516,6 +536,8 @@ class FyersWebSocket:
         self.running = False
         if self.ws:
             self.ws.close()
+        if self.ws_thread and self.ws_thread.is_alive():
+            self.ws_thread.join(timeout=2)
         self.connected = False
         log_message("WebSocket disconnected", "INFO")
 
@@ -524,10 +546,7 @@ class FyersWebSocket:
         if symbol not in self.symbols:
             self.symbols.append(symbol)
             if self.connected and self.ws:
-                subscribe_message = {
-                    "symbol": [symbol],
-                    "dataType": "symbolUpdate"
-                }
+                subscribe_message = {"T": "SUB_L2", "d": [symbol]}
                 self.ws.send(json.dumps(subscribe_message))
                 log_message(f"Added subscription for {symbol}", "INFO")
 
@@ -535,7 +554,10 @@ class FyersWebSocket:
         """Remove a symbol from subscription"""
         if symbol in self.symbols:
             self.symbols.remove(symbol)
-            log_message(f"Removed subscription for {symbol}", "INFO")
+            if self.connected and self.ws:
+                unsubscribe_message = {"T": "UNSUB_L2", "d": [symbol]}
+                self.ws.send(json.dumps(unsubscribe_message))
+                log_message(f"Removed subscription for {symbol}", "INFO")
 
     def get_latest_data(self, timeout=1):
         """Get latest data from queue"""
