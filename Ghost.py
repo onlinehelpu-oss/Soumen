@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-Fyers Trading System - FIXED API ENDPOINTS VERSION
-Fixed historical data and other API endpoints
+Fyers Trading System - Fyers-Only Data Version
+This version uses exclusively Fyers historical data and removes the Yahoo Finance fallback.
 """
 
 import os
@@ -315,7 +315,6 @@ class FyersAPI:
             else:
                 return None
 
-            # Don't raise for 404 - return None instead
             if response.status_code == 404:
                 log_message(f"Endpoint not found: {endpoint}", "WARNING")
                 return None
@@ -345,7 +344,6 @@ class FyersAPI:
 
     def get_quotes(self, symbol):
         """Get quotes for a symbol"""
-        # Fyers V3 quotes endpoint
         params = {'symbols': symbol}
         return self._make_request('GET', 'quotes', params=params)
 
@@ -357,13 +355,12 @@ class FyersAPI:
         params = {
             'symbol': symbol,
             'resolution': resolution,
-            'date_format': '0',  # Using YYYY-MM-DD format
+            'date_format': '0',
             'range_from': start_date.strftime('%Y-%m-%d'),
             'range_to': end_date.strftime('%Y-%m-%d'),
             'cont_flag': '1'
         }
 
-        # Note: The base_url for data endpoints is different
         data_url = "https://api-t1.fyers.in/data/history"
 
         try:
@@ -378,7 +375,7 @@ class FyersAPI:
                 return None
 
         except requests.exceptions.RequestException as e:
-            if e.response and e.response.status_code == 422:
+            if hasattr(e, 'response') and e.response is not None and e.response.status_code == 422:
                 log_message("---------------------------------------------------------------------------------", "ERROR")
                 log_message("CRITICAL: Fyers API rejected the historical data request (422 Error).", "ERROR")
                 log_message("This is likely because your computer's clock is set to a future date.", "ERROR")
@@ -404,14 +401,10 @@ class DataProcessor:
         """Calculate technical indicators"""
         data = df.copy()
 
-        # Ensure we have required columns
         if 'Close' not in data.columns:
-            # Rename columns if needed
             if 'close' in data.columns:
-                data = data.rename(columns={'close': 'Close', 'open': 'Open',
-                                            'high': 'High', 'low': 'Low', 'volume': 'Volume'})
+                data = data.rename(columns={'close': 'Close', 'open': 'Open', 'high': 'High', 'low': 'Low', 'volume': 'Volume'})
 
-        # --- Robust Column Selection ---
         close_prices = data['Close']
         if isinstance(close_prices, pd.DataFrame):
             close_prices = close_prices.iloc[:, 0]
@@ -419,46 +412,34 @@ class DataProcessor:
         volume_prices = data['Volume']
         if isinstance(volume_prices, pd.DataFrame):
             volume_prices = volume_prices.iloc[:, 0]
-        # --- End Robust Column Selection ---
 
-        # Basic features
         data['Returns'] = close_prices.pct_change()
 
-        # Moving averages
         for period in [5, 10, 20, 50]:
             data[f'SMA_{period}'] = close_prices.rolling(window=period).mean()
             data[f'EMA_{period}'] = close_prices.ewm(span=period, adjust=False).mean()
-
-            # Correctly calculate the ratio as a new Series
             sma = data[f'SMA_{period}'].replace(0, np.nan)
             data[f'Price_SMA_Ratio_{period}'] = close_prices / sma
 
-        # RSI
         delta = close_prices.diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss.replace(0, np.nan)
         data['RSI'] = 100 - (100 / (1 + rs))
 
-        # Bollinger Bands
         bb_period = 20
         data['BB_Middle'] = close_prices.rolling(window=bb_period).mean()
         bb_std = close_prices.rolling(window=bb_period).std()
         data['BB_Upper'] = data['BB_Middle'] + (bb_std * 2)
         data['BB_Lower'] = data['BB_Middle'] - (bb_std * 2)
         data['BB_Width'] = (data['BB_Upper'] - data['BB_Lower']) / data['BB_Middle'].replace(0, np.nan)
-        data['BB_Position'] = (close_prices - data['BB_Lower']) / (data['BB_Upper'] - data['BB_Lower']).replace(0,
-                                                                                                                 np.nan)
+        data['BB_Position'] = (close_prices - data['BB_Lower']) / (data['BB_Upper'] - data['BB_Lower']).replace(0, np.nan)
 
-        # Volume
         data['Volume_SMA'] = volume_prices.rolling(window=20).mean()
         data['Volume_Ratio'] = volume_prices / data['Volume_SMA'].replace(0, np.nan)
 
-
-        # Fill NaN values
         data = data.fillna(method='ffill').fillna(method='bfill').fillna(0)
 
-        # Store feature names
         exclude_cols = ['Open', 'High', 'Low', 'Close', 'Volume', 'Returns']
         self.feature_names = [col for col in data.columns if col not in exclude_cols]
 
@@ -477,15 +458,12 @@ class DataProcessor:
     def prepare_features(self, df, labels):
         """Prepare feature matrix"""
         X = df[self.feature_names].copy()
-        X = X.fillna(0)
-        X = X.replace([np.inf, -np.inf], 0)
+        X = X.fillna(0).replace([np.inf, -np.inf], 0)
 
-        # Align indices
         common_idx = X.index.intersection(labels.index)
         X = X.loc[common_idx]
         y = labels.loc[common_idx]
 
-        # Scale features
         X_scaled = self.scaler.fit_transform(X)
 
         return X_scaled, y.values
@@ -496,39 +474,24 @@ class TradingModel:
 
     def __init__(self):
         self.model = xgb.XGBClassifier(
-            n_estimators=200,
-            max_depth=6,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            n_jobs=-1,
-            verbosity=0
+            n_estimators=200, max_depth=6, learning_rate=0.05,
+            subsample=0.8, colsample_bytree=0.8, random_state=42,
+            n_jobs=-1, verbosity=0
         )
         self.feature_importances = None
 
     def train(self, X_train, y_train, X_val=None, y_val=None):
         """Train the model"""
-        if X_val is not None and y_val is not None:
-            self.model.fit(
-                X_train, y_train,
-                eval_set=[(X_val, y_val)],
-                verbose=100
-            )
-        else:
-            self.model.fit(X_train, y_train, verbose=100)
-
+        eval_set = [(X_val, y_val)] if X_val is not None and y_val is not None else None
+        self.model.fit(X_train, y_train, eval_set=eval_set, verbose=100)
         self.feature_importances = self.model.feature_importances_
 
     def predict(self, X):
         """Make predictions"""
-        predictions = self.model.predict(X)
-        probabilities = self.model.predict_proba(X)
-        return predictions, probabilities
+        return self.model.predict(X), self.model.predict_proba(X)
 
     def save(self, symbol):
         """Save model to file"""
-        # Clean symbol for filename
         clean_symbol = symbol.replace(':', '_').replace('-', '_')
         model_file = os.path.join(MODELS_DIR, f"{clean_symbol}_model.joblib")
         joblib.dump(self.model, model_file)
@@ -545,11 +508,10 @@ class TradingModel:
 
 
 class TradingBot:
-    """Main trading bot with fallback to Yahoo Finance"""
+    """Main trading bot using only Fyers API for data"""
 
     def __init__(self, api, symbol):
         self.api = api
-        # Raw symbol (e.g., RELIANCE) is passed, formatting happens in methods
         self.raw_symbol = symbol
         self.fyers_symbol = self._format_fyers_symbol(symbol)
         self.model = TradingModel()
@@ -558,23 +520,14 @@ class TradingBot:
     def _format_fyers_symbol(self, symbol):
         """Format symbol for Fyers API, handling NSE and MCX"""
         symbol = symbol.upper().replace('.NS', '')
-
-        # Heuristic to detect MCX symbols
         mcx_keywords = ["CRUDEOIL", "NATURALGAS", "GOLD", "SILVER", "COPPER", "ZINC", "LEAD", "NICKEL", "ALUMINIUM"]
         if any(keyword in symbol for keyword in mcx_keywords):
-            # This is a simplification. Real MCX symbols need expiry details.
-            # For historical data, a generic continuous future might work.
-            # Example: MCX:CRUDEOIL24APRFUT - needs to be dynamically resolved.
-            # For now, we'll create a placeholder format.
             log_message(f"MCX symbol detected: {symbol}. Note: Futures require specific expiry details for trading.", "WARNING")
-            # This will likely fail for live trading, but might work for some historical data pulls
-            return f"MCX:{symbol}M1" # Placeholder for generic monthly future
-
-        # Default to NSE Equity
+            return f"MCX:{symbol}M1"
         return f"NSE:{symbol}-EQ"
 
-    def fetch_historical_data_fyers(self, days=365, resolution="D"):
-        """Fetch historical data from Fyers API"""
+    def fetch_historical_data(self, days=365, resolution="D"):
+        """Fetch historical data exclusively from Fyers API"""
         try:
             response = self.api.get_historical_data(
                 symbol=self.fyers_symbol,
@@ -590,52 +543,11 @@ class TradingBot:
                     df.set_index('timestamp', inplace=True)
                     log_message(f"Fetched {len(df)} candles for {self.fyers_symbol} from Fyers")
                     return df
-
         except Exception as e:
             log_message(f"Fyers API error for {self.fyers_symbol}: {str(e)}", "ERROR")
 
+        log_message(f"Failed to fetch data for {self.fyers_symbol} from Fyers.", "ERROR")
         return None
-
-    def fetch_historical_data_yahoo(self, days=365):
-        """Fallback to Yahoo Finance for historical data (NSE only)"""
-        # Yahoo Finance fallback only works for NSE stocks
-        if not self.fyers_symbol.startswith("NSE:"):
-            log_message(f"Yahoo Finance fallback skipped for non-NSE symbol: {self.fyers_symbol}", "WARNING")
-            return None
-
-        try:
-            yahoo_symbol = f"{self.raw_symbol}.NS"
-            log_message(f"Trying Yahoo Finance for {yahoo_symbol}")
-
-            import yfinance as yf
-            end_date = dt.now()
-            start_date = end_date - datetime.timedelta(days=days)
-
-            data = yf.download(yahoo_symbol, start=start_date, end=end_date, progress=False)
-
-            if not data.empty:
-                data = data.rename(columns={'Open': 'Open', 'High': 'High', 'Low': 'Low', 'Close': 'Close', 'Volume': 'Volume'})
-                log_message(f"Fetched {len(data)} candles for {self.raw_symbol} from Yahoo Finance")
-                return data
-
-        except Exception as e:
-            log_message(f"Yahoo Finance error for {self.raw_symbol}: {str(e)}", "ERROR")
-
-        return None
-
-    def fetch_historical_data(self, days=365, resolution="D"):
-        """Try Fyers first, then fallback to Yahoo Finance"""
-        data = self.fetch_historical_data_fyers(days, resolution)
-
-        if data is None or len(data) < 50:
-            log_message("Fyers data unavailable or insufficient, trying Yahoo Finance...", "WARNING")
-            data = self.fetch_historical_data_yahoo(days)
-
-        if data is None:
-            log_message(f"Failed to fetch any data for {self.raw_symbol}", "ERROR")
-            return None
-
-        return data
 
     def train_model(self):
         """Train the trading model"""
@@ -645,36 +557,25 @@ class TradingBot:
             log_message(f"Insufficient data for training {self.raw_symbol}", "ERROR")
             return False
 
-        # Calculate indicators
         data_with_features = self.processor.calculate_indicators(data)
-
-        # Create labels
         labels = self.processor.create_labels(data_with_features, forward_days=1, threshold=0.002)
-
-        # Prepare features
         X, y = self.processor.prepare_features(data_with_features, labels)
 
         if len(X) < 50:
              log_message(f"Not enough training samples after processing for {self.raw_symbol}", "ERROR")
              return False
 
-        # Split data
         split_idx = int(len(X) * 0.8)
         X_train, X_test = X[:split_idx], X[split_idx:]
         y_train, y_test = y[:split_idx], y[split_idx:]
 
         log_message(f"Training {self.raw_symbol} with {len(X_train)} samples...")
-
-        # Train model
         self.model.train(X_train, y_train, X_test, y_test)
 
-        # Evaluate
         predictions, _ = self.model.predict(X_test)
         accuracy = accuracy_score(y_test, predictions)
-
         log_message(f"Model Accuracy for {self.raw_symbol}: {accuracy:.2%}")
 
-        # Save model and scaler
         model_path = self.model.save(self.raw_symbol)
         scaler_path = os.path.join(MODELS_DIR, f"{self.raw_symbol}_scaler.pkl")
         with open(scaler_path, 'wb') as f:
@@ -682,7 +583,6 @@ class TradingBot:
 
         log_message(f"Model saved: {model_path}")
         log_message(f"Scaler saved: {scaler_path}")
-
         return True
 
     def get_signal(self):
@@ -720,10 +620,8 @@ class TradingBot:
             pass
 
         return {
-            'symbol': self.fyers_symbol,
-            'signal': signal,
-            'confidence': float(confidence),
-            'price': current_price,
+            'symbol': self.fyers_symbol, 'signal': signal,
+            'confidence': float(confidence), 'price': current_price,
             'timestamp': dt.now().strftime('%Y-%m-%d %H:%M:%S')
         }
 
@@ -731,10 +629,7 @@ class TradingBot:
 def main():
     """Main function"""
     print("\n" + "=" * 70)
-    print("FYERS ALGO TRADING SYSTEM - MULTI-SYMBOL TRAINER")
-    print("=" * 70)
-    print("\n⚠ IMPORTANT: Install required packages for fallback data:")
-    print("pip install yfinance")
+    print("FYERS ALGO TRADING SYSTEM - FYERS DATA ONLY")
     print("=" * 70)
 
     auth = FyersAuthV3()
@@ -761,7 +656,7 @@ def main():
                 if api.test_connection():
                     print("\n✅ SUCCESS! Connected to Fyers API")
                 else:
-                    print("\n⚠ Connected but API test failed. Fallback data will be used.")
+                    print("\n⚠ API connection test failed.")
             else:
                 print("\n❌ Authentication failed")
 
@@ -797,7 +692,7 @@ def main():
                 except Exception as e:
                     log_message(f"CRITICAL ERROR training {symbol}: {e}", "ERROR")
                     failed_trains.append(symbol)
-                time.sleep(1) # Add a small delay to avoid hitting API rate limits
+                time.sleep(1)
 
             print("\n" + "=" * 70)
             print("TRAINING SUMMARY")
