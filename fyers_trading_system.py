@@ -35,6 +35,22 @@ import webbrowser
 import websocket
 import ssl
 
+def get_current_date():
+    """Fetch the current date from worldtimeapi.org to avoid system clock issues."""
+    try:
+        response = requests.get("http://worldtimeapi.org/api/timezone/Asia/Kolkata", timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        return datetime.datetime.fromisoformat(data['datetime']).date()
+    except requests.RequestException as e:
+        print(f"Could not fetch date from worldtimeapi: {e}")
+        print("Falling back to local system time. Please check your system clock.")
+        return datetime.date.today()
+    except Exception as e:
+        print(f"Error processing date from worldtimeapi: {e}")
+        print("Falling back to local system time. Please check your system clock.")
+        return datetime.date.today()
+
 # Configuration
 CONFIG_FILE = "fyers_login_details.json"
 TOKENS_DIR = "AccessToken"
@@ -54,23 +70,6 @@ WEBSOCKET_RECONNECT_DELAY = 5  # seconds
 # Create necessary directories
 for directory in [TOKENS_DIR, MODELS_DIR, DATA_DIR, LOG_DIR]:
     os.makedirs(directory, exist_ok=True)
-
-
-def get_current_date():
-    """Fetch the current date from worldtimeapi.org to avoid system clock issues."""
-    try:
-        response = requests.get("http://worldtimeapi.org/api/timezone/Asia/Kolkata", timeout=5)
-        response.raise_for_status()
-        data = response.json()
-        return datetime.datetime.fromisoformat(data['datetime']).date()
-    except requests.RequestException as e:
-        print(f"Could not fetch date from worldtimeapi: {e}")
-        print("Falling back to local system time. Please check your system clock.")
-        return datetime.date.today()
-    except Exception as e:
-        print(f"Error processing date from worldtimeapi: {e}")
-        print("Falling back to local system time. Please check your system clock.")
-        return datetime.date.today()
 
 
 def log_message(message, level="INFO"):
