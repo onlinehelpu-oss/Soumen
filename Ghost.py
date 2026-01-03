@@ -360,7 +360,11 @@ class FyersAPI:
 
         except requests.exceptions.RequestException as e:
             if e.response and e.response.status_code == 422:
-                log_message("Historical data request failed (422 Error). Your system's clock may be set to a future date.", "ERROR")
+                log_message("---------------------------------------------------------------------------------", "ERROR")
+                log_message("CRITICAL: Fyers API rejected the historical data request (422 Error).", "ERROR")
+                log_message("This is likely because your computer's clock is set to a future date.", "ERROR")
+                log_message("Please set your system's date and time to the correct, current date.", "ERROR")
+                log_message("---------------------------------------------------------------------------------", "ERROR")
             else:
                 log_message(f"Historical data request failed: {str(e)}", "ERROR")
             return None
@@ -388,10 +392,17 @@ class DataProcessor:
                 data = data.rename(columns={'close': 'Close', 'open': 'Open',
                                             'high': 'High', 'low': 'Low', 'volume': 'Volume'})
 
-        # Basic features
+        # --- Robust Column Selection ---
         close_prices = data['Close']
         if isinstance(close_prices, pd.DataFrame):
             close_prices = close_prices.iloc[:, 0]
+
+        volume_prices = data['Volume']
+        if isinstance(volume_prices, pd.DataFrame):
+            volume_prices = volume_prices.iloc[:, 0]
+        # --- End Robust Column Selection ---
+
+        # Basic features
         data['Returns'] = close_prices.pct_change()
 
         # Moving averages
@@ -421,9 +432,6 @@ class DataProcessor:
                                                                                                                  np.nan)
 
         # Volume
-        volume_prices = data['Volume']
-        if isinstance(volume_prices, pd.DataFrame):
-            volume_prices = volume_prices.iloc[:, 0]
         data['Volume_SMA'] = volume_prices.rolling(window=20).mean()
         data['Volume_Ratio'] = volume_prices / data['Volume_SMA'].replace(0, np.nan)
 
