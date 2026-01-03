@@ -41,7 +41,10 @@ TOKENS_DIR = "AccessToken"
 MODELS_DIR = "models"
 DATA_DIR = "data"
 LOG_DIR = "logs"
-TODAY = str(datetime.date.today())
+
+# Fetch the correct date at startup to avoid system clock issues
+TODAY_DATE = get_current_date()
+TODAY = str(TODAY_DATE)
 TOKEN_PATH = os.path.join(TOKENS_DIR, f"{TODAY}.json")
 
 # WebSocket configuration
@@ -53,8 +56,26 @@ for directory in [TOKENS_DIR, MODELS_DIR, DATA_DIR, LOG_DIR]:
     os.makedirs(directory, exist_ok=True)
 
 
+def get_current_date():
+    """Fetch the current date from worldtimeapi.org to avoid system clock issues."""
+    try:
+        response = requests.get("http://worldtimeapi.org/api/timezone/Asia/Kolkata", timeout=5)
+        response.raise_for_status()
+        data = response.json()
+        return datetime.datetime.fromisoformat(data['datetime']).date()
+    except requests.RequestException as e:
+        print(f"Could not fetch date from worldtimeapi: {e}")
+        print("Falling back to local system time. Please check your system clock.")
+        return datetime.date.today()
+    except Exception as e:
+        print(f"Error processing date from worldtimeapi: {e}")
+        print("Falling back to local system time. Please check your system clock.")
+        return datetime.date.today()
+
+
 def log_message(message, level="INFO"):
     """Log messages to file"""
+    # Use a fixed date for the log file name to avoid creating new files on each run
     log_file = os.path.join(LOG_DIR, f"trading_{TODAY}.log")
     timestamp = dt.now().strftime("%Y-%m-%d %H:%M:%S")
     log_entry = f"[{timestamp}] [{level}] {message}\n"
@@ -354,7 +375,7 @@ class FyersAPI:
     def get_historical_data(self, symbol, days=365, resolution="D"):
         """Get historical data"""
         # Fyers v3 requires YYYY-MM-DD format for dates
-        end_date = datetime.date.today()
+        end_date = TODAY_DATE
         start_date = end_date - datetime.timedelta(days=days)
 
         url = "https://api-t1.fyers.in/data/history"
