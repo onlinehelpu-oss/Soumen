@@ -39,8 +39,7 @@ import ssl
 def get_current_date():
     """
     Fetch the current date from worldtimeapi.org to avoid system clock issues.
-    If the API fails, fall back to the local system time but validate it.
-    If the system time is in the future, exit with a clear error.
+    If the API fails, fall back to prompting the user for manual date entry.
     """
     try:
         response = requests.get("http://worldtimeapi.org/api/timezone/Asia/Kolkata", timeout=10)
@@ -50,10 +49,16 @@ def get_current_date():
         print(f"✅ Successfully fetched current date: {online_date}")
         return online_date
     except (requests.RequestException, json.JSONDecodeError, KeyError) as e:
-        print(f"❌ CRITICAL ERROR: Could not fetch the current date from worldtimeapi: {e}")
-        print("The application cannot proceed without a valid, verifiable date.")
-        print("Please check your internet connection and ensure worldtimeapi.org is accessible.")
-        sys.exit(1)
+        print(f"⚠️  WARNING: Could not fetch date from worldtimeapi.org: {e}")
+        print("Falling back to manual date entry.")
+        while True:
+            manual_date_str = input("Please enter the current date in YYYY-MM-DD format: ").strip()
+            try:
+                manual_date = datetime.datetime.strptime(manual_date_str, "%Y-%m-%d").date()
+                print(f"✅ Using manually entered date: {manual_date}")
+                return manual_date
+            except ValueError:
+                print("❌ Invalid format. Please use YYYY-MM-DD.")
 
 
 # Configuration
