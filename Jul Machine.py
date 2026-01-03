@@ -34,7 +34,6 @@ import pickle
 import webbrowser
 import websocket
 import ssl
-from fyers_apiv3.FyersWebsocket import FyersDataSocket
 
 def get_current_date():
     """
@@ -505,9 +504,9 @@ class FyersWebSocket:
         if self.running and self.ws_thread and self.ws_thread.is_alive():
             return True
         try:
-            access_token_formatted = f"{self.app_id}:{self.access_token}"
+            access_token = f"{self.app_id}:{self.access_token}"
             data_type = "symbolData"
-            ws_url = f"{WEBSOCKET_URL}?access_token={access_token_formatted}&data_type={data_type}"
+            ws_url = f"{WEBSOCKET_URL}/?access_token={access_token}&data_type={data_type}"
 
             self.ws = websocket.WebSocketApp(
                 ws_url,
