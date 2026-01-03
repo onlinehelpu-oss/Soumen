@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Fyers Trading System - Fyers-Only Data Version
-This version uses exclusively Fyers historical data and removes the Yahoo Finance fallback.
+Fyers Trading System - Resilient Version with Fallback
+This version prioritizes Fyers historical data but includes a fallback to Yahoo Finance
+to ensure functionality even if the Fyers API is unavailable (e.g., due to a clock issue).
 """
 
 import os
@@ -508,7 +509,7 @@ class TradingModel:
 
 
 class TradingBot:
-    """Main trading bot using only Fyers API for data"""
+    """Main trading bot with fallback to Yahoo Finance"""
 
     def __init__(self, api, symbol):
         self.api = api
@@ -526,15 +527,10 @@ class TradingBot:
             return f"MCX:{symbol}M1"
         return f"NSE:{symbol}-EQ"
 
-    def fetch_historical_data(self, days=365, resolution="D"):
-        """Fetch historical data exclusively from Fyers API"""
+    def fetch_historical_data_fyers(self, days=365, resolution="D"):
+        """Fetch historical data from Fyers API"""
         try:
-            response = self.api.get_historical_data(
-                symbol=self.fyers_symbol,
-                days=days,
-                resolution=resolution
-            )
-
+            response = self.api.get_historical_data(symbol=self.fyers_symbol, days=days, resolution=resolution)
             if response and response.get("s") == "ok":
                 candles = response.get("candles", [])
                 if candles:
@@ -545,9 +541,38 @@ class TradingBot:
                     return df
         except Exception as e:
             log_message(f"Fyers API error for {self.fyers_symbol}: {str(e)}", "ERROR")
-
-        log_message(f"Failed to fetch data for {self.fyers_symbol} from Fyers.", "ERROR")
         return None
+
+    def fetch_historical_data_yahoo(self, days=365):
+        """Fallback to Yahoo Finance for historical data (NSE only)"""
+        if not self.fyers_symbol.startswith("NSE:"):
+            log_message(f"Yahoo Finance fallback skipped for non-NSE symbol: {self.fyers_symbol}", "WARNING")
+            return None
+        try:
+            import yfinance as yf
+            yahoo_symbol = f"{self.raw_symbol}.NS"
+            log_message(f"Trying Yahoo Finance for {yahoo_symbol}")
+            end_date = dt.now()
+            start_date = end_date - datetime.timedelta(days=days)
+            data = yf.download(yahoo_symbol, start=start_date, end=end_date, progress=False)
+            if not data.empty:
+                data = data.rename(columns={'Open': 'Open', 'High': 'High', 'Low': 'Low', 'Close': 'Close', 'Volume': 'Volume'})
+                log_message(f"Fetched {len(data)} candles for {self.raw_symbol} from Yahoo Finance")
+                return data
+        except Exception as e:
+            log_message(f"Yahoo Finance error for {self.raw_symbol}: {str(e)}", "ERROR")
+        return None
+
+    def fetch_historical_data(self, days=365, resolution="D"):
+        """Try Fyers first, then fallback to Yahoo Finance"""
+        data = self.fetch_historical_data_fyers(days, resolution)
+        if data is None or len(data) < 50:
+            log_message("Fyers data unavailable or insufficient, trying Yahoo Finance...", "WARNING")
+            data = self.fetch_historical_data_yahoo(days)
+        if data is None:
+            log_message(f"Failed to fetch any data for {self.raw_symbol}", "ERROR")
+            return None
+        return data
 
     def train_model(self):
         """Train the trading model"""
@@ -629,7 +654,10 @@ class TradingBot:
 def main():
     """Main function"""
     print("\n" + "=" * 70)
-    print("FYERS ALGO TRADING SYSTEM - FYERS DATA ONLY")
+    print("FYERS ALGO TRADING SYSTEM - RESILIENT VERSION WITH FALLBACK")
+    print("=" * 70)
+    print("\n⚠ IMPORTANT: For the data fallback to work, please install yfinance:")
+    print("pip install yfinance")
     print("=" * 70)
 
     auth = FyersAuthV3()
