@@ -55,6 +55,9 @@ def get_current_date():
             manual_date_str = input("Please enter the current date in YYYY-MM-DD format: ").strip()
             try:
                 manual_date = datetime.datetime.strptime(manual_date_str, "%Y-%m-%d").date()
+                if manual_date > datetime.date.today():
+                    print(f"❌ Invalid date: {manual_date} is in the future. Please enter a valid date.")
+                    continue
                 print(f"✅ Using manually entered date: {manual_date}")
                 return manual_date
             except ValueError:
@@ -367,7 +370,14 @@ class FyersAPI:
 
     def get_market_status(self):
         """Get market status"""
-        return self._make_request('GET', 'market-status')
+        url = "https://api-t1.fyers.in/data/market-status"
+        try:
+            response = requests.get(url, headers=self.headers, timeout=30)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            log_message(f"Market status request failed: {str(e)}", "ERROR")
+            return None
 
     def get_quotes(self, symbol):
         """Get quotes for a symbol"""
@@ -384,26 +394,11 @@ class FyersAPI:
     def get_historical_data(self, symbol, days=365, resolution="D"):
         """
         Get historical data, capping the end date to the actual current date
-        to ensure API calls to Fyers are always valid, even if the script is
-        operating in a future context.
+        to ensure API calls to Fyers are always valid.
         """
-        # The script's operating date (TODAY_DATE) might be in the future.
-        # Fyers API calls must be capped at the actual current date to be valid.
-        try:
-            # Attempt to fetch the real current date from the reliable online source.
-            response = requests.get("http://worldtimeapi.org/api/timezone/Asia/Kolkata", timeout=5)
-            response.raise_for_status()
-            data = response.json()
-            real_today = datetime.datetime.fromisoformat(data['datetime']).date()
-        except requests.RequestException:
-            # If the online source fails, log a warning and use the script's operating date.
-            # This will likely cause the Fyers API to fail if the date is in the future,
-            # triggering the Yahoo Finance fallback as intended.
-            log_message("Could not fetch real date to cap API request; using script's date.", "WARNING")
-            real_today = TODAY_DATE
-
-        # Use the earlier of the script's operating date and the real date for the API call.
-        end_date_for_api = min(TODAY_DATE, real_today)
+        # TODAY_DATE is the reliable date established at startup.
+        # This might be different from the system's date, but it's verified.
+        end_date_for_api = TODAY_DATE
         start_date = end_date_for_api - datetime.timedelta(days=days)
 
         url = "https://api-t1.fyers.in/data/history"
@@ -517,7 +512,7 @@ class FyersWebSocket:
         try:
             access_token = f"{self.app_id}:{self.access_token}"
             data_type = "symbolData"
-            ws_url = f"{WEBSOCKET_URL}/?access_token={access_token}&data_type={data_type}"
+            ws_url = f"{WEBSOCKET_URL}?access_token={access_token}&data_type={data_type}"
 
             self.ws = websocket.WebSocketApp(
                 ws_url,
