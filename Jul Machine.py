@@ -382,10 +382,29 @@ class FyersAPI:
             return None
 
     def get_historical_data(self, symbol, days=365, resolution="D"):
-        """Get historical data"""
-        # Fyers v3 requires YYYY-MM-DD format for dates
-        end_date = TODAY_DATE
-        start_date = end_date - datetime.timedelta(days=days)
+        """
+        Get historical data, capping the end date to the actual current date
+        to ensure API calls to Fyers are always valid, even if the script is
+        operating in a future context.
+        """
+        # The script's operating date (TODAY_DATE) might be in the future.
+        # Fyers API calls must be capped at the actual current date to be valid.
+        try:
+            # Attempt to fetch the real current date from the reliable online source.
+            response = requests.get("http://worldtimeapi.org/api/timezone/Asia/Kolkata", timeout=5)
+            response.raise_for_status()
+            data = response.json()
+            real_today = datetime.datetime.fromisoformat(data['datetime']).date()
+        except requests.RequestException:
+            # If the online source fails, log a warning and use the script's operating date.
+            # This will likely cause the Fyers API to fail if the date is in the future,
+            # triggering the Yahoo Finance fallback as intended.
+            log_message("Could not fetch real date to cap API request; using script's date.", "WARNING")
+            real_today = TODAY_DATE
+
+        # Use the earlier of the script's operating date and the real date for the API call.
+        end_date_for_api = min(TODAY_DATE, real_today)
+        start_date = end_date_for_api - datetime.timedelta(days=days)
 
         url = "https://api-t1.fyers.in/data/history"
 
@@ -394,7 +413,7 @@ class FyersAPI:
             'resolution': resolution,
             'date_format': '0',  # 0 for YYYY-MM-DD
             'range_from': start_date.strftime('%Y-%m-%d'),
-            'range_to': end_date.strftime('%Y-%m-%d'),
+            'range_to': end_date_for_api.strftime('%Y-%m-%d'),
             'cont_flag': '1'
         }
 
