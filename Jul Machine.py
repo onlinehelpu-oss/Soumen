@@ -36,17 +36,22 @@ import websocket
 import ssl
 
 
+REAL_TODAY = None
+
+
 def get_current_date():
     """
-    Fetch the current date from worldtimeapi.org to avoid system clock issues.
-    If the API fails, fall back to prompting the user for manual date entry.
+    Fetch the current date from worldtimeapi.org and store it globally.
+    If the API fails, fall back to manual entry, but still store the result globally.
     """
+    global REAL_TODAY
     try:
         response = requests.get("http://worldtimeapi.org/api/timezone/Asia/Kolkata", timeout=10)
         response.raise_for_status()
         data = response.json()
         online_date = datetime.datetime.fromisoformat(data['datetime']).date()
         print(f"✅ Successfully fetched current date: {online_date}")
+        REAL_TODAY = online_date
         return online_date
     except (requests.RequestException, json.JSONDecodeError, KeyError) as e:
         print(f"⚠️  WARNING: Could not fetch date from worldtimeapi.org: {e}")
@@ -396,9 +401,8 @@ class FyersAPI:
         Get historical data, capping the end date to the actual current date
         to ensure API calls to Fyers are always valid.
         """
-        # TODAY_DATE is the reliable date established at startup.
-        # This might be different from the system's date, but it's verified.
-        end_date_for_api = TODAY_DATE
+        # Use the globally stored real date for the API call.
+        end_date_for_api = REAL_TODAY
         start_date = end_date_for_api - datetime.timedelta(days=days)
 
         url = "https://api-t1.fyers.in/data/history"
