@@ -142,7 +142,8 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, index_symbol: str, is_ce
 
     try:
         resp = fyers.optionchain(data={"symbol": root}) or {}
-        data = (resp.get("data") or {}).get("optionsChain") or []
+        options_data = resp.get("data", {})
+        data = options_data.get("optionsChain") or options_data.get("optionChain") or []
         if not data:
             raise RuntimeError(f"Optionchain response empty for root: {root}")
 
@@ -151,14 +152,15 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, index_symbol: str, is_ce
             raise RuntimeError(f"Optionchain has no rows for type {opt_type}")
 
         def expiry_key(row):
-            exp = row.get("expiry")
+            exp = row.get("expiry_date", row.get("expiry"))
             try:
                 return dt.strptime(exp, "%Y-%m-%d")
             except Exception:
                 return dt.max
 
-        earliest_expiry = min(filt, key=expiry_key).get("expiry")
-        filt = [r for r in filt if r.get("expiry") == earliest_expiry]
+        earliest_expiry_row = min(filt, key=expiry_key)
+        earliest_expiry = earliest_expiry_row.get("expiry_date", earliest_expiry_row.get("expiry"))
+        filt = [r for r in filt if r.get("expiry_date", r.get("expiry")) == earliest_expiry]
 
         all_strikes = sorted(list(set(float(r.get("strike_price", r.get("strikePrice"))) for r in filt)))
         if not all_strikes:
