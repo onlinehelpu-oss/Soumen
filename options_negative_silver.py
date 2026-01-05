@@ -149,8 +149,8 @@ SPOT_INDICES = [
 
 # Map for option chain API which requires the short symbol
 INDEX_MAP = {
-    'NSE:NIFTY50-INDEX': 'NIFTY',
-    'NSE:NIFTYBANK-INDEX': 'BANKNIFTY',
+    'NSE:NIFTY50-INDEX': 'NIFTY50',
+    'NSE:NIFTYBANK-INDEX': 'NIFTYBANK',
     'NSE:FINNIFTY-INDEX': 'FINNIFTY'
 }
 
