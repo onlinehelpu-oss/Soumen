@@ -192,15 +192,20 @@ def get_option_contract(fy, base_symbol: str, strike_dist: int) -> str:
             print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ Option chain fetch failed for {base_symbol}: {chain.get('message')}")
             return None
 
+        chain_data = chain["data"].get("optionsChain") or chain["data"].get("optionChain", [])
+        if not chain_data:
+            print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ No options chain data found for {base_symbol}")
+            return None
+
         # 1. Find the earliest expiry date from the chains
-        expiries = sorted([opt['expiry'] for opt in chain["data"]], key=lambda d: dt.datetime.strptime(d, '%d%b%y'))
+        expiries = sorted([opt['expiry'] for opt in chain_data], key=lambda d: dt.datetime.strptime(d, '%d%b%y'))
         if not expiries:
             return None
         nearest_expiry_str = expiries[0]
 
         # 2. Filter for that specific expiry and only CE contracts
         contracts = [
-            c for c in chain["data"]
+            c for c in chain_data
             if c.get("expiry") == nearest_expiry_str and c.get("symbol", "").endswith("CE")
         ]
         if not contracts:
