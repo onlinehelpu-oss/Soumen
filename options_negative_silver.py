@@ -279,12 +279,44 @@ def ensure_access_token():
 
     # Check if a token file for today already exists
     if os.path.exists(TODAY_PATH):
-        with open(TODAY_PATH, 'r') as f:
-            access_token = f.read()
-        print("🔑 Using today's cached access token.")
-        return client_id, access_token
+        access_token = _read_json(TODAY_PATH)
+        if access_token and isinstance(access_token, str):
+            print("🔑 Using today's cached access token.")
+            return client_id, access_token
 
-    # If not, start the login flow using the SessionModel
+    # If today's token doesn't exist, try to use a refresh token
+    store = _read_json(TOKENS_STORE, {}) or {}
+    refresh_token = store.get("refresh_token")
+    if refresh_token:
+        try:
+            print("🔄 Attempting refresh-token login …")
+            session = fyersModel.SessionModel(
+                client_id=client_id,
+                secret_key=secret_key,
+                redirect_uri=redirect_uri,
+                response_type="code",
+                grant_type="refresh_token"
+            )
+            session.set_token(refresh_token)
+            response = session.generate_token()
+
+            if response.get("s") != "ok":
+                raise RuntimeError(f"Refresh token failed: {response.get('message')}")
+
+            new_access_token = response["access_token"]
+            new_refresh_token = response.get("refresh_token")
+
+            _write_json(TOKENS_STORE, {"refresh_token": new_refresh_token or refresh_token})
+            _write_json(TODAY_PATH, new_access_token)
+            print("✅ Refresh successful.")
+            return client_id, new_access_token
+        except Exception as e:
+            print(f"⚠️ Refresh failed: {e}. Falling back to manual login.")
+            # Clear stored tokens on failure
+            if os.path.exists(TOKENS_STORE):
+                _write_json(TOKENS_STORE, {})
+
+    # Fallback to interactive login
     session = fyersModel.SessionModel(
         client_id=client_id,
         secret_key=secret_key,
@@ -292,7 +324,6 @@ def ensure_access_token():
         response_type="code",
         grant_type="authorization_code"
     )
-
     # Generate the auth code URL and prompt the user to log in
     auth_url = session.generate_authcode()
     print(f"\n👉 Open this login URL in your browser, complete login, and copy the auth_code from the redirect URL:")
@@ -309,10 +340,15 @@ def ensure_access_token():
         raise SystemExit(f"❌ Token generation failed: {response.get('message')}")
 
     access_token = response["access_token"]
+    refresh_token = response.get("refresh_token")
     print("✅ New access token generated successfully.")
 
     # Save the token for today to avoid repeated logins
     _write_json(TODAY_PATH, access_token)
+
+    # Also save the refresh token for future automated logins
+    if refresh_token:
+        _write_json(TOKENS_STORE, {"refresh_token": refresh_token})
 
     return client_id, access_token
 
