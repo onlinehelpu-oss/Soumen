@@ -41,32 +41,55 @@ REAL_TODAY = None
 
 def get_current_date():
     """
-    Fetch the current date from worldtimeapi.org and store it globally.
-    If the API fails, fall back to manual entry, but still store the result globally.
+    Fetches the current date from an online API and asks the user for confirmation.
+    This is necessary because the user's system clock is incorrect, which can
+    also cause the online API to return an incorrect (future) date. If the user
+    rejects the date, it falls back to a validated manual entry.
     """
     global REAL_TODAY
+
+    # --- Step 1: Attempt to fetch date from API ---
+    online_date = None
     try:
         response = requests.get("http://worldtimeapi.org/api/timezone/Asia/Kolkata", timeout=10)
         response.raise_for_status()
         data = response.json()
         online_date = datetime.datetime.fromisoformat(data['datetime']).date()
-        print(f"✅ Successfully fetched current date: {online_date}")
-        REAL_TODAY = online_date
-        return online_date
-    except (requests.RequestException, json.JSONDecodeError, KeyError) as e:
+    except Exception as e:
         print(f"⚠️  WARNING: Could not fetch date from worldtimeapi.org: {e}")
-        print("Falling back to manual date entry.")
-        while True:
-            manual_date_str = input("Please enter the current date in YYYY-MM-DD format: ").strip()
-            try:
-                manual_date = datetime.datetime.strptime(manual_date_str, "%Y-%m-%d").date()
-                if manual_date > datetime.date.today():
-                    print(f"❌ Invalid date: {manual_date} is in the future. Please enter a valid date.")
-                    continue
-                print(f"✅ Using manually entered date: {manual_date}")
-                return manual_date
-            except ValueError:
-                print("❌ Invalid format. Please use YYYY-MM-DD.")
+
+    # --- Step 2: User Confirmation ---
+    if online_date:
+        print("\n" + "="*40)
+        print("DATE VERIFICATION")
+        print(f"Online API suggests the date is: {online_date}")
+        print("="*40)
+
+        confirm = input("Is this date correct? (y/n): ").strip().lower()
+        if confirm == 'y':
+            print(f"✅ Using date: {online_date}")
+            REAL_TODAY = online_date
+            return online_date
+        else:
+            print("Date rejected by user.")
+
+    # --- Step 3: Fallback to Manual Entry ---
+    print("\n--- MANUAL DATE ENTRY REQUIRED ---")
+    local_system_date = datetime.date.today()
+    print(f"Your system date is: {local_system_date}")
+    print("Please enter today's REAL date to prevent API errors.")
+
+    while True:
+        manual_date_str = input("Enter the current date (YYYY-MM-DD): ").strip()
+        try:
+            manual_date = datetime.datetime.strptime(manual_date_str, "%Y-%m-%d").date()
+            # The check against local_system_date is removed because the system date is known to be incorrect.
+            # We trust the user to input the correct real-world date.
+            print(f"✅ Using manually entered date: {manual_date}")
+            REAL_TODAY = manual_date
+            return manual_date
+        except ValueError:
+            print("❌ Invalid format. Please use YYYY-MM-DD.")
 
 
 # Configuration
@@ -514,9 +537,9 @@ class FyersWebSocket:
         if self.running and self.ws_thread and self.ws_thread.is_alive():
             return True
         try:
+            # Corrected V3 URL format: https://myapi.fyers.in/docsv3#tag/WebSocket-V3
             access_token = f"{self.app_id}:{self.access_token}"
-            data_type = "symbolData"
-            ws_url = f"{WEBSOCKET_URL}?access_token={access_token}&data_type={data_type}"
+            ws_url = f"{WEBSOCKET_URL}?access_token={access_token}&data_type=symbolData"
 
             self.ws = websocket.WebSocketApp(
                 ws_url,
