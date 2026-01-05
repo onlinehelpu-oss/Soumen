@@ -171,7 +171,7 @@ def get_lot_size(fy, symbol: str) -> int:
     except Exception as e:
         print(f"⚠️ Lot size fetch error for {symbol}: {e}")
     # Default if API fails or no lot size in response
-    return 1
+    return 0
 
 
 def get_option_contract(fy, base_symbol: str, strike_dist: int) -> str:
@@ -198,7 +198,7 @@ def get_option_contract(fy, base_symbol: str, strike_dist: int) -> str:
             return None
 
         # 1. Find the earliest expiry date from the chains
-        expiries = sorted([opt['expiry'] for opt in chain_data], key=lambda d: dt.datetime.strptime(d, '%d%b%y'))
+        expiries = sorted([opt.get('expiry') or opt.get('expiry_date') for opt in chain_data], key=lambda d: dt.datetime.strptime(d, '%d%b%y'))
         if not expiries:
             return None
         nearest_expiry_str = expiries[0]
@@ -206,7 +206,7 @@ def get_option_contract(fy, base_symbol: str, strike_dist: int) -> str:
         # 2. Filter for that specific expiry and only CE contracts
         contracts = [
             c for c in chain_data
-            if c.get("expiry") == nearest_expiry_str and c.get("symbol", "").endswith("CE")
+            if (c.get("expiry") == nearest_expiry_str or c.get("expiry_date") == nearest_expiry_str) and c.get("symbol", "").endswith("CE")
         ]
         if not contracts:
             return None
@@ -637,6 +637,10 @@ def make_onmsg(fy, dry_run=False):
 
             # 1. Get lot size and calculate quantity
             lot_size = get_lot_size(fy, sym)
+            if lot_size == 0:
+                print(f"[{tick_time:%H:%M:%S}] ✋ Could not determine lot size for {sym}, skipping trade.")
+                trigger.pop(sym, None)
+                return
             qty = LOT_MULTIPLIER * lot_size
 
             # 2. Define risk based on the OPTION candle's range
