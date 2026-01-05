@@ -54,7 +54,7 @@ SPOT_INDICES = [
     "NSE:NIFTY50-INDEX",
     "NSE:NIFTYBANK-INDEX",
     "NSE:FINNIFTY-INDEX",
-    "NSE:SENSEX-INDEX"
+    "BSE:SENSEX-INDEX"
 ]
 
 # Correct Fyers lot sizes (January 2024)
@@ -62,7 +62,7 @@ MIN_LOT_SIZES = {
     "NSE:NIFTY50-INDEX": 65,  # NIFTY: 65 shares per lot
     "NSE:NIFTYBANK-INDEX": 30,  # BANKNIFTY: 30 shares per lot
     "NSE:FINNIFTY-INDEX": 60,  # FINNIFTY: 60 shares per lot
-    "NSE:SENSEX-INDEX": 20,     # SENSEX: 20 shares per lot
+    "BSE:SENSEX-INDEX": 20,     # SENSEX: 20 shares per lot
 }
 
 LOG_FILE = "trade_log.csv"
@@ -130,7 +130,7 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, index_symbol: str, is_ce
         "NSE:NIFTY50-INDEX": "NSE:NIFTY50-INDEX",
         "NSE:NIFTYBANK-INDEX": "NSE:NIFTYBANK-INDEX",
         "NSE:FINNIFTY-INDEX": "NSE:FINNIFTY-INDEX",
-        "NSE:SENSEX-INDEX": "BSE:SENSEX"
+        "BSE:SENSEX-INDEX": "BSE:SENSEX"
     }
     root = root_map.get(index_symbol)
     if not root:
@@ -757,24 +757,9 @@ def handle_spot_tick(symbol: str, ltp: float, ts: dt):
                                 recent_lows = state.data['low'].tail(SWING_LOOKBACK)
                                 state.spot_stop_price = recent_lows.min()
 
-                            # Set target based on the nearest historical swing high above the entry price
-                            historical_highs = state.data['high'].iloc[:-1]  # Exclude current candle data
-                            higher_swing_highs = historical_highs[historical_highs > ltp]
-
-                            if not higher_swing_highs.empty:
-                                state.spot_target_price = higher_swing_highs.min()
-                                print(f"[target] Using nearest swing high target: {state.spot_target_price:.2f}")
-                            else:
-                                # Fallback to 1:1.5 Risk/Reward if no higher swing high is found
-                                risk = ltp - state.spot_stop_price
-                                if risk > 0:
-                                    reward = risk * 1.5
-                                    state.spot_target_price = ltp + reward
-                                    print(f"[target] No higher swing high found. Using 1:1.5 R/R target: {state.spot_target_price:.2f}")
-                                else:
-                                    # Handle case where risk is zero or negative to avoid illogical target
-                                    state.spot_target_price = ltp * 1.01 # Default to 1% target
-                                    print(f"[target] Risk was zero or negative. Defaulting to 1% target: {state.spot_target_price:.2f}")
+                            # Set target based on swing high
+                            recent_highs = state.data['high'].tail(SWING_HIGH_LOOKBACK)
+                            state.spot_target_price = recent_highs.max()
 
                             print(f"\n[ENTRY CONFIRMED] {symbol} -> {option_symbol}")
                             print(f"  Spot Price: {ltp:.2f}")
