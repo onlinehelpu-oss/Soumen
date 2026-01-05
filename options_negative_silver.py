@@ -38,6 +38,7 @@ ws_connection = None
 
 import pandas as pd
 import requests
+import io
 
 # Try to import real Fyers library; if missing, provide mocks and auto-enable dry-run
 HAS_FYERS = True
@@ -147,12 +148,78 @@ SPOT_INDICES = [
     'NSE:FINNIFTY-INDEX'
 ]
 
-# Map for option chain API which requires the short symbol
-INDEX_MAP = {
-    'NSE:NIFTY50-INDEX': 'NIFTY50',
-    'NSE:NIFTYBANK-INDEX': 'NIFTYBANK',
+# This mapping is now used to link the full index to its short name for dynamic discovery
+INDEX_SHORT_NAME_MAP = {
+    'NSE:NIFTY50-INDEX': 'NIFTY',
+    'NSE:NIFTYBANK-INDEX': 'BANKNIFTY',
     'NSE:FINNIFTY-INDEX': 'FINNIFTY'
 }
+
+# ===================== DYNAMIC SYMBOL DISCOVERY =====================
+
+def get_symbol_master():
+    """
+    Downloads, caches, and returns the NSE Futures & Options symbol master.
+    Returns a pandas DataFrame.
+    """
+    cache_file = "nse_fo_symbol_master.csv"
+    if os.path.exists(cache_file):
+        try:
+            # Check if the file is recent (less than 24 hours old)
+            if (time.time() - os.path.getmtime(cache_file)) < 86400:
+                print("🔄 Using cached symbol master.")
+                return pd.read_csv(cache_file)
+        except Exception as e:
+            print(f"⚠️ Could not read cached symbol master, re-downloading. Error: {e}")
+
+    print("⏬ Downloading latest symbol master from Fyers...")
+    url = "https://public.fyers.in/sym_details/NSE_FO.csv"
+    try:
+        response = requests.get(url, timeout=20)
+        response.raise_for_status()
+
+        # Define column names as the CSV does not have a header
+        column_names = [
+            'fytoken', 'symbol_details', 'exchange', 'segment', 'misc', 'isin',
+            'trading_session', 'last_updated_date', 'expiry_date', 'fyers_symbol',
+            'exchange_token_1', 'exchange_token_2', 'lot_size', 'underlying_symbol',
+            'strike_price', 'option_type', 'underlying_fytoken', 'unknown'
+        ]
+
+        # Use io.StringIO to treat the text content as a file for pandas
+        df = pd.read_csv(io.StringIO(response.text), header=None, names=column_names)
+        df.to_csv(cache_file, index=False)
+        print("✅ Symbol master downloaded and cached successfully.")
+        return df
+    except requests.exceptions.RequestException as e:
+        print(f"🚨 FATAL: Could not download the symbol master. Error: {e}")
+        # If download fails, try to use an old cache if it exists
+        if os.path.exists(cache_file):
+            print("⚠️ Falling back to stale cached symbol master.")
+            return pd.read_csv(cache_file)
+        else:
+            raise SystemExit("❌ Cannot proceed without symbol master. Please check your internet connection.")
+
+def get_api_symbol_for_index(symbol_master_df, index_short_name: str) -> str:
+    """
+    Parses the symbol master to find the correct underlying symbol for an index.
+    e.g., for 'NIFTY', it will find the symbol used for its futures/options, like 'NIFTY50'.
+    """
+    try:
+        # Find the first future contract for the index to discover its underlying symbol
+        # e.g., search for 'NIFTY' in 'NIFTY 25 Nov...'
+        # We look for futures ('-FUT') as they are a reliable indicator of the base symbol
+        relevant_row = symbol_master_df[
+            symbol_master_df['symbol_details'].str.startswith(index_short_name) &
+            (symbol_master_df['segment'] == 11) # 11 for NSE_FO Futures
+        ].iloc[0]
+
+        # The 'underlying_symbol' column contains what we need for the option chain API
+        api_symbol = relevant_row['underlying_symbol']
+        return api_symbol
+    except (IndexError, KeyError) as e:
+        print(f"🚨 Could not dynamically find API symbol for '{index_short_name}'. Error: {e}")
+        return None
 
 # ===================== OPTION SETTINGS =====================
 # For CE selling, a negative distance means ITM (In-the-Money)
@@ -181,9 +248,9 @@ def get_lot_size(fy, symbol: str) -> int:
     return 0
 
 
-def get_option_contract(fy, base_symbol: str, strike_dist: int) -> str:
+def get_option_contract(fy, base_symbol: str, api_symbol: str, strike_dist: int) -> str:
     """
-    Selects the desired ITM/OTM call option for the nearest expiry.
+    Selects the desired ITM/OTM call option for the nearest expiry using a dynamically discovered API symbol.
     Returns the full option symbol string (e.g., 'NSE:NIFTY24OCT...CE') or None.
     """
     underlying_ltp = get_ltp(fy, base_symbol)
@@ -192,12 +259,6 @@ def get_option_contract(fy, base_symbol: str, strike_dist: int) -> str:
         return None
 
     try:
-        # Use the mapped short symbol for the option chain API call
-        api_symbol = INDEX_MAP.get(base_symbol)
-        if not api_symbol:
-            print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ No API symbol mapping found for {base_symbol}")
-            return None
-
         # Request a wide range of strikes to ensure we find the target
         payload = {"symbol": api_symbol, "strikecount": 12}
         chain = fy.optionchain(payload)
@@ -778,11 +839,27 @@ def main():
         access_token = "MOCK_ACCESS"
         fy = fyersModel.FyersModel(client_id=client_id, token=access_token, log_path=".")
 
-    # --- Dynamic Watchlist Creation ---
-    print("Building dynamic watchlist of ITM options...")
+    # --- Dynamic Symbol Discovery and Watchlist Creation ---
+    symbol_master_df = get_symbol_master()
+
+    # Create a map of base index symbol to the dynamically found API symbol
+    api_symbol_map = {}
+    for index_sym, short_name in INDEX_SHORT_NAME_MAP.items():
+        api_symbol = get_api_symbol_for_index(symbol_master_df, short_name)
+        if api_symbol:
+            print(f"✅ Discovered API symbol for {index_sym}: '{api_symbol}'")
+            api_symbol_map[index_sym] = api_symbol
+        else:
+            print(f"⚠️ Failed to discover API symbol for {index_sym}. It will be skipped.")
+
+    print("\nBuilding dynamic watchlist of ITM options...")
     dynamic_watchlist = []
     for index_sym in SPOT_INDICES:
-        option_sym = get_option_contract(fy, index_sym, STRIKE_DISTANCE)
+        api_symbol = api_symbol_map.get(index_sym)
+        if not api_symbol:
+            continue # Skip if we couldn't find the API symbol
+
+        option_sym = get_option_contract(fy, index_sym, api_symbol, STRIKE_DISTANCE)
         if option_sym:
             dynamic_watchlist.append(option_sym)
             print(f"  ✅ Added {option_sym} for {index_sym}")
