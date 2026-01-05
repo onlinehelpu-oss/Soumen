@@ -164,7 +164,7 @@ class FyersAuthV3:
 
         return True
 
-    def build_auth_url(self, state="generate_token"):
+    def build_auth_url(self, state="sample_state"):
         """Build authentication URL"""
         base = "https://api-t1.fyers.in/api/v3/generate-authcode"
         params = (
