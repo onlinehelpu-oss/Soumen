@@ -240,7 +240,7 @@ def load_or_prompt_creds():
     return creds
 
 
-def build_auth_url(app_id, redirect_uri, state="sample_state"):
+def build_auth_url(app_id, redirect_uri, state="login"):
     base = "https://api-t1.fyers.in/api/v3/generate-authcode"
     params = (
         f"client_id={quote(app_id)}"
