@@ -153,13 +153,6 @@ SPOT_INDICES = [
 # +1 = 1 strike OTM etc.
 STRIKE_DISTANCE = 0
 
-# Map from websocket index symbol to the shorter name used in option chain API
-INDEX_MAP = {
-    "NSE:NIFTY50-INDEX": "NSE:NIFTY",
-    "NSE:NIFTYBANK-INDEX": "NSE:BANKNIFTY",
-    "NSE:FINNIFTY-INDEX": "NSE:FINNIFTY"
-}
-
 # ===================== OPTION HELPERS =====================
 
 _lot_size_cache = {}
@@ -190,17 +183,15 @@ def get_option_contract(fy, base_symbol: str, strike_dist: int) -> str:
         print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ Could not get LTP for {base_symbol} to select option.")
         return None
 
-    api_symbol = INDEX_MAP.get(base_symbol)
-    if not api_symbol:
-        print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ No API symbol mapping for {base_symbol}")
-        return None
-
     try:
+        # Fyers optionchain API expects the base symbol name only (e.g., "NIFTY50")
+        api_symbol = base_symbol.replace("NSE:", "").replace("-INDEX", "")
+
         # Request a wide range of strikes to ensure we find the target
         payload = {"symbol": api_symbol, "strikecount": 12}
         chain = fy.optionchain(payload)
         if chain.get("s") != "ok" or not chain.get("data"):
-            print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ Option chain fetch failed for {api_symbol}: {chain.get('message')}")
+            print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ Option chain fetch failed for {base_symbol}: {chain.get('message')}")
             return None
 
         # 1. Find the earliest expiry date from the chains
