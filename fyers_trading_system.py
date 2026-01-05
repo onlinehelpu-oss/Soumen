@@ -68,6 +68,7 @@ def get_current_date():
                     print(f"❌ Invalid date: {manual_date} is in the future. Please enter a valid date.")
                     continue
                 print(f"✅ Using manually entered date: {manual_date}")
+                REAL_TODAY = manual_date
                 return manual_date
             except ValueError:
                 print("❌ Invalid format. Please use YYYY-MM-DD.")
