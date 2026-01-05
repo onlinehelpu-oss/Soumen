@@ -147,6 +147,13 @@ SPOT_INDICES = [
     'NSE:FINNIFTY-INDEX'
 ]
 
+# Map for option chain API which requires the short symbol
+INDEX_MAP = {
+    'NSE:NIFTY50-INDEX': 'NIFTY50',
+    'NSE:NIFTYBANK-INDEX': 'NIFTYBANK',
+    'NSE:FINNIFTY-INDEX': 'FINNIFTY'
+}
+
 # ===================== OPTION SETTINGS =====================
 # For CE selling, a negative distance means ITM (In-the-Money)
 # -1 = 1 strike ITM, -2 = 2 strikes ITM etc.
@@ -185,8 +192,14 @@ def get_option_contract(fy, base_symbol: str, strike_dist: int) -> str:
         return None
 
     try:
+        # Use the mapped short symbol for the option chain API call
+        api_symbol = INDEX_MAP.get(base_symbol)
+        if not api_symbol:
+            print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ No API symbol mapping found for {base_symbol}")
+            return None
+
         # Request a wide range of strikes to ensure we find the target
-        payload = {"symbol": base_symbol, "strikecount": 12}
+        payload = {"symbol": api_symbol, "strikecount": 12}
         chain = fy.optionchain(payload)
         if chain.get("s") != "ok" or not chain.get("data"):
             print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ Option chain fetch failed for {base_symbol}: {chain.get('message')}")
