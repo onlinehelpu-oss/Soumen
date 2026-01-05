@@ -178,12 +178,13 @@ def get_symbol_master():
         response = requests.get(url, timeout=20)
         response.raise_for_status()
 
-        # Define column names as the CSV does not have a header
+        # Define the CORRECT 19 column names as the CSV does not have a header
         column_names = [
-            'fytoken', 'symbol_details', 'exchange', 'segment', 'misc', 'isin',
-            'trading_session', 'last_updated_date', 'expiry_date', 'fyers_symbol',
-            'exchange_token_1', 'exchange_token_2', 'lot_size', 'underlying_symbol',
-            'strike_price', 'option_type', 'underlying_fytoken', 'unknown'
+            'fytoken', 'symbol_details', 'instrument_type', 'lot_size', 'tick_size',
+            'isin', 'trading_session', 'last_updated_date', 'expiry_date',
+            'fyers_symbol', 'exchange', 'segment', 'script_code',
+            'underlying_symbol', 'underlying_script_code', 'strike_price',
+            'option_type', 'underlying_fytoken', 'unknown_expiry'
         ]
 
         # Use io.StringIO to treat the text content as a file for pandas
@@ -206,16 +207,20 @@ def get_api_symbol_for_index(symbol_master_df, index_short_name: str) -> str:
     e.g., for 'NIFTY', it will find the symbol used for its futures/options, like 'NIFTY50'.
     """
     try:
-        # Find the first future contract for the index to discover its underlying symbol
-        # e.g., search for 'NIFTY' in 'NIFTY 25 Nov...'
-        # We look for futures ('-FUT') as they are a reliable indicator of the base symbol
-        relevant_row = symbol_master_df[
+        # Find all future contracts for the index
+        future_contracts = symbol_master_df[
             symbol_master_df['symbol_details'].astype(str).str.startswith(index_short_name) &
-            (symbol_master_df['segment'] == 11) # 11 for NSE_FO Futures
-        ].iloc[0]
+            (symbol_master_df['instrument_type'] == 15) # 15 = INDEX_FUT
+        ]
+
+        # Safety Check: If no contracts are found, return None to avoid a crash
+        if future_contracts.empty:
+            print(f"🚨 No future contracts found for '{index_short_name}' in the symbol master.")
+            return None
 
         # The 'underlying_symbol' column contains what we need for the option chain API
-        api_symbol = relevant_row['underlying_symbol']
+        # All futures for the same index will have the same underlying_symbol, so we can take the first one.
+        api_symbol = future_contracts.iloc[0]['underlying_symbol']
         return api_symbol
     except (IndexError, KeyError) as e:
         print(f"🚨 Could not dynamically find API symbol for '{index_short_name}'. Error: {e}")
