@@ -172,6 +172,8 @@ class FyersAuthV3:
             f"&redirect_uri={quote(self.redirect_url, safe='')}"
             f"&response_type=code"
             f"&state={quote(state)}"
+            f"&scope=openid"
+            f"&nonce={int(time.time())}"
         )
         return f"{base}?{params}"
 
