@@ -210,7 +210,7 @@ def get_api_symbol_for_index(symbol_master_df, index_short_name: str) -> str:
         # e.g., search for 'NIFTY' in 'NIFTY 25 Nov...'
         # We look for futures ('-FUT') as they are a reliable indicator of the base symbol
         relevant_row = symbol_master_df[
-            symbol_master_df['symbol_details'].str.startswith(index_short_name) &
+            symbol_master_df['symbol_details'].astype(str).str.startswith(index_short_name) &
             (symbol_master_df['segment'] == 11) # 11 for NSE_FO Futures
         ].iloc[0]
 
