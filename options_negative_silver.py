@@ -149,8 +149,8 @@ SPOT_INDICES = [
 
 # Map for option chain API which requires the short symbol
 INDEX_MAP = {
-    'NSE:NIFTY50-INDEX': 'NIFTY50',
-    'NSE:NIFTYBANK-INDEX': 'NIFTYBANK',
+    'NSE:NIFTY50-INDEX': 'NIFTY',
+    'NSE:NIFTYBANK-INDEX': 'BANKNIFTY',
     'NSE:FINNIFTY-INDEX': 'FINNIFTY'
 }
 
@@ -202,7 +202,7 @@ def get_option_contract(fy, base_symbol: str, strike_dist: int) -> str:
         payload = {"symbol": api_symbol, "strikecount": 12}
         chain = fy.optionchain(payload)
         if chain.get("s") != "ok" or not chain.get("data"):
-            print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ Option chain fetch failed for {base_symbol}: {chain.get('message')}")
+            print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ Option chain fetch failed for {base_symbol} (using API symbol '{api_symbol}'): {chain.get('message')}")
             return None
 
         chain_data = chain["data"].get("optionsChain") or chain["data"].get("optionChain", [])
