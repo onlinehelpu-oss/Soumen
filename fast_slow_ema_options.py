@@ -1089,27 +1089,41 @@ def main():
         print("[TEST MODE] Running without live connection")
         return
 
-        # Get access token and initialize Fyers
-    try:
-        auth = get_access_token()
-        ACCESS_TOKEN = auth["access_token"]
-        client_id = ACCESS_TOKEN.split(":")[0] if ":" in ACCESS_TOKEN else ACCESS_TOKEN
+    # Get access token and initialize Fyers, with re-authentication logic
+    fyers_initialized = False
+    for attempt in range(2):  # Try twice: once with saved token, once with a new one
+        try:
+            auth = get_access_token()
+            ACCESS_TOKEN = auth["access_token"]
+            client_id = ACCESS_TOKEN.split(":")[0] if ":" in ACCESS_TOKEN else ACCESS_TOKEN
 
-        FYERS = fyersModel.FyersModel(
-            client_id=client_id,
-            is_async=False,
-            token=ACCESS_TOKEN,
-            log_path=""
-        )
+            FYERS = fyersModel.FyersModel(
+                client_id=client_id,
+                is_async=False,
+                token=ACCESS_TOKEN,
+                log_path=""
+            )
 
-        print("[auth] Fyers model initialized successfully")
+            profile = FYERS.get_profile()
+            if profile.get("s") != "ok":
+                raise RuntimeError(f"Token validation failed: {profile.get('message')}")
 
-        # Warmup historical data
-        warmup_data()
+            print("[auth] Fyers model initialized and token validated successfully.")
+            fyers_initialized = True
+            break  # Exit loop on success
 
-    except Exception as e:
-        print(f"[auth] Failed to initialize Fyers: {e}")
+        except Exception as e:
+            print(f"[auth] Authentication attempt {attempt + 1} failed: {e}")
+            if os.path.exists(TOKEN_PATH):
+                print("[auth] Deleting potentially invalid token...")
+                os.remove(TOKEN_PATH)
+
+    if not fyers_initialized:
+        print("[auth] Failed to initialize Fyers after multiple attempts. Exiting.")
         return
+
+    # Warmup historical data
+    warmup_data()
 
         # Initialize WebSocket
     FYERS_SOCKET = data_ws.FyersDataSocket(
