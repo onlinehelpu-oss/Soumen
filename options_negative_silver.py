@@ -32,6 +32,7 @@ import datetime as dt
 from urllib.parse import urlparse, parse_qs, quote
 import threading
 import argparse
+import webbrowser
 
 ws_connection = None
 
@@ -266,146 +267,54 @@ def load_creds():
     return creds
 
 
-def appid_hash(app_id: str, secret_id: str) -> str:
-    return hashlib.sha256(f"{app_id}:{secret_id}".encode()).hexdigest()
-
-
-def compose_access_token_string(app_id: str, access_token: str) -> str:
-    if access_token.startswith(f"{app_id}:"):
-        return access_token
-    return f"{app_id}:{access_token}"
-
-
-def build_auth_url(app_id: str, redirect_uri: str, state: str = "sample_state") -> str:
-    base = f"{API_HOST}/api/v3/generate-authcode"
-    params = (
-        f"client_id={quote(app_id)}"
-        f"&redirect_uri={quote(redirect_uri, safe='')}"
-        f"&response_type=code"
-        f"&state={quote(state)}"
-        f"&scope=openid"
-        f"&nonce={int(time.time())}"
-    )
-    return f"{base}?{params}"
-
-
-def extract_code(user_input: str) -> str:
-    if user_input.startswith("http://") or user_input.startswith("https://"):
-        q = parse_qs(urlparse(user_input).query)
-        code = q.get("code", [None])[0]
-        if not code:
-            raise ValueError("No 'code' param found in the provided URL.")
-        return code
-    return user_input
-
-
-def post_json(url: str, payload: dict, max_retries: int = 5, timeout: int = 20):
-    headers = {"Content-Type": "application/json"}
-    for attempt in range(1, max_retries + 1):
-        try:
-            r = requests.post(url, headers=headers, json=payload, timeout=timeout)
-            try:
-                data = r.json()
-            except ValueError:
-                data = None
-
-            if r.status_code == 503:
-                sleep_s = min(2 ** attempt, 30)
-                print(f"[{attempt}/{max_retries}] 503 from server. Retrying in {sleep_s}s...")
-                time.sleep(sleep_s)
-                continue
-
-            if r.status_code >= 400:
-                if isinstance(data, dict) and data.get("s") == "error":
-                    raise RuntimeError(f"Fyers error {data.get('code')}: {data.get('message')}")
-                else:
-                    raise RuntimeError(f"Fyers returned HTTP {r.status_code}: {r.text.strip()[:200]}")
-
-            if isinstance(data, dict) and data.get("s") == "error":
-                raise RuntimeError(f"Fyers error {data.get('code')}: {data.get('message')}")
-
-            return data
-
-        except Exception as e:
-            if attempt == max_retries:
-                raise
-            sleep_s = min(2 ** attempt, 30)
-            print(f"[{attempt}/{max_retries}] Retrying due to: {e}. Next in {sleep_s}s...")
-            time.sleep(sleep_s)
-
-
-def validate_authcode(app_id: str, secret_id: str, auth_code: str):
-    url = f"{API_HOST}/api/v3/validate-authcode"
-    payload = {"grant_type": "authorization_code","appIdHash": appid_hash(app_id, secret_id),"code": auth_code}
-    return post_json(url, payload)
-
-
-def validate_refresh_token(app_id: str, secret_id: str, refresh_token: str):
-    url = f"{API_HOST}/api/v3/validate-refresh-token"
-    payload = {"grant_type": "refresh_token","appIdHash": appid_hash(app_id, secret_id),"refresh_token": refresh_token}
-    return post_json(url, payload)
-
-
-def save_access_token_for_today(app_id: str, access_token: str):
-    token_str = compose_access_token_string(app_id, access_token)
-    _write_json(TODAY_PATH, token_str)
-    return token_str
-
-
 def ensure_access_token():
+    """
+    Ensures a valid Fyers access token is available, either by reading from a
+    file or by going through the interactive login process.
+    """
     creds = load_creds()
-    app_id = creds["api_key"]
-    secret_id = creds["api_secret"]
+    client_id = creds["api_key"]
+    secret_key = creds["api_secret"]
     redirect_uri = creds["redirect_url"]
 
-    tok_today = _read_json(TODAY_PATH)
-    if isinstance(tok_today, str) and tok_today:
-        token_str = compose_access_token_string(app_id, tok_today.split(":")[-1])
-        if token_str != tok_today:
-            _write_json(TODAY_PATH, token_str)
+    # Check if a token file for today already exists
+    if os.path.exists(TODAY_PATH):
+        with open(TODAY_PATH, 'r') as f:
+            access_token = f.read()
         print("🔑 Using today's cached access token.")
-        return app_id, token_str, token_str.split(":", 1)[-1]
+        return client_id, access_token
 
-    store = _read_json(TOKENS_STORE, {}) or {}
-    refresh_token = store.get("refresh_token")
-    if refresh_token:
-        try:
-            print("🔄 Attempting refresh-token login …")
-            r = validate_refresh_token(app_id, secret_id, refresh_token)
-            access_token = r.get("access_token")
-            new_refresh = r.get("refresh_token") or refresh_token
-            if not access_token:
-                raise RuntimeError(f"Unexpected refresh response: {r}")
-            _write_json(TOKENS_STORE, {"refresh_token": new_refresh})
-            token_str = save_access_token_for_today(app_id, access_token)
-            print("✅ Refresh successful.")
-            return app_id, token_str, access_token
-        except Exception as e:
-            print(f"⚠️ Refresh failed: {e}")
-            try:
-                if os.path.exists(TOKENS_STORE):
-                    _write_json(TOKENS_STORE, {})
-                print("ℹ️ Cleared stored refresh token — falling back to manual auth.")
-            except Exception:
-                pass
+    # If not, start the login flow using the SessionModel
+    session = fyersModel.SessionModel(
+        client_id=client_id,
+        secret_key=secret_key,
+        redirect_uri=redirect_uri,
+        response_type="code",
+        grant_type="authorization_code"
+    )
 
-    auth_url = build_auth_url(app_id, redirect_uri)
-    print("\n👉 Open this login URL in your browser, complete login, and copy the FULL redirect URL:")
+    # Generate the auth code URL and prompt the user to log in
+    auth_url = session.generate_authcode()
+    print(f"\n👉 Open this login URL in your browser, complete login, and copy the auth_code from the redirect URL:")
     print(auth_url)
-    user_val = input("\nPaste the FULL redirect URL (or just the code value): ").strip()
-    auth_code = extract_code(user_val)
+    webbrowser.open(auth_url, new=1)
 
-    r = validate_authcode(app_id, secret_id, auth_code)
-    access_token = r.get("access_token")
-    refresh_token = r.get("refresh_token")
-    if not access_token:
-        raise SystemExit(f"❌ Unexpected token response: {r}")
+    auth_code = input("\nPaste the auth_code here: ").strip()
 
-    token_str = save_access_token_for_today(app_id, access_token)
-    if refresh_token:
-        _write_json(TOKENS_STORE, {"refresh_token": refresh_token})
-    print("✅ Manual auth successful — tokens saved.")
-    return app_id, token_str, access_token
+    # Set the auth code and generate the access token
+    session.set_token(auth_code)
+    response = session.generate_token()
+
+    if response.get("s") != "ok":
+        raise SystemExit(f"❌ Token generation failed: {response.get('message')}")
+
+    access_token = response["access_token"]
+    print("✅ New access token generated successfully.")
+
+    # Save the token for today to avoid repeated logins
+    _write_json(TODAY_PATH, access_token)
+
+    return client_id, access_token
 
 # ===================== CANDLE DETECTOR (Bearish Shooting Star) =====================
 
@@ -802,14 +711,13 @@ def main():
 
     # If using real Fyers, ensure tokens; if using mocks, create a mock client
     if HAS_FYERS:
-        app_id, token_str, raw_access = ensure_access_token()
-        fy = fyersModel.FyersModel(client_id=app_id, token=raw_access, log_path=".")
+        client_id, access_token = ensure_access_token()
+        fy = fyersModel.FyersModel(client_id=client_id, token=access_token, log_path=".")
     else:
         # Mock environment — create a mock client
-        app_id = "MOCK_APP"
-        token_str = "MOCK_TOKEN"
-        raw_access = "MOCK_ACCESS"
-        fy = fyersModel.FyersModel(client_id=app_id, token=raw_access, log_path=".")
+        client_id = "MOCK_APP"
+        access_token = "MOCK_ACCESS"
+        fy = fyersModel.FyersModel(client_id=client_id, token=access_token, log_path=".")
 
     # --- Dynamic Watchlist Creation ---
     print("Building dynamic watchlist of ITM options...")
@@ -832,7 +740,7 @@ def main():
     # Assign to global ws_connection so onmsg can dynamically subscribe
     global ws_connection
     ws_connection = data_ws.FyersDataSocket(
-        access_token=token_str,
+        access_token=f"{client_id}:{access_token}",
         log_path=".",
         litemode=False,
         write_to_file=False,
