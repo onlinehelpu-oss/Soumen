@@ -184,11 +184,8 @@ def get_option_contract(fy, base_symbol: str, strike_dist: int) -> str:
         return None
 
     try:
-        # Fyers optionchain API expects the base symbol name only (e.g., "NIFTY50")
-        api_symbol = base_symbol.replace("NSE:", "").replace("-INDEX", "")
-
         # Request a wide range of strikes to ensure we find the target
-        payload = {"symbol": api_symbol, "strikecount": 12}
+        payload = {"symbol": base_symbol, "strikecount": 12}
         chain = fy.optionchain(payload)
         if chain.get("s") != "ok" or not chain.get("data"):
             print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ Option chain fetch failed for {base_symbol}: {chain.get('message')}")
@@ -235,12 +232,7 @@ ENTRY_BUFFER = 0.05                # buffer below signal low for breakout (we re
 ENTRY_CUTOFF = dt.time(15, 0)      # no new entries after 3:00 PM (non-MCX)
 EXIT_ALL_TIME = dt.time(15, 9)     # force-exit all open (non-MCX) positions at 3:09 PM
 
-# MCX-specific times (user requested)
-ENTRY_CUTOFF_MCX = dt.time(22, 0)   # allow MCX signals up to 10:00 PM
-EXIT_ALL_TIME_MCX = dt.time(22, 50) # force-exit all open MCX positions at 10:50 PM
-
 FORCE_CLOSED_ALL = False
-FORCE_CLOSED_ALL_MCX = False
 
 # ===================== SMALL CANDLE GUARDS =====================
 MIN_RANGE_PCT = 0.0015   # ignore if (H-L)/Close < 0.15% (tune per product)
