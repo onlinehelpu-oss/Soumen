@@ -53,7 +53,8 @@ REQUIRE_GREEN_SIGNAL = True
 SPOT_INDICES = [
     "NSE:NIFTY50-INDEX",
     "NSE:NIFTYBANK-INDEX",
-    "NSE:FINNIFTY-INDEX"
+    "NSE:FINNIFTY-INDEX",
+    "NSE:SENSEX-INDEX"
 ]
 
 # Correct Fyers lot sizes (January 2024)
@@ -61,6 +62,7 @@ MIN_LOT_SIZES = {
     "NSE:NIFTY50-INDEX": 65,  # NIFTY: 65 shares per lot
     "NSE:NIFTYBANK-INDEX": 30,  # BANKNIFTY: 30 shares per lot
     "NSE:FINNIFTY-INDEX": 60,  # FINNIFTY: 60 shares per lot
+    "NSE:SENSEX-INDEX": 20,     # SENSEX: 20 shares per lot
 }
 
 LOG_FILE = "trade_log.csv"
@@ -113,7 +115,7 @@ def round_to_nearest_strike(spot_price: float, index_symbol: str) -> int:
     """Round to nearest strike based on index"""
     if "NIFTY50" in index_symbol or "FINNIFTY" in index_symbol:
         return int(round(spot_price / 50.0) * 50)
-    elif "BANKNIFTY" in index_symbol:
+    elif "BANKNIFTY" in index_symbol or "SENSEX" in index_symbol:
         return int(round(spot_price / 100.0) * 100)
     return int(round(spot_price / 50.0) * 50)
 
@@ -128,6 +130,7 @@ def resolve_option_symbol(fyers: fyersModel.FyersModel, index_symbol: str, is_ce
         "NSE:NIFTY50-INDEX": "NSE:NIFTY50-INDEX",
         "NSE:NIFTYBANK-INDEX": "NSE:NIFTYBANK-INDEX",
         "NSE:FINNIFTY-INDEX": "NSE:FINNIFTY-INDEX",
+        "NSE:SENSEX-INDEX": "BSE:SENSEX"
     }
     root = root_map.get(index_symbol)
     if not root:
@@ -1086,7 +1089,8 @@ def main():
     print(f"Exit EMA: {EXIT_EMA}")
     print(f"Lot Size per trade: {LOT_MULTIPLIER}")
     print(f"Spot Indices: {SPOT_INDICES}")
-    print(f"Fyers Lot Sizes: NIFTY=65, BANKNIFTY=30, FINNIFTY=60")
+    lot_sizes_str = ", ".join([f"{k.split(':')[1].split('-')[0]}={v}" for k, v in MIN_LOT_SIZES.items()])
+    print(f"Fyers Lot Sizes: {lot_sizes_str}")
     print(f"Trading Enabled: {TRADING_ENABLED}")
     print("=" * 80 + "\n")
 
