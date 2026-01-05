@@ -198,7 +198,8 @@ def get_option_contract(fy, base_symbol: str, strike_dist: int) -> str:
             return None
 
         # 1. Find the earliest expiry date from the chains
-        expiries = sorted([opt.get('expiry') or opt.get('expiry_date') for opt in chain_data], key=lambda d: dt.datetime.strptime(d, '%d%b%y'))
+        expiry_dates = [opt.get('expiry') or opt.get('expiry_date') for opt in chain_data]
+        expiries = sorted([d for d in expiry_dates if d], key=lambda d: dt.datetime.strptime(d, '%d%b%y'))
         if not expiries:
             return None
         nearest_expiry_str = expiries[0]
