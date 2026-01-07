@@ -1,43 +1,220 @@
 # -*- coding: utf-8 -*-
 """
-REAL ORDERS — Fyers v3 (api-t1) + 5-EMA Strategy on a Custom Timeframe (NIFTY options)
-SELL-ONLY VERSION (now: SELL CE entries / BUY CE exits)
-
-What's included:
-- Manual robust login (503-safe), stores token (AccessToken/YYYY-MM-DD.json)
-- Customizable timeframe: TIMEFRAME_MIN = 1 / 2 / 3 / 5 / 10 / 15 / 30 / 60
-- Custom Risk:Reward: R_MULTIPLIER (target = entry - R_MULTIPLIER * range)
-- Entry buffer (spot): 3 pts  |  SL buffer (spot): 2 pts  | Target exact (no buffer)
-- Option-chain resolver for earliest expiry + nearest 50 strike (CE)  [NIFTY]
-- Live notifications always show [TF] and [R:R]
-- 15m data/status COMPLETELY REMOVED
+VWAP-EMA STRATEGY - OPTIONS EXECUTION
+- Tracks NIFTY50, BANKNIFTY, FINNIFTY spot indices
+- Executes trades in corresponding options
+- Entry Signal: VWAP body cross with EMA confirmation
+- Exit Signal: Stop-loss or EMA-based exit signal
+- STRICT NEXT CANDLE ENTRY
 """
 
 from __future__ import annotations
-
-import os, json, time, datetime, hashlib
+import os
+import sys
+import json
+import time
+import math
+import argparse
+import threading
+import atexit
+import glob
+import hashlib
+import datetime
 from urllib.parse import urlparse, parse_qs, quote
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
+from datetime import datetime as dt, timedelta
 
 import requests
 import pandas as pd
 import numpy as np
 import pytz
-from datetime import datetime as dt, timedelta
 
-from fyers_apiv3 import fyersModel
-from fyers_apiv3.FyersWebsocket import data_ws
+try:
+    from fyers_apiv3 import fyersModel
+    from fyers_apiv3.FyersWebsocket import data_ws
+except Exception:
+    fyersModel = None
+    data_ws = None
 
-# ============================== LOGIN (v3 api-t1) =============================
+# ============================== CONFIGURATION ==============================
+TIMEFRAME_MIN = 5  # Any TF in minutes (1,2,3,5,10,15,30,60,...)
+
+EXIT_EMA = 50  # Exit EMA (red candle cross & close below this)
+
+# EMA for ENTRY signal confirmation
+ENTRY_FAST_EMA = 50  # e.g., EMA 9 (fast)
+
+MIN_RANGE_PCT = 0.0  # tiny-candle filter (0.001 = 0.1%), 0.0 = off
+EMA_BUFFER = 0.0  # optional extra buffer above/below EMAs
+REQUIRE_GREEN_SIGNAL = True
+
+# Spot indices to track
+SPOT_INDICES = [
+    "NSE:NIFTY50-INDEX",
+    "NSE:NIFTYBANK-INDEX",
+    "NSE:FINNIFTY-INDEX",
+    "BSE:SENSEX-INDEX"
+]
+
+# Correct Fyers lot sizes (January 2024)
+MIN_LOT_SIZES = {
+    "NSE:NIFTY50-INDEX": 65,  # NIFTY: 65 shares per lot
+    "NSE:NIFTYBANK-INDEX": 30,  # BANKNIFTY: 30 shares per lot
+    "NSE:FINNIFTY-INDEX": 60,  # FINNIFTY: 60 shares per lot,
+    "BSE:SENSEX-INDEX": 20,  # SENSEX: 20 shares per lot
+}
+
+LOG_FILE = "trade_log.csv"
+STATE_DUMP = "symbol_states.json"
+PARTIAL_CANDLES_FILE = "partial_candles.json"
+
+# Strike selection: 0=ATM, 1=1st OTM, -1=1st ITM
+STRIKE_DISTANCE = 0
+
+# Position management
+SL_MODE = "signal_low"  # "signal_low" or "swing_low"
+SWING_LOOKBACK = 5  # used for swing-low
+LOT_MULTIPLIER = 1  # Lot multiplier
+
+MAX_CONCURRENT_POS = 3
+DAILY_MAX_LOSS = 50000.0
+TRADING_ENABLED = True
+MAX_EXIT_RETRIES = 3
+EXIT_RETRY_COOLDOWN_SECONDS = 10
+
+# Market Hours
+MARKET_START = dt.strptime("09:15", "%H:%M").time()
+MARKET_END = dt.strptime("15:20", "%H:%M").time()
+TIMEZONE = "Asia/Kolkata"
+IST = pytz.timezone(TIMEZONE)
+
+# Config files
 CONFIG_FILE = "fyers_login_details.json"
 TOKENS_DIR = "AccessToken"
 TODAY = str(datetime.date.today())
 TOKEN_PATH = os.path.join(TOKENS_DIR, f"{TODAY}.json")
+SETTINGS_FILE = "settings.json"
 
-def load_or_prompt_creds() -> Dict[str, str]:
+# Re-auth guard to avoid infinite recursion
+REAUTH_ATTEMPTS = 0
+MAX_REAUTH_ATTEMPTS = 3
+
+# Default product type: "INTRADAY", "CNC", "MARGIN", "CO", "BO"
+PRODUCT_TYPE = "INTRADAY"
+
+
+# ============================== OPTION SPECIFIC FUNCTIONS ==============================
+def get_lot_size(index_symbol: str) -> int:
+    """Get minimum lot size for each index"""
+    return MIN_LOT_SIZES.get(index_symbol, 65)
+
+
+def round_to_nearest_strike(spot_price: float, index_symbol: str) -> int:
+    """Round to nearest strike based on index"""
+    if "NIFTY50" in index_symbol or "FINNIFTY" in index_symbol:
+        return int(round(spot_price / 50.0) * 50)
+    elif "BANKNIFTY" in index_symbol or "SENSEX" in index_symbol:
+        return int(round(spot_price / 100.0) * 100)
+    return int(round(spot_price / 50.0) * 50)
+
+
+def resolve_option_symbol(fyers: fyersModel.FyersModel, index_symbol: str, is_ce: bool, spot_ltp: float) -> Tuple[
+    str, Optional[str], float]:
+    """
+    Find the nearest CE/PE option for given index, supporting ITM/OTM selection.
+    Returns: (option_symbol, expiry_date, strike_price)
+    """
+    root_map = {
+        "NSE:NIFTY50-INDEX": "NSE:NIFTY50-INDEX",
+        "NSE:NIFTYBANK-INDEX": "NSE:NIFTYBANK-INDEX",
+        "NSE:FINNIFTY-INDEX": "NSE:FINNIFTY-INDEX",
+        "BSE:SENSEX-INDEX": "BSE:SENSEX-INDEX",
+    }
+    root = root_map.get(index_symbol)
+    if not root:
+        raise RuntimeError(f"No root symbol mapped for {index_symbol}")
+
+    opt_type = "CE" if is_ce else "PE"
+    print(f"[optionchain] Looking for {opt_type} option for {index_symbol} with strike distance {STRIKE_DISTANCE}")
+    print(f"[optionchain] Spot: {spot_ltp:.2f}, Using root symbol: {root}")
+
+    try:
+        resp = fyers.optionchain(data={"symbol": root}) or {}
+        data = (resp.get("data") or {}).get("optionsChain") or []
+        if not data:
+            raise RuntimeError(f"Optionchain response empty for root: {root}")
+
+        filt = [row for row in data if str(row.get("option_type", "")).upper() == opt_type]
+        if not filt:
+            raise RuntimeError(f"Optionchain has no rows for type {opt_type}")
+
+        def expiry_key(row):
+            exp = row.get("expiry")
+            try:
+                return dt.strptime(exp, "%Y-%m-%d")
+            except Exception:
+                return dt.max
+
+        earliest_expiry = min(filt, key=expiry_key).get("expiry")
+        filt = [r for r in filt if r.get("expiry") == earliest_expiry]
+
+        all_strikes = sorted(list(set(float(r.get("strike_price", r.get("strikePrice"))) for r in filt)))
+        if not all_strikes:
+            raise RuntimeError("No strikes found for the earliest expiry.")
+
+        atm_strike = min(all_strikes, key=lambda s: abs(s - spot_ltp))
+        target_strike = atm_strike
+
+        if STRIKE_DISTANCE != 0:
+            try:
+                atm_index = all_strikes.index(atm_strike)
+                effective_distance = STRIKE_DISTANCE if is_ce else -STRIKE_DISTANCE
+                target_index = atm_index + effective_distance
+
+                if 0 <= target_index < len(all_strikes):
+                    target_strike = all_strikes[target_index]
+                else:
+                    print(
+                        f"[optionchain] Warning: Strike distance {STRIKE_DISTANCE} is out of bounds. Falling back to ATM.")
+            except (ValueError, IndexError):
+                print(f"[optionchain] Error finding strike with distance {STRIKE_DISTANCE}. Falling back to ATM.")
+
+        print(f"[optionchain] ATM Strike: {atm_strike}, Target Strike: {target_strike}")
+
+        best = min(filt, key=lambda row: abs(float(row.get("strike_price", row.get("strikePrice"))) - target_strike))
+        symbol = best.get("symbol") or best.get("tradingsymbol") or best.get("tsym")
+        strike = float(best.get("strike_price", best.get("strikePrice", target_strike)))
+
+        if not symbol:
+            raise RuntimeError("Optionchain did not provide a symbol.")
+
+        print(f"[optionchain] Resolved: {symbol}")
+        print(f"[optionchain] Strike: {strike}, Expiry: {earliest_expiry}")
+
+        return symbol, earliest_expiry, strike
+
+    except Exception as e:
+        print(f"[optionchain] Error for {index_symbol}: {e}")
+        raise RuntimeError(f"Failed to resolve option for {index_symbol}: {str(e)}")
+
+
+def is_market_hours() -> bool:
+    """Check if current time is within market hours"""
+    now = dt.now(IST).time()
+    return MARKET_START <= now <= MARKET_END
+
+
+# ============================== FYERS LOGIN ==============================
+def load_or_prompt_creds():
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and "api_key" in data and "api_secret" in data and "redirect_url" in data:
+                return data
+        except Exception:
+            pass
+
     print("---- Enter your Fyers Login Credentials (v3) ----")
     creds = {
         "api_key": input("Enter APP ID (e.g., ABCDE12345-100): ").strip(),
@@ -45,14 +222,23 @@ def load_or_prompt_creds() -> Dict[str, str]:
         "redirect_url": input("Enter Redirect URL (must match app): ").strip(),
     }
     if input("Save to 'fyers_login_details.json'? (Y/N): ").strip().upper() == "Y":
-        with open(CONFIG_FILE, "w") as f:
-            json.dump(creds, f, indent=2)
-        print(f"Saved '{CONFIG_FILE}'.")
+        try:
+            base = {}
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, "r") as f:
+                    base = json.load(f) or {}
+            base.update(creds)
+            with open(CONFIG_FILE, "w") as f:
+                json.dump(base, f, indent=2)
+            print(f"Saved '{CONFIG_FILE}'.")
+        except Exception as e:
+            print(f"[auth] Could not save creds: {e}")
     else:
         print("Skipping save.")
     return creds
 
-def build_auth_url(app_id: str, redirect_uri: str, state: str = "sample_state") -> str:
+
+def build_auth_url(app_id, redirect_uri, state="sample_state"):
     base = "https://api-t1.fyers.in/api/v3/generate-authcode"
     params = (
         f"client_id={quote(app_id)}"
@@ -64,7 +250,8 @@ def build_auth_url(app_id: str, redirect_uri: str, state: str = "sample_state") 
     )
     return f"{base}?{params}"
 
-def extract_code(user_input: str) -> str:
+
+def extract_code(user_input):
     if user_input.startswith("http://") or user_input.startswith("https://"):
         q = parse_qs(urlparse(user_input).query)
         code = q.get("code", [None])[0]
@@ -73,408 +260,890 @@ def extract_code(user_input: str) -> str:
         return code
     return user_input
 
-def sha256_appIdHash(app_id: str, secret_id: str) -> str:
+
+def sha256_appIdHash(app_id, secret_id):
     return hashlib.sha256(f"{app_id}:{secret_id}".encode("utf-8")).hexdigest()
 
-def validate_authcode(app_id: str, secret_id: str, auth_code: str, max_retries: int = 5) -> Dict[str, Any]:
+
+def validate_authcode(app_id, secret_id, auth_code, max_retries=5):
     url = "https://api-t1.fyers.in/api/v3/validate-authcode"
-    payload = {"grant_type": "authorization_code", "appIdHash": sha256_appIdHash(app_id, secret_id), "code": auth_code}
+    payload = {
+        "grant_type": "authorization_code",
+        "appIdHash": sha256_appIdHash(app_id, secret_id),
+        "code": auth_code,
+    }
     headers = {"Content-Type": "application/json"}
+
     for attempt in range(1, max_retries + 1):
         try:
             r = requests.post(url, headers=headers, json=payload, timeout=20)
             if r.status_code == 503:
                 sleep_s = min(2 ** attempt, 30)
                 print(f"[{attempt}/{max_retries}] 503 from auth server. Retrying in {sleep_s}s...")
-                time.sleep(sleep_s); continue
+                time.sleep(sleep_s)
+                continue
             r.raise_for_status()
             data = r.json()
             if data.get("s") == "error":
                 raise RuntimeError(f"Fyers error {data.get('code')}: {data.get('message')}")
             return data
         except requests.RequestException as e:
-            if attempt == max_retries: raise
+            if attempt == max_retries:
+                raise
             sleep_s = min(2 ** attempt, 30)
             print(f"[{attempt}/{max_retries}] Network error: {e}. Retrying in {sleep_s}s...")
             time.sleep(sleep_s)
 
-def get_access_token() -> Dict[str, str]:
+
+def get_access_token() -> dict:
+    """Get or refresh access token"""
+    # Try to load from file first
+    if os.path.exists(TOKEN_PATH):
+        try:
+            with open(TOKEN_PATH, "r") as f:
+                data = json.load(f)
+            if isinstance(data, str):
+                access_token = data.strip()
+                return {"access_token": access_token}
+        except Exception:
+            pass
+
+            # Interactive login
+    print("[auth] No existing access token found. Starting interactive login...")
     creds = load_or_prompt_creds()
-    app_id = creds["api_key"]; secret_id = creds["api_secret"]; redirect_uri = creds["redirect_url"]
-    if os.path.exists(TOKENS_DIR) and os.path.exists(TOKEN_PATH):
-        with open(TOKEN_PATH, "r") as f:
-            tok = json.load(f)
-        if isinstance(tok, str) and tok:
-            print("[auth] Using saved access token:", TOKEN_PATH)
-            return {"app_id": app_id, "secret_id": secret_id, "redirect_uri": redirect_uri, "access_token": tok}
-    url = build_auth_url(app_id, redirect_uri)
-    print("\nLogin URL (open in browser, complete login):\n", url)
-    user_val = input("\nPaste FULL redirect URL or just the 'code' value here: ").strip()
-    code = extract_code(user_val)
-    token_resp = validate_authcode(app_id, secret_id, code)
+    app_id = creds["api_key"]
+    secret_id = creds["api_secret"]
+    redirect_uri = creds["redirect_url"]
+
+    auth_url = build_auth_url(app_id, redirect_uri)
+    print("\nLogin URL (open in browser, allow & complete login):")
+    print(auth_url)
+
+    user_val = input("\nPaste the FULL redirect URL after login, or just the 'code=' value here: ").strip()
+    try:
+        auth_code = extract_code(user_val)
+    except Exception as e:
+        print(f"Could not extract code: {e}")
+        raise
+
+    token_resp = validate_authcode(app_id, secret_id, auth_code)
     access_token = token_resp.get("access_token")
     if not access_token:
         raise RuntimeError(f"Unexpected token response: {token_resp}")
+
+        # Save token
     os.makedirs(TOKENS_DIR, exist_ok=True)
-    with open(TOKEN_PATH, "w") as f: json.dump(access_token, f)
+    with open(TOKEN_PATH, "w") as f:
+        json.dump(access_token, f)
+
     print(f"[auth] Token saved to {TOKEN_PATH}")
-    return {"app_id": app_id, "secret_id": secret_id, "redirect_uri": redirect_uri, "access_token": access_token}
+    return {"access_token": access_token}
 
-# ============================== STRATEGY CONFIG ===============================
-TIMEZONE = "Asia/Kolkata"
-IST = pytz.timezone(TIMEZONE)
 
-UNDERLYING_INDEX = "NSE:NIFTY50-INDEX"  # NIFTY spot LTP feed & option chain base
-EMA_SPAN = 5
-ROW_LOOKBACK = -2
+# ============================== SYMBOL STATE ==============================
+class SymbolState:
+    def __init__(self, symbol: str):
+        self.symbol = symbol  # SPOT symbol (e.g., NSE:NIFTY50-INDEX)
+        self.option_symbol = None  # Option symbol for execution
+        self.option_ltp = 0.0  # Current option LTP
+        self.option_entry_price = 0.0  # Entry price of option
+        self.data = pd.DataFrame()  # Spot price data for analysis
+        self.status = "watch"  # watch, entry_pending, position, cooldown
+        self.signal_candle = None
+        self.signal_close_ts = None
+        self.spot_entry_price = 0.0
+        self.spot_stop_price = 0.0
+        self.option_stop_price = 0.0
+        self.option_high_price = 0.0
+        self.qty = 0
+        self.gtt_order_id = None
 
-# -------- Customizable timeframe & R:R (supports 1/2/3/5/10/15/30/60) --------
-TIMEFRAME_MIN = 3        # <-- set to 1 / 2 / 3 / 5 / 10 / 15 / 30 / 60
-R_MULTIPLIER = 2.0       # Risk:Reward multiple (target = entry - R_MULTIPLIER * range)
-DEFAULT_QTY   = 1
-EPS = 1e-6
-# -----------------------------------------------------------------------------
+        # Exit tracking
+        self.exit_signal_candle = None
+        self.exit_pending = False
+        self.exit_try_count = 0
+        self.last_failed_exit_ts = None
 
-R_SELL = R_MULTIPLIER
+        # Candle tracking
+        self.last_candle_ts = None
+        self.just_entered = False
 
-# Buffers
-ENTRY_BUFFER = 3.0       # entry trigger = prev_low - 3.0 (spot)
-SL_BUFFER    = 2.0       # stoploss     = prev_high + 2.0 (spot)
+        # For option execution
+        self.lot_size = get_lot_size(symbol)
+        self.strike_price = 0.0
+        self.expiry = None
+        self.last_option_update = 0
 
-# Market-hours gate
-MARKET_START = dt.strptime("09:15", "%H:%M").time()
-MARKET_END   = dt.strptime("15:20", "%H:%M").time()
+    def reset_position(self):
+        """Reset position state"""
+        self.option_symbol = None
+        self.option_ltp = 0.0
+        self.option_entry_price = 0.0
+        self.spot_entry_price = 0.0
+        self.spot_stop_price = 0.0
+        self.option_stop_price = 0.0
+        self.option_high_price = 0.0
+        self.qty = 0
+        self.strike_price = 0.0
+        self.expiry = None
+        self.exit_pending = False
+        self.exit_signal_candle = None
+        self.just_entered = False
+        self.gtt_order_id = None
+        self.last_option_update = 0
 
-# Tick heartbeat & preview cadence
-TICK_COUNT = 0
-HEARTBEAT_LIMIT = 5
-LAST_PREVIEW_MINUTE = None
+    def __repr__(self):
+        return f"<State {self.symbol} {self.status} opt={self.option_symbol} qty={self.qty}>"
 
-# ============================== LOT SIZE & HELPERS ============================
-def nifty_lot_size_for_date(d: dt) -> int:
-    cutoff = dt(2025, 12, 30, 15, 30)  # same rule you used earlier
-    return 75 if d <= cutoff else 65
 
-def round_to_nearest_50(x: float) -> int:
-    return int(round(x / 50.0) * 50)
+SYMBOL_STATES: Dict[str, SymbolState] = {s: SymbolState(s) for s in SPOT_INDICES}
 
-# ============================== DATA HELPERS ==================================
-def compute_ema(s: pd.Series, span: int) -> pd.Series:
-    return s.ewm(span=span, adjust=False, min_periods=span).mean()
+# Active subscriptions for WebSocket
+ACTIVE_SUBSCRIPTIONS: List[str] = SPOT_INDICES.copy()
 
-def candles_df(resp: Dict[str, Any]) -> pd.DataFrame:
-    if not resp or "candles" not in resp:
-        return pd.DataFrame(columns=["datetime", "open", "high", "low", "close", "volume"]).set_index(
-            pd.Index([], name="datetime")
-        )
-    df = pd.DataFrame(resp["candles"], columns=["datetime", "open", "high", "low", "close", "volume"])
-    df["datetime"] = pd.to_datetime(df["datetime"], unit="s", utc=True).dt.tz_convert(TIMEZONE).dt.tz_localize(None)
-    df = df.set_index("datetime").astype({"open": float, "high": float, "low": float, "close": float, "volume": float})
-    return df
 
-def history(fyers: fyersModel.FyersModel, symbol: str, res: int, start: dt, end: dt) -> pd.DataFrame:
-    payload = {
-        "symbol": symbol, "resolution": str(res), "date_format": "1",
-        "range_from": start.strftime("%Y-%m-%d"), "range_to": end.strftime("%Y-%m-%d"),
-        "cont_flag": "0",
-    }
-    r = fyers.history(data=payload)
-    return candles_df(r)
+# ============================== CANDLE MANAGER ==============================
+class CandleManager:
+    def __init__(self, timeframe_min: int = 5, on_candle=None, tz="Asia/Kolkata"):
+        self.tf = int(timeframe_min)
+        self.on_candle = on_candle
+        self.tz = pytz.timezone(tz)
+        self.lock = threading.RLock()
+        self.partial: Dict[str, dict] = {}
+        self.history: Dict[str, pd.DataFrame] = {}
 
-# ============================== OPTIONCHAIN RESOLVER ==========================
-def resolve_option_symbol(fyers: fyersModel.FyersModel, is_ce: bool, spot_ltp: float) -> Tuple[str, Optional[str]]:
-    """
-    Queries FYERS option chain for NIFTY and returns (symbol, 'YYYY-MM-DD' expiry)
-    for nearest 50-strike of earliest expiry for the requested type (CE/PE).
-    """
-    chain = []
-    for root in ("NSE:NIFTY50-INDEX", "NSE:NIFTY50", "NSE:NIFTY"):  # try all NIFTY roots
+    def _floor_ts(self, ts: dt) -> dt:
+        if ts.tzinfo is None:
+            ts = self.tz.localize(ts)
+        else:
+            ts = ts.astimezone(self.tz)
+        ts = ts.replace(tzinfo=None)
+        minute = (ts.minute // self.tf) * self.tf
+        return ts.replace(second=0, microsecond=0, minute=minute)
+
+    def _parse_ts(self, ts_val) -> dt:
+        if ts_val is None:
+            return dt.now(self.tz).replace(tzinfo=None)
+        if isinstance(ts_val, (int, float)):
+            return dt.fromtimestamp(float(ts_val), self.tz).replace(tzinfo=None)
+        if isinstance(ts_val, str):
+            try:
+                dtobj = pd.to_datetime(ts_val)
+                if dtobj.tzinfo is None:
+                    dtobj = self.tz.localize(dtobj).replace(tzinfo=None)
+                else:
+                    dtobj = dtobj.astimezone(self.tz).replace(tzinfo=None)
+                return dtobj
+            except Exception:
+                return dt.now(self.tz).replace(tzinfo=None)
+        if isinstance(ts_val, dt):
+            if ts_val.tzinfo is None:
+                return self.tz.localize(ts_val).replace(tzinfo=None)
+            return ts_val.astimezone(self.tz).replace(tzinfo=None)
+        return dt.now(self.tz).replace(tzinfo=None)
+
+    def process_tick(self, tick: dict):
         try:
-            resp = fyers.optionchain(data={"symbol": root}) or {}
-            data = (resp.get("data") or {}).get("optionChain", []) or (resp.get("data") or {}).get("optionsChain", [])
-            if data:
-                chain = data
-                break
+            symbol = tick.get("symbol")
+            if not symbol:
+                return
+
+            ltp = tick.get("ltp")
+            if ltp is None:
+                return
+            ltp = float(ltp)
+            vtt = int(tick.get("vtt", 0))
+
+            ts = self._parse_ts(tick.get("timestamp"))
+            candle_start = self._floor_ts(ts)
+
+            with self.lock:
+                p = self.partial.get(symbol)
+                if p is None:
+                    new_p = {"ts": candle_start, "open": ltp, "high": ltp,
+                             "low": ltp, "close": ltp, "ticks": 1,
+                             "start_vtt": vtt, "end_vtt": vtt}
+                    self.partial[symbol] = new_p
+                    return
+
+                if candle_start == p["ts"]:
+                    p["high"] = max(p["high"], ltp)
+                    p["low"] = min(p["low"], ltp)
+                    p["close"] = ltp
+                    p["ticks"] = p.get("ticks", 0) + 1
+                    p["end_vtt"] = vtt
+                    return
+
+                # Complete the candle
+                completed = dict(p)
+                candle_volume = completed.get("end_vtt", 0) - completed.get("start_vtt", 0)
+                candle_out = {
+                    "symbol": symbol,
+                    "ts": completed["ts"],
+                    "open": completed["open"],
+                    "high": completed["high"],
+                    "low": completed["low"],
+                    "close": completed["close"],
+                    "volume": candle_volume,
+                    "ticks": completed.get("ticks", 1),
+                }
+
+                # Append to history (only for spot indices)
+                if symbol in SPOT_INDICES:
+                    df = self.history.get(symbol)
+                    row = {"open": candle_out["open"], "high": candle_out["high"],
+                           "low": candle_out["low"], "close": candle_out["close"],
+                           "volume": candle_out["volume"]}
+                    ts_idx = pd.to_datetime(candle_out["ts"])
+
+                    if df is None:
+                        df = pd.DataFrame([row], index=[ts_idx])
+                    else:
+                        df = pd.concat([df, pd.DataFrame([row], index=[ts_idx])])
+                        if len(df) > 2000:
+                            df = df.tail(2000)
+                    df.index.name = "datetime"
+                    self.history[symbol] = df
+
+                    # Call callback for spot candles only
+                    if callable(self.on_candle):
+                        try:
+                            self.on_candle(symbol, candle_out)
+                        except Exception as e:
+                            print(f"[CandleManager] callback error: {e}")
+
+                # Start new partial candle
+                new_partial = {"ts": candle_start, "open": ltp, "high": ltp,
+                               "low": ltp, "close": ltp, "ticks": 1,
+                               "start_vtt": vtt, "end_vtt": vtt}
+                self.partial[symbol] = new_partial
+
         except Exception as e:
-            print(f"[optionchain] root {root} failed: {e}")
-    if not chain:
-        raise RuntimeError("Optionchain response empty for NIFTY roots.")
+            print(f"[CandleManager:process_tick] error: {e}")
 
-    target = round_to_nearest_50(spot_ltp)
-    opt_type = "CE" if is_ce else "PE"
-    filt = [row for row in chain if str(row.get("option_type", "")).upper() == opt_type]
-    if not filt:
-        raise RuntimeError(f"Optionchain has no rows for type {opt_type}")
 
-    def expiry_key(row):
-        exp = row.get("expiry_date", row.get("expiry"))
-        try:
-            return dt.strptime(exp, "%d%b%y") if exp and len(exp) == 7 else dt.strptime(exp, "%Y-%m-%d")
-        except Exception:
-            return dt.max
-    expiries = [r.get("expiry_date", r.get("expiry")) for r in filt if r.get("expiry_date", r.get("expiry"))]
-    if expiries:
-        earliest_row = min(filt, key=expiry_key)
-        earliest = earliest_row.get("expiry_date", earliest_row.get("expiry"))
-        filt = [r for r in filt if r.get("expiry_date", r.get("expiry")) == earliest]
-        expiry_pick = earliest
-    else:
-        expiry_pick = None
+CANDLE_MANAGER: Optional[CandleManager] = None
 
-    def strike_key(row):
-        try:
-            sp = row.get("strike_price", row.get("strikePrice"))
-            return abs(float(sp) - target)
-        except Exception:
-            return 1e12
+# ============================== ORDER HELPERS ==============================
+FYERS = None
+FYERS_SOCKET = None
+ACCESS_TOKEN = None
 
-    best = min(filt, key=strike_key)
-    symbol = best.get("symbol") or best.get("tradingsymbol") or best.get("tsym")
-    if not symbol:
-        raise RuntimeError("Optionchain did not provide a symbol.")
-    return symbol, expiry_pick
 
-def earliest_expiry_string(fyers: fyersModel.FyersModel) -> Optional[str]:
-    """Best-effort earliest expiry from NIFTY INDEX root (preview resolver tries all anyway)."""
-    try:
-        resp = fyers.optionchain(data={"symbol": "NSE:NIFTY50-INDEX"}) or {}
-        chain = (resp.get("data") or {}).get("optionChain", []) or (resp.get("data") or {}).get("optionsChain", [])
-        dates = [row.get("expiry_date", row.get("expiry")) for row in chain if row.get("expiry_date", row.get("expiry"))]
-        return sorted(set(dates))[0] if dates else None
-    except Exception:
+def update_subscriptions():
+    """Update WebSocket subscriptions to include active option positions"""
+    global ACTIVE_SUBSCRIPTIONS
+
+    # Start with spot indices
+    new_subs = SPOT_INDICES.copy()
+
+    # Add any active option positions
+    for state in SYMBOL_STATES.values():
+        if state.option_symbol and state.status == "position":
+            new_subs.append(state.option_symbol)
+
+            # Update if changed
+    if set(new_subs) != set(ACTIVE_SUBSCRIPTIONS):
+        ACTIVE_SUBSCRIPTIONS = new_subs
+        if FYERS_SOCKET:
+            try:
+                FYERS_SOCKET.subscribe(symbols=ACTIVE_SUBSCRIPTIONS, data_type="SymbolUpdate")
+                print(f"[ws] Updated subscriptions: {len(ACTIVE_SUBSCRIPTIONS)} symbols")
+            except Exception as e:
+                print(f"[ws] Subscription update failed: {e}")
+
+
+def get_order_details(order_id: str):
+    """Get order details including fill price"""
+    if FYERS is None:
         return None
 
-# ============================== STATE =========================================
-class State:
-    def __init__(self):
-        self.fmflag = 0                 # TF refresh guard
-        self.emadata = pd.DataFrame()   # holds candles for TIMEFRAME_MIN
-        # trade mgmt
-        self.entry = 0.0
-        self.stoploss = 0.0
-        self.target = 0.0
-        self.side = None                # "sell_ce"
-        self.opt_symbol = None
-        self.qty = 0
-        self.spos = 0                   # active position flag
-        self.sflag = 0                  # rearm guard
-        self.pnl_cum = 0.0
-
-    def reset_trade(self):
-        self.entry = self.stoploss = self.target = 0.0
-        self.side = None; self.opt_symbol = None; self.qty = 0
-        self.spos = 0
-
-STATE = State()
-
-# ============================== LIVE STATUS / NOTIFS ==========================
-def print_live_status():
-    """Single TF status line only."""
     try:
-        c  = STATE.emadata.iloc[ROW_LOOKBACK]
-        e  = float(c["ema"])
-        fully_above = (c["open"]>e and c["high"]>e and c["low"]>e and c["close"]>e)
-        rng = float(c["high"] - c["low"])
-        print(f"[TF={TIMEFRAME_MIN}m] prev: O={c['open']:.2f} H={c['high']:.2f} L={c['low']:.2f} C={c['close']:.2f} | EMA5={e:.2f} | fully_above={fully_above} | range={rng:.2f}")
-    except Exception:
-        pass
+        # Get orderbook to find our order
+        orderbook = FYERS.orderbook()
+        if isinstance(orderbook, dict) and orderbook.get("s") == "ok":
+            for order in orderbook.get("orderBook", []):
+                if str(order.get("id")) == str(order_id):
+                    return order
+    except Exception as e:
+        print(f"[order] Failed to get details for {order_id}: {e}")
 
-# ============================== STRATEGY CORE =================================
-def refresh_ema_data(fyers: fyersModel.FyersModel, now_local: dt):
-    cmin, csec = now_local.minute, now_local.second
-    # TF boundary
-    if (cmin % TIMEFRAME_MIN == 0) and (csec >= 1) and (STATE.fmflag == 0):
-        start = (now_local - timedelta(days=5)).replace(hour=9, minute=15, second=0, microsecond=0)
-        df_tf = history(fyers, UNDERLYING_INDEX, TIMEFRAME_MIN, start, now_local)
-        if not df_tf.empty:
-            df_tf["ema"] = compute_ema(df_tf["close"], EMA_SPAN)
-            STATE.emadata = df_tf
-            print(f"[data] {TIMEFRAME_MIN}m EMA @", df_tf.index[-1])
-        STATE.fmflag = 1
-        if STATE.spos == 0: STATE.sflag = 0
-    if (cmin % TIMEFRAME_MIN != 0) and (STATE.fmflag == 1):
-        STATE.fmflag = 0
+    return None
 
-def has_prev_row(df: pd.DataFrame) -> bool:
-    try:
-        _ = df.iloc[ROW_LOOKBACK]
-        return True
-    except Exception:
-        return False
 
-# ============================== ORDER HELPERS =================================
-def place_market_buy(symbol: str, qty: int) -> dict:
+def place_market_order(symbol: str, qty: int, side: int) -> dict:
+    """Place market order for options and try to get fill price"""
+    if not TRADING_ENABLED:
+        return {"s": "error", "message": "trading disabled"}
+
+    if not is_market_hours():
+        return {"s": "error", "message": "outside market hours"}
+
+    side_str = "BUY" if side == 1 else "SELL"
+
     data = {
-        "symbol": symbol, "qty": qty, "type": 2,  # Market
-        "side": 1,                                 # BUY
-        "productType": "INTRADAY",
-        "limitPrice": 0, "stopPrice": 0,
-        "validity": "DAY", "disclosedQty": 0, "offlineOrder": False,
+        "symbol": symbol,
+        "qty": qty,
+        "type": 2,  # Market order
+        "side": side,
+        "productType": "INTRADAY",  # Options are always intraday
+        "limitPrice": 0,
+        "stopPrice": 0,
+        "validity": "DAY",
+        "disclosedQty": 0,
+        "offlineOrder": False,
     }
-    print("[order] BUY:", data)
-    return FYERS.place_order(data=data)
 
-def place_market_sell(symbol: str, qty: int) -> dict:
-    data = {
-        "symbol": symbol, "qty": qty, "type": 2,  # Market
-        "side": -1,                                # SELL
-        "productType": "INTRADAY",
-        "limitPrice": 0, "stopPrice": 0,
-        "validity": "DAY", "disclosedQty": 0, "offlineOrder": False,
-    }
-    print("[order] SELL:", data)
-    return FYERS.place_order(data=data)
+    print(f"[order] Placing market {side_str} for {qty} of {symbol}")
 
-# ============================== TICK HANDLER ==================================
-def on_message(msg: Dict[str, Any]):
-    global TICK_COUNT, LAST_PREVIEW_MINUTE
+    if FYERS is None:
+        return {"s": "error", "message": "no fyers client"}
 
-    if "ltp" not in msg:
-        print("[ws] ", msg); return
-
-    TICK_COUNT += 1
-    if TICK_COUNT <= HEARTBEAT_LIMIT:
-        print(f"[tick#{TICK_COUNT}] {msg.get('symbol')} LTP={msg.get('ltp')}")
-
-    try:
-        ltp = float(msg.get("ltp"))
-    except Exception:
-        return
-
-    now_local = dt.now(IST).replace(tzinfo=None)
-
-    # market-hours gate
-    if not (MARKET_START <= now_local.time() <= MARKET_END):
-        return
-
-    # refresh TF data
-    refresh_ema_data(FYERS, now_local)
-    if STATE.emadata.empty:
-        return
-
-    # status + triggers + preview (only TF)
-    if now_local.second == 0 or (now_local.minute % TIMEFRAME_MIN == 0 and now_local.second <= 2):
-        print(f"[now][TF={TIMEFRAME_MIN}m][R:R=1:{R_SELL:.2f}] LTP={ltp:.2f}")
-        print_live_status()
+    for attempt in range(1, 4):
         try:
-            c  = STATE.emadata.iloc[ROW_LOOKBACK]
-            sell_trig = float(c["low"]) - ENTRY_BUFFER
-            print(f"[triggers] SELL< {sell_trig:.2f}")
-        except Exception:
-            pass
-        if LAST_PREVIEW_MINUTE != now_local.minute:
-            LAST_PREVIEW_MINUTE = now_local.minute
-            try:
-                exp = earliest_expiry_string(FYERS)
-                if exp:
-                    print("[expiry-check] Earliest expiry (bot will use):", exp)
-                ce_sym, _ = resolve_option_symbol(FYERS, is_ce=True, spot_ltp=ltp)
-                print(f"[preview] CE≈ {ce_sym}")
-            except Exception as e:
-                print("[preview] failed:", e)
+            resp = FYERS.place_order(data=data)
+            print(f"[order] Response: {resp}")
 
-    # ===== SELL logic (TF=TIMEFRAME_MIN): SELL CE on strict breakdown =====
-    if STATE.spos == 0 and STATE.sflag == 0 and has_prev_row(STATE.emadata):
-        c = STATE.emadata.iloc[ROW_LOOKBACK]; ema5 = c["ema"]
-        if (c["open"] > ema5 and c["high"] > ema5 and c["low"] > ema5 and c["close"] > ema5
-                and ltp < (float(c["low"]) - ENTRY_BUFFER)):
-            try:
-                ce_symbol, exp_yyyy_mm_dd = resolve_option_symbol(FYERS, is_ce=True, spot_ltp=ltp)
-                lots = nifty_lot_size_for_date(
-                    dt.strptime(exp_yyyy_mm_dd, "%Y-%m-%d") if exp_yyyy_mm_dd else now_local
-                )
-                resp = place_market_sell(ce_symbol, qty=lots)  # ENTRY = SELL CE
-                if resp.get("s") == "ok":
-                    STATE.spos = STATE.sflag = 1
-                    STATE.opt_symbol = ce_symbol
-                    STATE.qty = lots
-                    STATE.side = "sell_ce"
-                    STATE.entry = ltp
-                    # SL with buffer on spot
-                    STATE.stoploss = float(c["high"]) + SL_BUFFER
-                    # risk = previous TF candle range (spot)
-                    rng = float(c["high"] - c["low"]) if (c["high"] - c["low"]) > 0 else max(1.0, abs(c["close"]) * 0.001)
-                    # target via custom R multiple (bearish target)
-                    STATE.target = STATE.entry - (rng * R_SELL)
-                    print(f"[SELL][TF={TIMEFRAME_MIN}m][R:R=1:{R_SELL:.2f}] LIVE ENTRY OK | CE={ce_symbol} | LTP={STATE.entry:.2f} SL={STATE.stoploss:.2f} TGT={STATE.target:.2f} | Lot={lots}")
-                    print(f"Entry={STATE.entry:.2f}  Target={STATE.target:.2f}  SL={STATE.stoploss:.2f}")
-                else:
-                    print("[order] SELL CE failed:", resp)
-            except Exception as e:
-                print("[SELL] entry error:", e)
+            if isinstance(resp, dict) and resp.get("s") == "ok":
+                # Try to get fill price
+                order_id = resp.get("id")
+                if order_id:
+                    # Wait a moment for order to process
+                    time.sleep(1)
+                    order_details = get_order_details(order_id)
+                    if order_details:
+                        traded_price = order_details.get("averagePrice") or order_details.get("tradedPrice")
+                        if traded_price and float(traded_price) > 0:
+                            resp["fill_price"] = float(traded_price)
+                            print(f"[order] Fill price: ₹{traded_price}")
 
-    # ===== EXIT management (CE BUY to close short) — spot-based =====
-    if STATE.spos == 1 and STATE.side == "sell_ce" and STATE.opt_symbol:
-        if STATE.stoploss > 0 and ltp > STATE.stoploss:
-            try:
-                resp = place_market_buy(STATE.opt_symbol, qty=STATE.qty)  # EXIT = BUY CE (SL)
-                pnl = (STATE.entry - STATE.stoploss)
-                STATE.pnl_cum += pnl
-                print(f"[SELL] STOP OUT | PnL≈{pnl:.2f} (spot-based) | Cum: {STATE.pnl_cum:.2f} | resp={resp}")
-            finally:
-                STATE.reset_trade()
-        elif STATE.target < STATE.entry and ltp <= STATE.target:
-            try:
-                resp = place_market_buy(STATE.opt_symbol, qty=STATE.qty)  # EXIT = BUY CE (Target)
-                pnl = (STATE.entry - STATE.target)
-                STATE.pnl_cum += pnl
-                print(f"[SELL] TARGET HIT | PnL≈{pnl:.2f} (spot-based) | Cum: {STATE.pnl_cum:.2f} | resp={resp}")
-            finally:
-                STATE.reset_trade()
+                            # Update subscriptions if this is a new option position
+                if side == 1:
+                    update_subscriptions()
 
-# ============================== WS EVENTS =====================================
-def on_error(msg): print("[ws:error]", msg)
-def on_close(msg): print("[ws:close]", msg)
+            return resp
+        except Exception as e:
+            print(f"[order] Attempt {attempt} failed: {e}")
+            time.sleep(1 * attempt)
 
-def on_open():
-    fyers_socket.subscribe(symbols=[UNDERLYING_INDEX], data_type="SymbolUpdate")
-    fyers_socket.keep_running()
+    return {"s": "error", "message": "order failed after retries"}
 
-# ============================== BOOT ==========================================
-if __name__ == "__main__":
-    # token
-    auth = get_access_token()
-    APP_ID = auth["app_id"]; ACCESS_TOKEN = auth["access_token"]
 
-    # REST
-    FYERS = fyersModel.FyersModel(client_id=APP_ID, is_async=False, token=ACCESS_TOKEN, log_path="")
+# ============================== INDICATORS ==============================
+def ema(series: pd.Series, length: int) -> pd.Series:
+    return series.ewm(span=length, adjust=False).mean()
 
-    # warmup TF candles only
-    now_ist = dt.now(IST).replace(tzinfo=None)
+
+def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or "volume" not in df.columns:
+        return df
+    df = df.copy()
+    df["ema_exit"] = ema(df["close"], EXIT_EMA)
+    df["ema_fast_entry"] = ema(df["close"], ENTRY_FAST_EMA)
+
+    # Daily resetting VWAP
+    df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
+    df['tpv'] = df['typical_price'] * df['volume']
+    df.index = pd.to_datetime(df.index)
+    df['date'] = df.index.date
+    df['cumulative_tpv'] = df.groupby('date')['tpv'].cumsum()
+    df['cumulative_volume'] = df.groupby('date')['volume'].cumsum()
+    df['vwap'] = df['cumulative_tpv'] / df['cumulative_volume']
+    df.drop(columns=['typical_price', 'tpv', 'date', 'cumulative_tpv', 'cumulative_volume'], inplace=True)
+
+    rng = (df["high"] - df["low"]) / df["close"].replace(0, pd.NA)
+    df["ok_signal"] = rng >= MIN_RANGE_PCT if MIN_RANGE_PCT > 0 else True
+    return df
+
+
+# ============================== CANDLE CALLBACK ==============================
+def on_completed_candle(symbol: str, candle: dict):
+    """Process completed candle - all calculations on SPOT price"""
+    st = SYMBOL_STATES.get(symbol)
+    if st is None:
+        return
+
     try:
-        start_tf = (now_ist - timedelta(days=5)).replace(hour=9, minute=15, second=0, microsecond=0)
-        df_tf  = history(FYERS, UNDERLYING_INDEX, TIMEFRAME_MIN, start_tf, now_ist)
-        if not df_tf.empty:
-            df_tf["ema"] = compute_ema(df_tf["close"], EMA_SPAN); STATE.emadata = df_tf
-            print(f"[warmup] {TIMEFRAME_MIN}m EMA ready @", df_tf.index[-1])
-    except Exception as e:
-        print("[warmup] failed:", e)
+        row = {"open": candle["open"], "high": candle["high"],
+               "low": candle["low"], "close": candle["close"], "volume": candle.get("volume", 0)}
+        idx = pd.to_datetime(candle["ts"])
 
-    # one-time config notification (TF & R:R)
-    print(f"[config] TF={TIMEFRAME_MIN}m | R:R=1:{R_SELL:.2f} | EntryBuf={ENTRY_BUFFER:g} | SLBuf={SL_BUFFER:g}")
-
-    # best-effort earliest expiry (preview resolver still tries all NIFTY roots)
-    try:
-        earliest = earliest_expiry_string(FYERS)
-        if earliest:
-            print("[expiry-check] Earliest expiry (bot will use):", earliest)
+        df = st.data
+        if df is None or df.empty:
+            df = pd.DataFrame([row], index=[idx])
         else:
-            print("[expiry-check] Could not determine earliest expiry.")
-    except Exception as e:
-        print("[expiry-check] failed:", e)
+            df = pd.concat([df, pd.DataFrame([row], index=[idx])])
+            df = df.loc[~df.index.duplicated(keep='last')]
+            df = df.tail(2000)
 
-    # WS
-    fyers_socket = data_ws.FyersDataSocket(
-        access_token=f"{APP_ID}:{ACCESS_TOKEN}",
+        df.index.name = "datetime"
+        st.data = compute_indicators(df)
+        st.last_candle_ts = idx
+
+        # Evaluate strategy
+        evaluate_on_new_candle(st)
+
+    except Exception as e:
+        print(f"[on_completed_candle] error for {symbol}: {e}")
+
+        # ============================== TICK HANDLER ==============================
+
+
+def on_tick(tick: dict):
+    """Handle incoming ticks for both spot and option symbols"""
+    symbol = tick.get("symbol")
+    ltp = float(tick.get("ltp", 0.0))
+    ts_val = tick.get("timestamp")
+    vtt = tick.get("vtt", 0)
+
+    ts = None
+    if ts_val:
+        ts = dt.fromtimestamp(ts_val, IST).replace(tzinfo=None)
+    else:
+        ts = dt.now(IST).replace(tzinfo=None)
+
+    # Process through candle manager (for spot indices only)
+    if CANDLE_MANAGER:
+        try:
+            CANDLE_MANAGER.process_tick(
+                {"symbol": symbol, "ltp": ltp, "vtt": vtt, "timestamp": ts.isoformat()}
+            )
+        except Exception as e:
+            print(f"[on_tick:candle_manager] error: {e}")
+
+    # Handle spot price updates
+    if symbol in SPOT_INDICES:
+        handle_spot_tick(symbol, ltp, ts)
+    else:
+        # Handle option price updates
+        handle_option_tick(symbol, ltp, ts)
+
+
+def handle_spot_tick(symbol: str, ltp: float, ts: dt):
+    """Handle spot price ticks - FIXED VERSION"""
+    state = SYMBOL_STATES.get(symbol)
+    if state is None:
+        return
+
+        # ENTRY LOGIC - NEXT CANDLE ENTRY
+    if state.status == "entry_pending" and state.signal_candle is not None:
+        try:
+            # Check if we're in the next candle
+            sig_start = pd.to_datetime(state.signal_candle["ts"])
+            next_allowed_start = sig_start + pd.Timedelta(minutes=TIMEFRAME_MIN)
+
+            current_ts = pd.to_datetime(ts)
+            candle_start = CANDLE_MANAGER._floor_ts(current_ts.to_pydatetime())
+
+            if pd.to_datetime(candle_start) == next_allowed_start:
+                # Check for breakout above signal high
+                signal_high = float(state.signal_candle["high"])
+                if ltp > signal_high and is_market_hours():
+                    print(f"\n[{symbol}] ENTRY TRIGGERED: LTP {ltp:.2f} > signal_high {signal_high:.2f}")
+
+                    # Resolve option symbol for execution
+                    try:
+                        option_symbol, expiry, strike = resolve_option_symbol(FYERS, symbol, is_ce=True, spot_ltp=ltp)
+                        state.option_symbol = option_symbol
+                        state.strike_price = strike
+                        state.expiry = expiry
+
+                        # Calculate quantity
+                        qty = state.lot_size * LOT_MULTIPLIER
+
+                        print(f"[entry] Lot size: {state.lot_size}, Qty: {qty} shares ({LOT_MULTIPLIER} lots)")
+
+                        # Place order
+                        resp = place_market_order(option_symbol, qty, side=1)
+
+                        if isinstance(resp, dict) and resp.get("s") == "ok":
+                            state.spot_entry_price = ltp
+                            state.qty = qty
+                            state.status = "position"
+                            state.just_entered = True
+
+                            # CRITICAL: Get actual option fill price or estimate
+                            fill_price = resp.get("fill_price")
+                            if fill_price and fill_price > 0:
+                                state.option_entry_price = fill_price
+                                print(f"[entry] Actual fill price: ₹{fill_price:.2f}")
+                            else:
+                                # Estimate option price (roughly 0.5-1% of spot for ATM options)
+                                state.option_entry_price = ltp * 0.007  # 0.7% estimate
+                                print(f"[entry] Estimated option price: ₹{state.option_entry_price:.2f}")
+
+                                # Set stop loss based on SL_MODE
+                            if SL_MODE == "signal_low":
+                                state.spot_stop_price = float(state.signal_candle["low"])
+                            elif SL_MODE == "swing_low":
+                                recent_lows = state.data['low'].tail(SWING_LOOKBACK)
+                                state.spot_stop_price = recent_lows.min()
+
+                            print(f"\n[ENTRY CONFIRMED] {symbol} -> {option_symbol}")
+                            print(f"  Spot Price: {ltp:.2f}")
+                            print(f"  Option Entry: ₹{state.option_entry_price:.2f}")
+                            print(f"  Spot SL: {state.spot_stop_price:.2f}")
+                            print(f"  Qty: {state.qty} shares ({LOT_MULTIPLIER} lots)")
+                            print(f"  Strike: {strike}, Expiry: {expiry}")
+
+                            # Clear signal
+                            state.signal_candle = None
+                            state.signal_close_ts = None
+                        else:
+                            print(f"[ENTRY FAILED] {symbol}: {resp}")
+                            state.status = "watch"
+                            state.reset_position()
+
+                    except Exception as e:
+                        print(f"[ENTRY ERROR] {symbol}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        state.status = "watch"
+                        state.reset_position()
+
+        except Exception as e:
+            print(f"[handle_spot_tick:entry] error: {e}")
+            import traceback
+            traceback.print_exc()
+
+            # EXIT LOGIC - Multi-Condition Spot-Based Exit
+    if state.status == "position":
+        exit_reason = None
+
+        # 1. Stop Loss Check
+        if state.spot_stop_price > 0 and ltp <= state.spot_stop_price:
+            exit_reason = f"STOP LOSS HIT: LTP {ltp:.2f} <= SL {state.spot_stop_price:.2f}"
+
+            # 2. EMA Exit Signal Check
+        elif state.exit_pending and state.exit_signal_candle is not None:
+            exit_sig_start = pd.to_datetime(state.exit_signal_candle["ts"])
+            next_allowed_start = exit_sig_start + pd.Timedelta(minutes=TIMEFRAME_MIN)
+            current_ts = pd.to_datetime(ts)
+            candle_start = CANDLE_MANAGER._floor_ts(current_ts.to_pydatetime())
+
+            if pd.to_datetime(candle_start) >= next_allowed_start:
+                exit_signal_low = float(state.exit_signal_candle["low"])
+                if ltp < exit_signal_low:
+                    exit_reason = f"EMA EXIT TRIGGERED: LTP {ltp:.2f} < Exit Low {exit_signal_low:.2f}"
+
+        if exit_reason and is_market_hours():
+            print(f"\n[{symbol}] {exit_reason}")
+            try:
+                resp = place_market_order(state.option_symbol, state.qty, side=-1)
+                if isinstance(resp, dict) and resp.get("s") == "ok":
+                    print(f"[EXIT CONFIRMED] {symbol} -> {state.option_symbol}")
+                    if state.option_ltp > 0:
+                        pnl = (state.option_ltp - state.option_entry_price) * state.qty
+                        print(f"  Approx P&L: ₹{pnl:.2f}")
+                    state.status = "cooldown"
+                    state.reset_position()
+                else:
+                    print(f"[EXIT FAILED] {symbol}: {resp}")
+            except Exception as e:
+                print(f"[handle_spot_tick:exit] error: {e}")
+                import traceback
+                traceback.print_exc()
+
+
+def handle_option_tick(symbol: str, ltp: float, ts: dt):
+    """Handle option price ticks for exit management - FIXED"""
+    # Find which state has this option symbol
+    for state in SYMBOL_STATES.values():
+        if state.option_symbol == symbol and state.status == "position":
+            # Skip first few seconds after entry
+            if state.just_entered:
+                current_time = time.time()
+                if current_time - state.last_option_update < 5:  # 5 second cooldown
+                    return
+                state.just_entered = False
+
+            state.option_ltp = ltp
+
+            # Update option high price
+            if ltp > state.option_high_price:
+                state.option_high_price = ltp
+
+            current_time = time.time()
+
+            # Update option price every 30 seconds to avoid spam
+            if current_time - state.last_option_update > 30:
+                # Calculate current P&L
+                current_pnl = (ltp - state.option_entry_price) * state.qty
+                pnl_percent = (
+                    ((ltp - state.option_entry_price) / state.option_entry_price) * 100
+                    if state.option_entry_price > 0 else 0.0
+                )
+
+                print(
+                    f"[{state.symbol}] Option: ₹{ltp:.2f} | Entry: ₹{state.option_entry_price:.2f} | P&L: ₹{current_pnl:.2f} ({pnl_percent:.1f}%) | High: ₹{state.option_high_price:.2f}")
+                state.last_option_update = current_time
+
+                # OPTION-BASED EXIT LOGIC HAS BEEN REMOVED. EXIT IS NOW HANDLED IN handle_spot_tick
+            break
+
+            # ============================== STRATEGY EVALUATION ==============================
+
+
+def evaluate_on_new_candle(st: SymbolState):
+    """Evaluate strategy on new candle - ALL CALCULATIONS ON SPOT PRICE"""
+    df = st.data
+    if df is None or df.shape[0] < 2:
+        return
+
+    last_ts = st.last_candle_ts
+    if last_ts is None or last_ts not in df.index:
+        return
+
+    curr = df.loc[last_ts]
+    prev = df.iloc[-2]
+
+    curr_open = float(curr["open"])
+    curr_close = float(curr["close"])
+    curr_high = float(curr["high"])
+    curr_low = float(curr["low"])
+
+    ema_fast = float(curr.get("ema_fast_entry", float("nan")))
+    vwap = float(curr.get("vwap", float("nan")))
+    ema_exit = float(curr.get("ema_exit", float("nan")))
+
+    # ENTRY SIGNAL (BULLISH - VWAP BODY CROSS)
+    if st.status == "watch" and is_market_hours():
+        open_below_vwap = curr_open <= vwap
+        closed_above_vwap = curr_close > vwap
+        fast_ema_above_vwap = ema_fast > vwap
+        green_ok = (not REQUIRE_GREEN_SIGNAL) or (curr_close > curr_open)
+        ok_signal = bool(curr.get("ok_signal", True))
+
+        if open_below_vwap and closed_above_vwap and fast_ema_above_vwap and green_ok and ok_signal:
+            st.signal_candle = {
+                "ts": curr.name,
+                "open": curr_open,
+                "high": curr_high,
+                "low": curr_low,
+                "close": curr_close,
+            }
+
+            st.status = "entry_pending"
+            print(f"\n[SIGNAL] {st.symbol}: VWAP CROSS ENTRY SIGNAL")
+            print(f"  Spot: {curr_close:.2f}")
+            print(f"  VWAP: {vwap:.2f}, Fast EMA: {ema_fast:.2f}")
+            print(f"  Signal High: {curr_high:.2f}, Low: {curr_low:.2f}")
+            print(f"  Waiting for next candle breakout...\n")
+
+            # EXIT SIGNAL (EXIT EMA) - Based on spot price
+    elif st.status == "position":
+        intrabar_up = (curr_open < ema_exit) and (curr_high > ema_exit)
+        closed_below = curr_close < ema_exit - EMA_BUFFER
+        is_red = curr_close < curr_open
+
+        if is_red and intrabar_up and closed_below:
+            st.exit_signal_candle = {
+                "ts": curr.name,
+                "open": curr_open,
+                "high": curr_high,
+                "low": curr_low,
+                "close": curr_close,
+            }
+            st.exit_pending = True
+            print(f"\n[EXIT SIGNAL] {st.symbol}: RED candle closed below Exit EMA")
+            print(f"  Spot: {curr_close:.2f}")
+            print(f"  Exit EMA: {ema_exit:.2f}")
+            print(f"  Exit Low: {curr_low:.2f}\n")
+
+            # ============================== WEBSOCKET HANDLERS ==============================
+
+
+def on_ws_message(raw):
+    try:
+        if not isinstance(raw, list):
+            msgs = [raw]
+        else:
+            msgs = raw
+
+        for m in msgs:
+            symbol = m.get("symbol")
+            ltp = m.get("ltp")
+            if symbol and ltp is not None:
+                # Pass the entire message dictionary to on_tick
+                on_tick(m)
+
+    except Exception as e:
+        print(f"[ws] on_message error: {e}")
+
+
+def on_ws_open():
+    print(f"[ws:open] Subscribing to {len(ACTIVE_SUBSCRIPTIONS)} symbols")
+    try:
+        FYERS_SOCKET.subscribe(symbols=ACTIVE_SUBSCRIPTIONS, data_type="SymbolUpdate")
+    except Exception as e:
+        print("[ws:open] subscribe failed:", e)
+
+
+def on_ws_error(err):
+    print("[ws:error]", err)
+
+
+def on_ws_close(msg):
+    print("[ws:close]", msg)
+
+
+# ============================== DATA WARMUP ==============================
+def fetch_historical_data(fyers, symbol: str, days: int = 3) -> pd.DataFrame:
+    """Fetch historical data for warmup"""
+    if fyers is None:
+        return pd.DataFrame()
+
+    end = dt.now(IST)
+    start = end - timedelta(days=days)
+
+    try:
+        payload = {
+            "symbol": symbol,
+            "resolution": str(TIMEFRAME_MIN),
+            "date_format": "1",
+            "range_from": start.strftime("%Y-%m-%d"),
+            "range_to": end.strftime("%Y-%m-%d"),
+            "cont_flag": "1",
+        }
+
+        r = fyers.history(data=payload)
+        if isinstance(r, dict) and r.get("s") == "ok":
+            df = pd.DataFrame(
+                r["candles"],
+                columns=["ts", "open", "high", "low", "close", "volume"],
+            )
+            df["ts"] = (
+                pd.to_datetime(df["ts"], unit="s", utc=True)
+                .dt.tz_convert(TIMEZONE)
+                .dt.tz_localize(None)
+            )
+            df = df.set_index("ts")[["open", "high", "low", "close", "volume"]]
+            return df
+    except Exception as e:
+        print(f"[warmup] Failed for {symbol}: {e}")
+
+    return pd.DataFrame()
+
+
+def warmup_data():
+    """Warmup historical data for all symbols"""
+    if FYERS is None:
+        return
+
+    print("[warmup] Fetching historical data...")
+    for symbol in SPOT_INDICES:
+        try:
+            df = fetch_historical_data(FYERS, symbol, days=3)
+            if not df.empty:
+                SYMBOL_STATES[symbol].data = compute_indicators(df)
+                SYMBOL_STATES[symbol].last_candle_ts = df.index[-1]
+                print(f"[warmup] {symbol}: {len(df)} candles loaded")
+            else:
+                print(f"[warmup] {symbol}: No data")
+        except Exception as e:
+            print(f"[warmup] Error for {symbol}: {e}")
+
+            # ============================== MAIN ==============================
+
+
+def main():
+    global FYERS, FYERS_SOCKET, ACCESS_TOKEN, CANDLE_MANAGER
+    global TIMEFRAME_MIN, EXIT_EMA, ENTRY_FAST_EMA, LOT_MULTIPLIER
+    global TRADING_ENABLED
+
+    # Parse arguments
+    parser = argparse.ArgumentParser(description="VWAP-EMA Strategy - Options Execution")
+    parser.add_argument("--timeframe", "-t", type=int, default=TIMEFRAME_MIN)
+    parser.add_argument("--exit-ema", type=int, default=EXIT_EMA)
+    parser.add_argument("--entry-fast-ema", type=int, default=ENTRY_FAST_EMA)
+    parser.add_argument("--lot-multiplier", type=int, default=LOT_MULTIPLIER, help="Number of lots per trade")
+    parser.add_argument("--test", action="store_true", help="Test mode without live connection")
+    parser.add_argument("--no-trade", action="store_true", help="Disable trading")
+
+    args = parser.parse_args()
+
+    # Update globals
+    TIMEFRAME_MIN = args.timeframe
+    EXIT_EMA = args.exit_ema
+    ENTRY_FAST_EMA = args.entry_fast_ema
+    LOT_MULTIPLIER = args.lot_multiplier
+
+    if args.no_trade:
+        TRADING_ENABLED = False
+
+    print("\n" + "=" * 80)
+    print("VWAP-EMA STRATEGY - OPTIONS EXECUTION")
+    print("=" * 80)
+    print(f"Timeframe: {TIMEFRAME_MIN} minutes")
+    print(f"Entry EMA: {ENTRY_FAST_EMA}")
+    print(f"Exit EMA: {EXIT_EMA}")
+    print(f"Lot Size per trade: {LOT_MULTIPLIER}")
+    print(f"Spot Indices: {SPOT_INDICES}")
+    print(f"Fyers Lot Sizes: NIFTY=65, BANKNIFTY=30, FINNIFTY=60")
+    print(f"Trading Enabled: {TRADING_ENABLED}")
+    print("=" * 80 + "\n")
+
+    if not TRADING_ENABLED:
+        print("[WARNING] Trading is DISABLED (--no-trade flag). Running in paper trading mode.\n")
+
+        # Initialize Candle Manager
+    CANDLE_MANAGER = CandleManager(TIMEFRAME_MIN, on_candle=on_completed_candle, tz=TIMEZONE)
+
+    if args.test:
+        print("[TEST MODE] Running without live connection")
+        return
+
+        # Get access token and initialize Fyers
+    try:
+        auth = get_access_token()
+        ACCESS_TOKEN = auth["access_token"]
+        client_id = ACCESS_TOKEN.split(":")[0] if ":" in ACCESS_TOKEN else ACCESS_TOKEN
+
+        FYERS = fyersModel.FyersModel(
+            client_id=client_id,
+            is_async=False,
+            token=ACCESS_TOKEN,
+            log_path=""
+        )
+
+        print("[auth] Fyers model initialized successfully")
+
+        # Warmup historical data
+        warmup_data()
+
+    except Exception as e:
+        print(f"[auth] Failed to initialize Fyers: {e}")
+        return
+
+        # Initialize WebSocket
+    FYERS_SOCKET = data_ws.FyersDataSocket(
+        access_token=ACCESS_TOKEN,
         log_path="",
         litemode=True,
         write_to_file=False,
         reconnect=True,
-        on_connect=on_open,
-        on_close=on_close,
-        on_error=on_error,
-        on_message=on_message,
+        on_connect=on_ws_open,
+        on_close=on_ws_close,
+        on_error=on_ws_error,
+        on_message=on_ws_message,
     )
 
-    print("[start] Connecting WebSocket…")
-    fyers_socket.connect()
+    print("[start] Connecting WebSocket...")
+    try:
+        FYERS_SOCKET.connect()
+
+        # Keep running
+        print("\n[bot] Strategy is running. Press Ctrl+C to stop.\n")
+        while True:
+            # Periodic subscription updates
+            update_subscriptions()
+            time.sleep(5)
+
+    except KeyboardInterrupt:
+        print("\n[exit] Interrupted by user")
+    except Exception as e:
+        print(f"[fatal] Error: {e}")
+
+
+if __name__ == "__main__":
+    main()
