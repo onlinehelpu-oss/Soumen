@@ -841,58 +841,61 @@ def exit_short_by_buy_market(fy, sym: str, qty_lots: int, lot_size: int, dry_run
     return place_order(fy, sym, side=1, qty=qty_shares, tag="ExitShort", dry_run=dry_run)
 
 
-# ===================== TRADE LOG & TRACKING =====================
-active_trades = {}
-combined_positions = {}
+# ===================== PER-INDEX TRADER CLASS =====================
+class IndexTrader:
+    def __init__(self, fy, index_symbol, timeframe_min, dry_run=False):
+        self.fy = fy
+        self.index_symbol = index_symbol
+        self.timeframe_min = timeframe_min
+        self.dry_run = dry_run
+        self.chart_manager = CustomizablePremiumChartManager(fy, timeframe_min)
+        self.active_trades = {}
+        self.combined_positions = {}
+        self.last_chart_update = time.time()
 
+    def has_open_positions(self) -> bool:
+        """Check if this trader instance has any open positions."""
+        return any(v.get("status") == "open" for v in self.active_trades.values())
 
-def has_open_positions() -> bool:
-    return any(v.get("status") == "open" for v in active_trades.values())
+    def get_all_symbols(self) -> List[str]:
+        """Get all CE and PE symbols this trader is tracking."""
+        return self.chart_manager.ce_symbols + self.chart_manager.pe_symbols
 
-
-def save_trade(sym, entry, sl, tgt, qty_lots, side=-1, lot_size=65, group_id=None, option_type="CE"):
-    row = {
-        "Datetime": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "Symbol": sym,
-        "Option Type": option_type,
-        "Entry Price": float(entry),
-        "Stop Loss": float(sl),
-        "Target": float(tgt),
-        "Qty": int(qty_lots),
-        "Lot Size": int(lot_size),
-        "Total Shares": int(qty_lots * lot_size),
-        "Side": "SHORT" if side == -1 else "LONG",
-        "Group ID": group_id or "SINGLE"
-    }
-    pd.DataFrame([row]).to_csv(
-        "trade_log.csv",
-        mode='a',
-        header=not os.path.exists("trade_log.csv"),
-        index=False
-    )
-    active_trades[sym] = {
-        "entry": entry,
-        "sl": sl,
-        "tgt": tgt,
-        "qty": qty_lots,
-        "status": "open",
-        "side": side,
-        "lot_size": lot_size,
-        "group_id": group_id,
-        "option_type": option_type
-    }
-
-    if group_id:
-        if group_id not in combined_positions:
-            combined_positions[group_id] = []
-        if sym not in combined_positions[group_id]:
-            combined_positions[group_id].append(sym)
+    def save_trade(self, sym, entry, sl, tgt, qty_lots, side=-1, lot_size=65, group_id=None, option_type="CE"):
+        """Save a trade to the log and the internal state for this trader."""
+        row = {
+            "Datetime": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "Symbol": sym,
+            "Option Type": option_type,
+            "Entry Price": float(entry),
+            "Stop Loss": float(sl),
+            "Target": float(tgt),
+            "Qty": int(qty_lots),
+            "Lot Size": int(lot_size),
+            "Total Shares": int(qty_lots * lot_size),
+            "Side": "SHORT" if side == -1 else "LONG",
+            "Group ID": group_id or "SINGLE",
+            "Index": self.index_symbol
+        }
+        pd.DataFrame([row]).to_csv(
+            "trade_log.csv",
+            mode='a',
+            header=not os.path.exists("trade_log.csv"),
+            index=False
+        )
+        self.active_trades[sym] = {
+            "entry": entry, "sl": sl, "tgt": tgt, "qty": qty_lots,
+            "status": "open", "side": side, "lot_size": lot_size,
+            "group_id": group_id, "option_type": option_type
+        }
+        if group_id:
+            if group_id not in self.combined_positions:
+                self.combined_positions[group_id] = []
+            if sym not in self.combined_positions[group_id]:
+                self.combined_positions[group_id].append(sym)
 
 
 # ===================== CANDLE BUILD STATE & LTP CACHE =====================
-bars = {}
-processed_candles = set()
-trigger = {}
 ltp_cache = {}
 prev_ltp_cache = {}
 _last_quote_error = {}
@@ -951,48 +954,52 @@ def get_ltp(fy, sym, cache_ttl=10, max_retries=3):
 
 
 # ===================== WEBSOCKET HANDLER =====================
-def make_onmsg_customizable(fy, chart_manager: CustomizablePremiumChartManager, dry_run=False):
-    last_chart_update = time.time()
+def make_onmsg_customizable(fy, traders: Dict[str, IndexTrader], dry_run=False):
+    """Factory for the centralized websocket on_message handler."""
+
+    # Create a reverse map from option symbol to its parent trader instance
+    symbol_to_trader_map = {}
+    for trader in traders.values():
+        for symbol in trader.get_all_symbols():
+            symbol_to_trader_map[symbol] = trader
 
     def onmsg(msg):
-        nonlocal last_chart_update
-
         if msg.get("type") != "sf":
             return
         try:
             sym = msg["symbol"]
             ltp = float(msg["ltp"])
-        except Exception:
+        except (KeyError, ValueError):
             return
 
-        # Update CE or PE data
+        # Delegate the message to the correct IndexTrader
+        trader = symbol_to_trader_map.get(sym)
+        if not trader:
+            return
+
+        chart_manager = trader.chart_manager
+
+        # Update CE or PE data for the specific trader
         if sym in chart_manager.ce_data:
             chart_manager.ce_data[sym]['ltp'] = ltp
         elif sym in chart_manager.pe_data:
             chart_manager.pe_data[sym]['ltp'] = ltp
 
-        # Get current time
         current_time = dt.datetime.now()
         current_timestamp = time.time()
-
-        # Update premiums
         combined_premium = chart_manager.update_premiums(is_candle_close=False)
 
-        # Check if it's candle close time for premium chart
         cstart = chart_manager.candle_start(current_time, chart_manager.timeframe_min)
         candle_end = cstart + dt.timedelta(minutes=chart_manager.timeframe_min)
-
-        # Check if we're at candle close (last 2 seconds of candle)
         time_to_candle_end = (candle_end - current_time).total_seconds()
         is_candle_close = time_to_candle_end <= 2
 
-        # Update premium candle for shooting star detection
         chart_manager.update_premium_candle(combined_premium, is_candle_close=is_candle_close)
 
-        # Display chart at candle close or every 30 seconds
-        if is_candle_close or (current_timestamp - last_chart_update >= 30):
+        if is_candle_close or (current_timestamp - trader.last_chart_update >= 30):
+            print(f"\n--------- UPDATE FOR {trader.index_symbol} ---------")
             chart_manager.display_customizable_chart(is_candle_close=is_candle_close)
-            last_chart_update = current_timestamp
+            trader.last_chart_update = current_timestamp
 
         # Check premium trigger for breakout
         if chart_manager.premium_trigger and not chart_manager.premium_trigger.get("triggered", False):
@@ -1002,138 +1009,87 @@ def make_onmsg_customizable(fy, chart_manager: CustomizablePremiumChartManager, 
                     chart_manager.premium_trigger = {}
                     return
 
-                if ONE_POSITION_AT_A_TIME and has_open_positions():
-                    print(f"[{dt.datetime.now():%H:%M:%S}] 🚫 Skipping entry — position already open.")
+                if ONE_POSITION_AT_A_TIME and trader.has_open_positions():
+                    print(f"[{dt.datetime.now():%H:%M:%S}] [{trader.index_symbol}] 🚫 Skipping entry — position already open.")
                     chart_manager.premium_trigger = {}
                     return
 
-                now_time = current_time.time()
-                if now_time >= ENTRY_CUTOFF:
-                    print(f"[{dt.datetime.now():%H:%M:%S}] ⏰ Skipping NEW entry — cutoff passed ({ENTRY_CUTOFF})")
+                if current_time.time() >= ENTRY_CUTOFF:
+                    print(f"[{dt.datetime.now():%H:%M:%S}] [{trader.index_symbol}] ⏰ Skipping NEW entry — cutoff passed.")
                     chart_manager.premium_trigger = {}
                     return
 
-                # Breakout condition on combined premium
                 threshold = round_to_tick(trigger_info["low"] - ENTRY_BUFFER)
-                prev_premium = chart_manager.premium_ltp_cache[0] if chart_manager.premium_ltp_cache else None
+                prev_premium, _ = chart_manager.premium_ltp_cache or (None, 0)
 
                 if prev_premium is not None and prev_premium >= threshold and combined_premium < threshold:
-                    print(f"[{current_time:%H:%M:%S}] 🔥 COMBINED PREMIUM BREAKOUT < {threshold:.2f}. Placing trades...")
+                    print(f"[{current_time:%H:%M:%S}] [{trader.index_symbol}] 🔥 COMBINED PREMIUM BREAKOUT < {threshold:.2f}. Placing trades...")
+                    group_id = f"COMBINED_{trader.index_symbol.split(':')[1].split('-')[0]}_{int(time.time())}"
 
-                    # Trade all CE and PE options
-                    group_id = f"COMBINED_TRADE_{int(time.time())}"
-
-                    # Trade CE options (SHORT)
-                    for ce_sym in trigger_info["ce_symbols"]:
+                    for ce_sym in trigger_info.get("ce_symbols", []):
                         if ce_sym in chart_manager.ce_data:
                             ce_data = chart_manager.ce_data[ce_sym]
-                            lot_size = ce_data.get('lot_size', 65)
-                            qty_shares = LOT_MULTIPLIER * lot_size
-                            qty_lots = LOT_MULTIPLIER
-
-                            entry_price = floor_to_tick(ce_data.get('ltp', 0))
-                            sl_price = trigger_info["high"]  # Using combined premium high as SL
-                            risk = sl_price - entry_price
-
+                            risk = trigger_info["high"] - ce_data.get('ltp', 0)
                             if risk <= 0:
                                 print(f"[{current_time:%H:%M:%S}] ✋ Risk <= 0 for {ce_sym}, skipping.")
                                 continue
 
-                            tgt_price = round_to_tick(entry_price - (R_MULTIPLIER * risk))
+                            trader.save_trade(
+                                sym=ce_sym, entry=floor_to_tick(ce_data.get('ltp', 0)),
+                                sl=trigger_info["high"], tgt=round_to_tick(ce_data.get('ltp', 0) - (R_MULTIPLIER * risk)),
+                                qty_lots=LOT_MULTIPLIER, side=-1, lot_size=ce_data.get('lot_size', 65),
+                                group_id=group_id, option_type="CE"
+                            )
+                            place_order(fy, ce_sym, side=-1, qty=LOT_MULTIPLIER * ce_data.get('lot_size', 65), tag=f"CE_{trader.index_symbol}", dry_run=dry_run)
 
-                            place_order(fy, ce_sym, side=-1, qty=qty_shares, tag="CE_ShootSell", dry_run=dry_run)
-                            save_trade(ce_sym, entry_price, sl_price, tgt_price, qty_lots, side=-1,
-                                       lot_size=lot_size, group_id=group_id, option_type="CE")
-
-                            print(
-                                f"[{current_time:%H:%M:%S}] ✅ SHORT-CE {ce_sym} @ {entry_price:.2f}, SL={sl_price:.2f}, "
-                                f"TGT={tgt_price:.2f}, QTY={qty_lots} lots")
-
-                    # Trade PE options (SHORT)
-                    for pe_sym in trigger_info["pe_symbols"]:
+                    for pe_sym in trigger_info.get("pe_symbols", []):
                         if pe_sym in chart_manager.pe_data:
                             pe_data = chart_manager.pe_data[pe_sym]
-                            lot_size = pe_data.get('lot_size', 65)
-                            qty_shares = LOT_MULTIPLIER * lot_size
-                            qty_lots = LOT_MULTIPLIER
-
-                            entry_price = floor_to_tick(pe_data.get('ltp', 0))
-                            sl_price = trigger_info["high"]  # Using combined premium high as SL
-                            risk = sl_price - entry_price
-
+                            risk = trigger_info["high"] - pe_data.get('ltp', 0)
                             if risk <= 0:
                                 print(f"[{current_time:%H:%M:%S}] ✋ Risk <= 0 for {pe_sym}, skipping.")
                                 continue
 
-                            tgt_price = round_to_tick(entry_price - (R_MULTIPLIER * risk))
+                            trader.save_trade(
+                                sym=pe_sym, entry=floor_to_tick(pe_data.get('ltp', 0)),
+                                sl=trigger_info["high"], tgt=round_to_tick(pe_data.get('ltp', 0) - (R_MULTIPLIER * risk)),
+                                qty_lots=LOT_MULTIPLIER, side=-1, lot_size=pe_data.get('lot_size', 65),
+                                group_id=group_id, option_type="PE"
+                            )
+                            place_order(fy, pe_sym, side=-1, qty=LOT_MULTIPLIER * pe_data.get('lot_size', 65), tag=f"PE_{trader.index_symbol}", dry_run=dry_run)
 
-                            place_order(fy, pe_sym, side=-1, qty=qty_shares, tag="PE_ShootSell", dry_run=dry_run)
-                            save_trade(pe_sym, entry_price, sl_price, tgt_price, qty_lots, side=-1,
-                                       lot_size=lot_size, group_id=group_id, option_type="PE")
-
-                            print(
-                                f"[{current_time:%H:%M:%S}] ✅ SHORT-PE {pe_sym} @ {entry_price:.2f}, SL={sl_price:.2f}, "
-                                f"TGT={tgt_price:.2f}, QTY={qty_lots} lots")
-
-                    chart_manager.premium_trigger["triggered"] = True
                     chart_manager.premium_trigger = {}
 
     return onmsg
 
 
 # ===================== POSITION MONITOR =====================
-def monitor_customizable_positions(fy, chart_manager: CustomizablePremiumChartManager, dry_run=False):
-    """Monitor positions."""
-    global FORCE_CLOSED_ALL
-    last_refresh = time.time()
-    refresh_interval = 300
+def monitor_all_positions(fy, traders: Dict[str, IndexTrader], dry_run=False):
+    """Centralized function to monitor all positions across all traders."""
+
+    force_closed_indices = set()
 
     while True:
+        now_dt = dt.datetime.now()
+        now_time = now_dt.time()
+
         try:
-            now = time.time()
-            now_dt = dt.datetime.now()
-            now_time = now_dt.time()
+            for index_symbol, trader in traders.items():
 
-            # Auto-refresh chart every 5 minutes
-            if now - last_refresh > refresh_interval:
-                print(f"\n🔄 AUTO-REFRESHING CUSTOMIZABLE CHART...")
-                chart_manager.display_customizable_chart(is_candle_close=False)
-                last_refresh = now
+                # Force-exit at EXIT_ALL_TIME
+                if index_symbol not in force_closed_indices and now_time >= EXIT_ALL_TIME:
+                    open_trades = [s for s, t in trader.active_trades.items() if t.get("status") == "open"]
+                    if open_trades:
+                        print(f"[{now_dt:%H:%M:%S}] [{index_symbol}] ⏳ EXIT_ALL triggered — closing {len(open_trades)} trades")
+                        for sym in open_trades:
+                            trade = trader.active_trades.get(sym)
+                            if trade:
+                                exit_short_by_buy_market(fy, sym, trade["qty"], trade["lot_size"], dry_run=dry_run)
+                                trader.active_trades[sym]["status"] = "closed"
+                        force_closed_indices.add(index_symbol)
 
-            # Force-exit at EXIT_ALL_TIME
-            if (not FORCE_CLOSED_ALL) and (now_time >= EXIT_ALL_TIME):
-                open_trades = [s for s, t in active_trades.items() if t.get("status") == "open"]
-                if open_trades:
-                    print(f"[{now_dt:%H:%M:%S}] ⏳ EXIT_ALL triggered — closing {len(open_trades)} open trades")
-
-                    for sym in open_trades:
-                        trade = active_trades.get(sym)
-                        if not trade or trade.get("status") != "open":
-                            continue
-
-                        qty_lots = trade.get("qty")
-                        lot_size = trade.get("lot_size", 65)
-                        option_type = trade.get("option_type", "CE")
-
-                        if qty_lots:
-                            total_shares = qty_lots * lot_size
-                            print(
-                                f"[{now_dt:%H:%M:%S}] 🔔 Force exiting {option_type} {sym} qty={qty_lots} lots ({total_shares} shares)")
-                            exit_short_by_buy_market(fy, sym, qty_lots, lot_size, dry_run=dry_run)
-
-                        active_trades[sym]["status"] = "closed"
-                        active_trades.pop(sym, None)
-
-                    # Clear all positions
-                    for group_id in list(combined_positions.keys()):
-                        combined_positions.pop(group_id, None)
-
-                    trigger.clear()
-                FORCE_CLOSED_ALL = True
-
-            # Monitor active positions for SL/Target
-            if active_trades:
-                for sym, trade in list(active_trades.items()):
+                # Monitor active positions for SL/Target
+                for sym, trade in list(trader.active_trades.items()):
                     if trade.get("status") != "open":
                         continue
 
@@ -1141,36 +1097,15 @@ def monitor_customizable_positions(fy, chart_manager: CustomizablePremiumChartMa
                     if ltp is None:
                         continue
 
-                    sl = trade["sl"]
-                    tgt = trade["tgt"]
-                    qty_lots = trade["qty"]
-                    lot_size = trade.get("lot_size", 65)
-                    option_type = trade.get("option_type", "CE")
-                    group_id = trade.get("group_id")
+                    if ltp >= trade["sl"]:
+                        print(f"[{now_dt:%H:%M:%S}] [{index_symbol}] ❌ SL HIT {sym} @ {ltp:.2f} → Exiting")
+                        exit_short_by_buy_market(fy, sym, trade["qty"], trade["lot_size"], dry_run=dry_run)
+                        trader.active_trades[sym]["status"] = "closed"
 
-                    if ltp >= sl:
-                        print(f"[{dt.datetime.now():%H:%M:%S}] ❌ {option_type} SL HIT {sym} @ {ltp:.2f} → Exiting")
-                        exit_short_by_buy_market(fy, sym, qty_lots, lot_size, dry_run=dry_run)
-                        active_trades[sym]["status"] = "closed"
-                        active_trades.pop(sym, None)
-
-                        # Remove from group
-                        if group_id and group_id in combined_positions:
-                            combined_positions[group_id].remove(sym)
-                            if not combined_positions[group_id]:
-                                combined_positions.pop(group_id, None)
-
-                    elif ltp <= tgt:
-                        print(f"[{dt.datetime.now():%H:%M:%S}] 🎯 {option_type} TARGET HIT {sym} @ {ltp:.2f} → Exiting")
-                        exit_short_by_buy_market(fy, sym, qty_lots, lot_size, dry_run=dry_run)
-                        active_trades[sym]["status"] = "closed"
-                        active_trades.pop(sym, None)
-
-                        # Remove from group
-                        if group_id and group_id in combined_positions:
-                            combined_positions[group_id].remove(sym)
-                            if not combined_positions[group_id]:
-                                combined_positions.pop(group_id, None)
+                    elif ltp <= trade["tgt"]:
+                        print(f"[{now_dt:%H:%M:%S}] [{index_symbol}] 🎯 TARGET HIT {sym} @ {ltp:.2f} → Exiting")
+                        exit_short_by_buy_market(fy, sym, trade["qty"], trade["lot_size"], dry_run=dry_run)
+                        trader.active_trades[sym]["status"] = "closed"
 
         except Exception as e:
             print(f"⚠️ Position monitor error: {e}")
@@ -1259,8 +1194,6 @@ def main():
         access_token = "MOCK_ACCESS"
         fy = fyersModel.FyersModel(client_id=client_id, token=access_token, log_path=".")
 
-    chart_manager = CustomizablePremiumChartManager(fy, TIMEFRAME_MIN)
-
     print("\n🎯 CUSTOMIZABLE CE & PE PREMIUM CHART STRATEGY")
     print("=" * 80)
     print(f"📊 Tracking Mode: Fully Customizable CE & PE Premium")
@@ -1275,123 +1208,85 @@ def main():
         print(f"📊 CE Custom Strikes: {CE_CUSTOM_STRIKES}")
         print(f"📊 PE Custom Strikes: {PE_CUSTOM_STRIKES}")
 
-    print(f"\n📊 BUILDING CUSTOMIZABLE PREMIUM CHART...")
-
-    print("\n📋 Select Index to track:")
+    print("\n📋 Select one or more indices to trade (e.g., '1' or '1,2'):")
     for i, idx in enumerate(SPOT_INDICES):
         print(f"  {i + 1}. {idx}")
 
+    selected_indices = []
     try:
-        idx_choice = int(input("\nEnter index number (1-4): ")) - 1
-        if 0 <= idx_choice < len(SPOT_INDICES):
-            selected_index = SPOT_INDICES[idx_choice]
-            print(f"✅ Selected: {selected_index}")
-        else:
-            selected_index = SPOT_INDICES[0]
-            print(f"⚠️ Invalid choice, defaulting to: {selected_index}")
-    except:
-        selected_index = SPOT_INDICES[0]
-        print(f"⚠️ Using default index: {selected_index}")
-
-    # Get options based on strike choice type
-    all_options = {}
-
-    print(f"\n📊 BUILDING CUSTOMIZABLE PREMIUM CHART...")
-    print(f"📊 Using Strike Choice Type: {STRIKE_CHOICE_TYPE}")
-
-    if STRIKE_CHOICE_TYPE == "distance":
-        print(f"📊 CE Strike Distances: {CE_STRIKE_DISTANCES}")
-        print(f"📊 PE Strike Distances: {PE_STRIKE_DISTANCES}")
-
-        # Get CE options by distances
-        if CE_STRIKE_DISTANCES:
-            print(f"\n📊 Fetching CE strikes by distances...")
-            ce_options = chart_manager.get_ce_options_by_distances(selected_index, CE_STRIKE_DISTANCES)
-            if ce_options:
-                all_options.update(ce_options)
-                chart_manager.ce_data.update(ce_options)
+        raw_input = input("\nEnter index number(s): ")
+        choices = [int(x.strip()) for x in raw_input.split(',')]
+        for choice in choices:
+            if 1 <= choice <= len(SPOT_INDICES):
+                selected_indices.append(SPOT_INDICES[choice - 1])
             else:
-                print("⚠️ No CE options found for specified distances. Using default ATM.")
-                ce_options = chart_manager.get_ce_options_by_distances(selected_index, [0])
-                if ce_options:
-                    all_options.update(ce_options)
-                    chart_manager.ce_data.update(ce_options)
+                print(f"⚠️ Invalid choice '{choice}', skipping.")
+    except Exception as e:
+        print(f"❌ Invalid input: {e}. Exiting.")
+        return
 
-        # Get PE options by distances
-        if PE_STRIKE_DISTANCES:
-            print(f"\n📊 Fetching PE strikes by distances...")
-            pe_options = chart_manager.get_pe_options_by_distances(selected_index, PE_STRIKE_DISTANCES)
-            if pe_options:
-                all_options.update(pe_options)
-                chart_manager.pe_data.update(pe_options)
-            else:
-                print("⚠️ No PE options found for specified distances. Using default ATM.")
-                pe_options = chart_manager.get_pe_options_by_distances(selected_index, [0])
-                if pe_options:
-                    all_options.update(pe_options)
-                    chart_manager.pe_data.update(pe_options)
+    if not selected_indices:
+        print("❌ No valid indices selected. Exiting.")
+        return
 
-    else:  # custom strikes
-        print(f"📊 CE Custom Strikes: {CE_CUSTOM_STRIKES}")
-        print(f"📊 PE Custom Strikes: {PE_CUSTOM_STRIKES}")
+    print(f"✅ Selected Indices: {', '.join(selected_indices)}")
 
-        # Get CE options by custom strikes
-        if CE_CUSTOM_STRIKES:
-            print(f"\n📊 Fetching CE custom strikes...")
-            ce_options = chart_manager.get_ce_options_by_custom_strikes(selected_index, CE_CUSTOM_STRIKES)
-            if ce_options:
-                all_options.update(ce_options)
-                chart_manager.ce_data.update(ce_options)
-            else:
-                print("⚠️ No CE options found for custom strikes. Using default ATM.")
-                ce_options = chart_manager.get_ce_options_by_distances(selected_index, [0])
-                if ce_options:
-                    all_options.update(ce_options)
-                    chart_manager.ce_data.update(ce_options)
+    # ---- Create a trader for each selected index ----
+    traders = {}
+    all_symbols_to_subscribe = []
 
-        # Get PE options by custom strikes
-        if PE_CUSTOM_STRIKES:
-            print(f"\n📊 Fetching PE custom strikes...")
-            pe_options = chart_manager.get_pe_options_by_custom_strikes(selected_index, PE_CUSTOM_STRIKES)
-            if pe_options:
-                all_options.update(pe_options)
-                chart_manager.pe_data.update(pe_options)
-            else:
-                print("⚠️ No PE options found for custom strikes. Using default ATM.")
-                pe_options = chart_manager.get_pe_options_by_distances(selected_index, [0])
-                if pe_options:
-                    all_options.update(pe_options)
-                    chart_manager.pe_data.update(pe_options)
+    for index_symbol in selected_indices:
+        print(f"\n{'='*30} INITIALIZING {index_symbol} {'='*30}")
+        trader = IndexTrader(fy, index_symbol, TIMEFRAME_MIN, dry_run=dry_run)
 
-    # Fallback if no options found
-    if not all_options:
-        print("⚠️ No option contracts could be found.")
-        print("⚠️ Trying with default ATM strikes...")
-        ce_options = chart_manager.get_ce_options_by_distances(selected_index, [0])
-        pe_options = chart_manager.get_pe_options_by_distances(selected_index, [0])
-        if ce_options:
-            all_options.update(ce_options)
-            chart_manager.ce_data.update(ce_options)
-        if pe_options:
-            all_options.update(pe_options)
-            chart_manager.pe_data.update(pe_options)
+        all_options = {}
+        if STRIKE_CHOICE_TYPE == "distance":
+            if CE_STRIKE_DISTANCES:
+                all_options.update(trader.chart_manager.get_ce_options_by_distances(index_symbol, CE_STRIKE_DISTANCES))
+            if PE_STRIKE_DISTANCES:
+                all_options.update(trader.chart_manager.get_pe_options_by_distances(index_symbol, PE_STRIKE_DISTANCES))
+        else: # custom
+            if CE_CUSTOM_STRIKES:
+                all_options.update(trader.chart_manager.get_ce_options_by_custom_strikes(index_symbol, CE_CUSTOM_STRIKES))
+            if PE_CUSTOM_STRIKES:
+                all_options.update(trader.chart_manager.get_pe_options_by_custom_strikes(index_symbol, PE_CUSTOM_STRIKES))
 
-    if not all_options:
-        raise SystemExit("❌ No option contracts could be found. Exiting.")
+        if not all_options:
+            print(f"⚠️ No option contracts found for {index_symbol}. Trying default ATM.")
+            ce_opts = trader.chart_manager.get_ce_options_by_distances(index_symbol, [0])
+            pe_opts = trader.chart_manager.get_pe_options_by_distances(index_symbol, [0])
+            all_options.update(ce_opts)
+            all_options.update(pe_opts)
 
-    # Display initial chart
+        if not all_options:
+            print(f"❌ FAILED to find any option contracts for {index_symbol}. Skipping this index.")
+            continue
+
+        trader.chart_manager.ce_data.update({k: v for k, v in all_options.items() if v['option_type'] == 'CE'})
+        trader.chart_manager.pe_data.update({k: v for k, v in all_options.items() if v['option_type'] == 'PE'})
+
+        traders[index_symbol] = trader
+        all_symbols_to_subscribe.extend(trader.get_all_symbols())
+
+        print(f"✅ {index_symbol} Initialized. Tracking {len(trader.get_all_symbols())} option symbols.")
+
+    if not traders:
+        raise SystemExit("❌ No traders could be initialized. Exiting.")
+
+    # ---- Final Initialization and Display ----
     print("\n" + "=" * 80)
-    print("✅ CUSTOMIZABLE PREMIUM CHART INITIALIZED")
+    print(f"✅ ALL {len(traders)} TRADERS INITIALIZED")
     print("=" * 80)
 
-    # Force initial chart display by updating premiums first
-    chart_manager.update_premiums(is_candle_close=False)
-    chart_manager.display_customizable_chart(is_candle_close=False)
+    for symbol, trader in traders.items():
+        print(f"\n----------- INITIAL STATE FOR {symbol} -----------")
+        trader.chart_manager.update_premiums(is_candle_close=False)
+        trader.chart_manager.display_customizable_chart(is_candle_close=False)
 
-    # Get all symbols for WebSocket
-    all_symbols = list(all_options.keys())
+    all_symbols = list(set(all_symbols_to_subscribe))
+    print(f"\n[main] Combined subscription list has {len(all_symbols)} unique symbols.")
 
-    on_message = make_onmsg_customizable(fy, chart_manager, dry_run=dry_run)
+    on_message = make_onmsg_customizable(fy, traders, dry_run=dry_run)
 
     global ws_connection
     ws_connection = data_ws.FyersDataSocket(
@@ -1410,35 +1305,8 @@ def main():
         )
     )
 
-    # Start position monitor
-    threading.Thread(target=monitor_customizable_positions, args=(fy, chart_manager, dry_run),
-                     daemon=True).start()
-
-    # Start regular chart update timer (every 30 seconds) as backup
-    def regular_chart_updater():
-        while True:
-            time.sleep(30)
-            print(f"\n[{dt.datetime.now():%H:%M:%S}] 🔄 REGULAR CHART UPDATE (Backup)")
-            try:
-                # Fetch fresh LTPs from API for ALL symbols
-                for symbol in all_symbols:
-                    try:
-                        ltp = get_ltp(fy, symbol, cache_ttl=1)  # Force refresh with 1 second cache
-                        if ltp is not None:
-                            if symbol in chart_manager.ce_data:
-                                chart_manager.ce_data[symbol]['ltp'] = ltp
-                            elif symbol in chart_manager.pe_data:
-                                chart_manager.pe_data[symbol]['ltp'] = ltp
-                    except Exception as e:
-                        print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ Error fetching {symbol}: {e}")
-
-                # Update premiums from current data
-                chart_manager.update_premiums(is_candle_close=False)
-                chart_manager.display_customizable_chart(is_candle_close=False)
-            except Exception as e:
-                print(f"⚠️ Backup chart update error: {e}")
-
-    threading.Thread(target=regular_chart_updater, daemon=True).start()
+    # ---- Start Position Monitor and Websocket ----
+    threading.Thread(target=monitor_all_positions, args=(fy, traders, dry_run), daemon=True).start()
 
     print("\n" + "=" * 80)
     print("🎯 CUSTOMIZABLE CE & PE PREMIUM CHART STRATEGY - REAL-TIME")
@@ -1455,16 +1323,6 @@ def main():
     else:
         print(f"  • CE Custom Strikes: {CE_CUSTOM_STRIKES}")
         print(f"  • PE Custom Strikes: {PE_CUSTOM_STRIKES}")
-
-    print(f"\n📊 TRACKING SUMMARY:")
-    print(f"  • CE Strikes: {len(chart_manager.ce_data)}")
-    print(f"  • PE Strikes: {len(chart_manager.pe_data)}")
-    print(f"  • Total Symbols: {len(all_symbols)}")
-
-    print(f"\n📊 INITIAL PREMIUMS:")
-    print(f"  • Total CE Premium: ₹{chart_manager.total_ce_premium:.2f}")
-    print(f"  • Total PE Premium: ₹{chart_manager.total_pe_premium:.2f}")
-    print(f"  • Total Combined: ₹{chart_manager.total_combined_premium:.2f}")
 
     print(f"\n📊 TRADING SETTINGS:")
     print(f"  • Shooting Star Detection: {TIMEFRAME_MIN} minute candles ON COMBINED PREMIUM")
