@@ -356,11 +356,11 @@ class CustomizablePremiumChartManager:
         for distance in distances:
             atm_strike = round(index_ltp / strike_interval) * strike_interval
 
-            if distance < 0:
-                target_strike = atm_strike + (abs(distance) * strike_interval)
+            if distance < 0:  # Negative distance = ITM for Calls (lower strike)
+                target_strike = atm_strike - (abs(distance) * strike_interval)
                 strike_type = "ITM"
-            elif distance > 0:
-                target_strike = atm_strike - (distance * strike_interval)
+            elif distance > 0:  # Positive distance = OTM for Calls (higher strike)
+                target_strike = atm_strike + (distance * strike_interval)
                 strike_type = "OTM"
             else:
                 target_strike = atm_strike
@@ -1208,12 +1208,15 @@ def main():
     TRACK_COMBINED_PREMIUM = True
     dry_run = args.dry_run or (not HAS_FYERS)
 
-    # ---- Automatically determine strike choice type ----
+    # ---- Determine strike choice type, respecting global default ----
     is_custom_strike_mode = any([args.ce_custom, args.pe_custom, args.both_custom])
+    is_distance_strike_mode = any([args.ce_distances, args.pe_distances, args.both_distances])
 
+    # Only override the global default if specific command-line arguments are provided.
+    # If no strike-related args are given, the global STRIKE_CHOICE_TYPE from the top of the file is used.
     if is_custom_strike_mode:
         STRIKE_CHOICE_TYPE = "custom"
-    else:
+    elif is_distance_strike_mode:
         STRIKE_CHOICE_TYPE = "distance"
 
     # ---- Parse strike distances or custom strikes ----
