@@ -396,12 +396,12 @@ class CustomizablePremiumChartManager:
         for distance in distances:
             atm_strike = round(index_ltp / strike_interval) * strike_interval
 
-            if distance < 0:
-                target_strike = atm_strike + (abs(distance) * strike_interval)
-                strike_type = "ITM"
-            elif distance > 0:
-                target_strike = atm_strike - (distance * strike_interval)
+            if distance < 0:  # Negative distance = Lower strike (OTM for Puts)
+                target_strike = atm_strike - (abs(distance) * strike_interval)
                 strike_type = "OTM"
+            elif distance > 0:  # Positive distance = Higher strike (ITM for Puts)
+                target_strike = atm_strike + (distance * strike_interval)
+                strike_type = "ITM"
             else:
                 target_strike = atm_strike
                 strike_type = "ATM"
