@@ -30,6 +30,7 @@ try:
     from fyers_apiv3.FyersWebsocket import data_ws
 except Exception as e:
     HAS_FYERS = False
+    print(f"DEBUG: Import failed with error: {e}")
     print(
         f"⚠️ fyers_apiv3 not available — running in dry-run mode with mocks. Install the real package to enable live trading.")
 
@@ -165,12 +166,14 @@ def get_lot_size(symbol: str) -> int:
 
     try:
         exchange, _ = symbol.split(':', 1)
+        lot_col = 3 # Default for NSE/BSE
         if exchange == 'NSE':
             url = 'https://public.fyers.in/sym_details/NSE_FO.csv'
         elif exchange == 'BSE':
             url = 'https://public.fyers.in/sym_details/BSE_FO.csv'
         elif exchange == 'MCX':
             url = 'https://public.fyers.in/sym_details/MCX_COM.csv'
+            lot_col = 2 # Corrected column for MCX
         else:
             print(f"⚠️ Unknown exchange {exchange} for {symbol}, using fallback 1")
             return 1
@@ -183,9 +186,8 @@ def get_lot_size(symbol: str) -> int:
         else:
             # Read CSV without headers (positional columns)
             df = pd.read_csv(io.StringIO(resp.text), header=None)
-            # Fyers symbol is in column 9 (0-indexed), Lot Size in column 3
+            # Fyers symbol is in column 9 (0-indexed), Lot Size column is now dynamic
             symbol_col = 9
-            lot_col = 3
             matching_row = df[df.iloc[:, symbol_col] == symbol]
             if not matching_row.empty:
                 lot_size = int(matching_row.iloc[0, lot_col])
