@@ -1,11 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-Red-ShootingStar / Red-Pinbar NEXT-candle first-touch breakout (RED candle only)
-WITH REAL-TIME OPTION MANAGEMENT AND CORRECT LOT SIZES
-INCLUDING BSE:SENSEX-INDEX SUPPORT
-WITH CUSTOMIZABLE STRIKE DISTANCE (ITM/ATM/OTM)
-UPDATED: More realistic shooting star geometry (50-80% upper wick, 5-30% body, 0-25% lower wick)
-WITH FIXED MARGIN SHORTFALL HANDLING
+Red-ShootingStar / Red-Pinbar Strategy for NSE Stocks & MCX Futures
+
+This script identifies the "Red Shooting Star" candlestick pattern on a given
+watchlist of NSE equities and MCX futures. It then enters a short position on
+the breakout of the signal candle's low on the next candle.
+
+Features:
+- Trades a mixed watchlist of NSE stocks and MCX futures.
+- Implements separate trading hours for NSE and MCX.
+- Uses hardcoded lot sizes for MCX futures for reliability.
+- Supports carry-forward (CNC) positions for NSE stocks by saving and
+  loading the trade state.
+- Includes a dry-run mode for testing without placing live orders.
 """
 import os
 import sys
@@ -192,24 +199,9 @@ FORCE_CLOSED_ALL = False
 FORCE_CLOSED_ALL_MCX = False
 
 LOG_FILE = "trade_log.csv"
-STATE_DUMP = "symbol_states.json"
-PARTIAL_CANDLES_FILE = "partial_candles.json"
 
 # Default product type: "CNC" (delivery) or "Intraday"
 PRODUCT_TYPE = "CNC"
-
-ALLOC_DEFAULT = 1000.0
-ALLOC_MAP = {}
-
-SL_MODE = "signal_low"  # "signal_low" or "swing_low"
-SWING_LOOKBACK = 5  # used for swing-low
-SWING_HIGH_LOOKBACK = 150  # used for target swing-high
-
-MAX_CONCURRENT_POS = 3
-DAILY_MAX_LOSS = 50000.0
-TRADING_ENABLED = True
-MAX_EXIT_RETRIES = 3
-EXIT_RETRY_COOLDOWN_SECONDS = 10
 
 # Timezone (IST)
 TIMEZONE = "Asia/Kolkata"
@@ -227,8 +219,6 @@ MAX_REAUTH_ATTEMPTS = 3
 # ===================== SMALL CANDLE GUARDS =====================
 MIN_RANGE_PCT = 0.0015  # ignore if (H-L)/Close < 0.15%
 MIN_BODY_TICKS = 0  # optional minimum body size; 0 disables
-
-
 # ===================== IO HELPERS =====================
 def _read_json(path, default=None):
     try:
@@ -243,7 +233,24 @@ def _write_json(path, data):
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
 
-    # ===================== LOGIN & TOKEN MGMT =====================
+# ===================== STATE MANAGEMENT =====================
+def save_state():
+    """Saves the active_trades dictionary to a file."""
+    try:
+        _write_json("active_trades.json", active_trades)
+        print(f"[{dt.datetime.now():%H:%M:%S}] ✅ State saved successfully.")
+    except Exception as e:
+        print(f"[{dt.datetime.now():%H:%M:%S}] ❌ Error saving state: {e}")
+
+def load_state():
+    """Loads the active_trades dictionary from a file."""
+    global active_trades
+    loaded_trades = _read_json("active_trades.json")
+    if loaded_trades:
+        active_trades = loaded_trades
+        print(f"[{dt.datetime.now():%H:%M:%S}] ✅ State loaded successfully. {len(active_trades)} active trades restored.")
+
+# ===================== LOGIN & TOKEN MGMT =====================
 
 
 def load_creds():
@@ -444,6 +451,12 @@ def has_open_positions() -> bool:
 
 
 def save_trade(sym, entry, sl, tgt, qty_lots, side=-1, lot_size=1, order_id=""):
+    # Determine product type based on exchange
+    if sym.startswith("MCX:"):
+        product_type = "INTRADAY"  # MCX is always INTRADAY
+    else:
+        product_type = PRODUCT_TYPE # For NSE, use global setting (CNC or INTRADAY)
+
     row = {
         "Datetime": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "Symbol": sym,
@@ -454,7 +467,8 @@ def save_trade(sym, entry, sl, tgt, qty_lots, side=-1, lot_size=1, order_id=""):
         "Lot Size": int(lot_size),  # Shares per lot
         "Total Shares": int(qty_lots * lot_size),
         "Side": "SHORT" if side == -1 else "LONG",
-        "Order ID": order_id
+        "Order ID": order_id,
+        "Product Type": product_type
     }
     pd.DataFrame([row]).to_csv(
         "trade_log.csv",
@@ -471,8 +485,10 @@ def save_trade(sym, entry, sl, tgt, qty_lots, side=-1, lot_size=1, order_id=""):
         "side": side,
         "lot_size": lot_size,
         "order_id": order_id,
-        "order_placed_successfully": True if order_id else False
+        "order_placed_successfully": True if order_id else False,
+        "productType": product_type
     }
+    save_state()
 
 
 # ===================== CANDLE BUILD STATE & LTP CACHE =====================
@@ -674,7 +690,7 @@ def monitor_loop(fy, dry_run=False):
             # 1) Force-exit non-MCX open trades at or after EXIT_ALL_TIME (run once)
             if (not FORCE_CLOSED_ALL) and (now_time >= EXIT_ALL_TIME):
                 # collect non-MCX trades
-                non_mcx_trades = [s for s in list(active_trades.keys()) if not s.startswith("MCX:")]
+                non_mcx_trades = [s for s, t in active_trades.items() if not s.startswith("MCX:") and t.get("productType") != "CNC"]
                 if non_mcx_trades:
                     print(f"[{now_dt:%H:%M:%S}] ⏳ EXIT_ALL (non-MCX) triggered — closing {len(non_mcx_trades)} open non-MCX trades")
                     for sym in non_mcx_trades:
@@ -691,6 +707,7 @@ def monitor_loop(fy, dry_run=False):
                         active_trades[sym]["status"] = "closed"
                         active_trades.pop(sym, None)
                     trigger.clear()
+                    save_state()
                 else:
                     print(f"[{now_dt:%H:%M:%S}] ⏳ EXIT_ALL (non-MCX) triggered but no open non-MCX trades.")
                 FORCE_CLOSED_ALL = True
@@ -714,6 +731,7 @@ def monitor_loop(fy, dry_run=False):
                         active_trades[sym]["status"] = "closed"
                         active_trades.pop(sym, None)
                     trigger.clear()
+                    save_state()
                 else:
                     print(f"[{now_dt:%H:%M:%S}] ⏳ EXIT_ALL (MCX) triggered but no open MCX trades.")
                 FORCE_CLOSED_ALL_MCX = True
@@ -746,6 +764,7 @@ def monitor_loop(fy, dry_run=False):
                             exit_short_by_buy_market(fy, sym, qty_lots, lot_size, dry_run=dry_run)
                             active_trades[sym]["status"] = "closed"
                             active_trades.pop(sym, None)
+                            save_state()
                         elif ltp <= tgt:
                             print(
                                 f"[{dt.datetime.now():%H:%M:%S}] 🎯 TARGET HIT {sym} @ {ltp:.2f} → BUY market to cover (exit)")
@@ -753,6 +772,7 @@ def monitor_loop(fy, dry_run=False):
                             exit_short_by_buy_market(fy, sym, qty_lots, lot_size, dry_run=dry_run)
                             active_trades[sym]["status"] = "closed"
                             active_trades.pop(sym, None)
+                            save_state()
         except Exception as e:
             print(f"⚠️ Monitor loop error: {e}")
         time.sleep(1.5)
@@ -761,6 +781,8 @@ def monitor_loop(fy, dry_run=False):
 
 def main():
     global TIMEFRAME_MIN, R_MULTIPLIER
+
+    load_state()
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--tf", type=int, default=TIMEFRAME_MIN, help="Timeframe in minutes (e.g., 5, 15, 60)")
