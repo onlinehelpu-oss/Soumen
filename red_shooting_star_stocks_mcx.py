@@ -148,10 +148,17 @@ SYMBOLS = [
 ]
 
 # ===================== LOT SIZE MANAGEMENT =====================
+# Hardcoded lot sizes for MCX as the Fyers CSV is unreliable
+MCX_LOT_SIZES = {
+    "SILVERMIC": 1,
+    "CRUDEOILM": 10,
+    "NATGASMINI": 250,
+}
+
 lot_cache = {} # Cache for symbol lot sizes
 
 def get_lot_size(symbol: str) -> int:
-    """Fetch real-time lot size from Fyers Symbol Master CSVs."""
+    """Fetch or determine the lot size for a given symbol."""
     if symbol in lot_cache:
         return lot_cache[symbol]
 
@@ -160,48 +167,27 @@ def get_lot_size(symbol: str) -> int:
         lot_cache[symbol] = 1
         return 1
 
-    if not HAS_FYERS:
-        print(f"⚠️ Mock mode: Using fallback lot size 1 for {symbol}")
+    # For MCX, use hardcoded values
+    if symbol.startswith('MCX:'):
+        # Extract base symbol, e.g., 'CRUDEOILM' from 'MCX:CRUDEOILM26JANFUT'
+        clean_symbol = symbol.split(':')[1]
+        match = re.match(r'([A-Z]+)', clean_symbol)
+        if match:
+            base_symbol = match.group(1)
+            if base_symbol in MCX_LOT_SIZES:
+                lot_size = MCX_LOT_SIZES[base_symbol]
+                print(f"✅ Using hardcoded lot size {lot_size} for {symbol}")
+                lot_cache[symbol] = lot_size
+                return lot_size
+
+        print(f"⚠️ Unknown MCX symbol '{symbol}'. Using fallback lot size 1.")
+        lot_cache[symbol] = 1
         return 1
 
-    try:
-        exchange, _ = symbol.split(':', 1)
-        lot_col = 3 # Default for NSE/BSE
-        if exchange == 'NSE':
-            url = 'https://public.fyers.in/sym_details/NSE_FO.csv'
-        elif exchange == 'BSE':
-            url = 'https://public.fyers.in/sym_details/BSE_FO.csv'
-        elif exchange == 'MCX':
-            url = 'https://public.fyers.in/sym_details/MCX_COM.csv'
-            lot_col = 2 # Corrected column for MCX
-        else:
-            print(f"⚠️ Unknown exchange {exchange} for {symbol}, using fallback 1")
-            return 1
-
-        print(f"📡 Fetching lot size for {symbol} from {url}...")
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200:
-            print(f"⚠️ Failed to fetch master CSV: {resp.status_code}, using fallback")
-            lot_size = 1
-        else:
-            # Read CSV without headers (positional columns)
-            df = pd.read_csv(io.StringIO(resp.text), header=None)
-            # Fyers symbol is in column 9 (0-indexed), Lot Size column is now dynamic
-            symbol_col = 9
-            matching_row = df[df.iloc[:, symbol_col] == symbol]
-            if not matching_row.empty:
-                lot_size = int(matching_row.iloc[0, lot_col])
-                print(f"✅ Fetched lot size {lot_size} for {symbol}")
-            else:
-                print(f"⚠️ Symbol {symbol} not found in master, using fallback 1")
-                lot_size = 1
-
-        lot_cache[symbol] = lot_size
-        return lot_size
-
-    except Exception as e:
-        print(f"❌ Error fetching lot size for {symbol}: {e}, using fallback 1")
-        return 1
+    # Fallback for any other instrument type
+    print(f"⚠️ Could not determine lot size for '{symbol}'. Using fallback lot size 1.")
+    lot_cache[symbol] = 1
+    return 1
 
 
 # ===================== TIME/ENTRY/EXIT RULES =====================
