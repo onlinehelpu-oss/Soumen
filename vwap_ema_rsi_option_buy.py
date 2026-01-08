@@ -931,10 +931,17 @@ def evaluate_on_new_candle(st: SymbolState):
 
             # EXIT SIGNAL (RSI) - Based on spot price
     elif st.status == "position":
-        rsi_exit_triggered = RSI_EXIT_MIN <= rsi_val <= RSI_EXIT_MAX
+        rsi_profit_taking = RSI_EXIT_MIN <= rsi_val <= RSI_EXIT_MAX
+        rsi_stop_loss = rsi_val < RSI_ENTRY_MIN
+        exit_reason = None
 
-        if rsi_exit_triggered and is_market_hours():
-            print(f"\n[{st.symbol}] RSI EXIT TRIGGERED on candle close: RSI {rsi_val:.2f} is between {RSI_EXIT_MIN}-{RSI_EXIT_MAX}")
+        if rsi_profit_taking:
+            exit_reason = f"RSI PROFIT TAKE on candle close: RSI {rsi_val:.2f} is between {RSI_EXIT_MIN}-{RSI_EXIT_MAX}"
+        elif rsi_stop_loss:
+            exit_reason = f"RSI STOP LOSS on candle close: RSI {rsi_val:.2f} < {RSI_ENTRY_MIN}"
+
+        if exit_reason and is_market_hours():
+            print(f"\n[{st.symbol}] {exit_reason}")
             try:
                 resp = place_market_order(st.option_symbol, st.qty, side=-1)
                 if isinstance(resp, dict) and resp.get("s") == "ok":
