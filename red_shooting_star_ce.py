@@ -1147,7 +1147,7 @@ def sync_with_broker_positions(fy, dry_run=False):
         return
 
     try:
-        print("🔄 Syncing positions with broker...")
+        # print("🔄 Syncing positions with broker...") # Silenced as per user request
         response = fy.positions()
         if response.get('s') != 'ok':
             print(f"⚠️ Broker sync failed: {response.get('message', 'Unknown error')}")
