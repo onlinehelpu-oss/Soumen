@@ -204,8 +204,11 @@ FORCE_CLOSED_ALL_MCX = False
 
 LOG_FILE = "trade_log.csv"
 
-# Default product type: "CNC" (delivery) or "Intraday"
-PRODUCT_TYPE = "CNC"
+# Product type for NSE stocks ("INTRADAY" or "CNC")
+STOCK_PRODUCT_TYPE = "INTRADAY"
+
+# Product type for MCX futures ("INTRADAY", "MARGIN", or "NRML")
+MCX_PRODUCT_TYPE = "INTRADAY"
 
 # Timezone (IST)
 TIMEZONE = "Asia/Kolkata"
@@ -398,9 +401,9 @@ def place_order(fy, sym: str, side: int, qty: int, tag: str, dry_run=False) -> D
 
     # Determine product type based on exchange
     if sym.startswith("MCX:"):
-        product_type = "INTRADAY"  # MCX is always INTRADAY
+        product_type = MCX_PRODUCT_TYPE
     else:
-        product_type = PRODUCT_TYPE # For NSE, use global setting (CNC or INTRADAY)
+        product_type = STOCK_PRODUCT_TYPE
 
     payload = {
         "symbol": sym,
@@ -457,9 +460,9 @@ def has_open_positions() -> bool:
 def save_trade(sym, entry, sl, tgt, qty_lots, side=-1, lot_size=1, order_id=""):
     # Determine product type based on exchange
     if sym.startswith("MCX:"):
-        product_type = "INTRADAY"  # MCX is always INTRADAY
+        product_type = MCX_PRODUCT_TYPE
     else:
-        product_type = PRODUCT_TYPE # For NSE, use global setting (CNC or INTRADAY)
+        product_type = STOCK_PRODUCT_TYPE
 
     row = {
         "Datetime": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -891,7 +894,7 @@ def main():
     print("🎯 RED-SHOOTING STAR STRATEGY - REAL-TIME")
     print("=" * 70)
     print(f"📊 LOT SIZES: NSE Equities = 1, MCX Futures = Hardcoded")
-    print(f"📊 PRODUCT TYPE: {PRODUCT_TYPE} for NSE, INTRADAY for MCX")
+    print(f"📊 PRODUCT TYPE: {STOCK_PRODUCT_TYPE} for NSE, {MCX_PRODUCT_TYPE} for MCX")
     print(f"📊 CANDLE GEOMETRY:")
     print(f"   Upper Wick: {UPPER_WICK_MIN}-{UPPER_WICK_MAX}% (Clear rejection)")
     print(f"   Body: {BODY_MIN}-{BODY_MAX}% (Small-medium body)")
