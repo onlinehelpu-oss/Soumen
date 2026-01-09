@@ -675,7 +675,7 @@ class RealTimeOptionManager:
 
         return options_data
 
-    # ===================== TIME/ENTRY/EXIT RULES =====================
+        # ===================== TIME/ENTRY/EXIT RULES =====================
 
 
 ENTRY_BUFFER = 0.05  # buffer below signal low for breakout
@@ -702,6 +702,7 @@ def _write_json(path, data):
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
 
+
 def load_active_trades():
     """Loads active trades from the JSON file."""
     global active_trades
@@ -709,6 +710,7 @@ def load_active_trades():
         active_trades = _read_json(ACTIVE_TRADES_FILE, {})
         if active_trades:
             print(f"✅ Loaded {len(active_trades)} active trade(s) from '{ACTIVE_TRADES_FILE}'.")
+
 
 def save_active_trades():
     """Saves the current active_trades dictionary to the JSON file."""
@@ -1141,6 +1143,8 @@ def make_onmsg(fy, option_manager: RealTimeOptionManager, options_data: Dict, dr
                 trigger.pop(sym, None)
 
     return onmsg
+
+
 def sync_with_broker_positions(fy, dry_run=False):
     """Compares Fyers positions with local state and removes manually closed trades."""
     if dry_run or not HAS_FYERS:
@@ -1148,7 +1152,7 @@ def sync_with_broker_positions(fy, dry_run=False):
         return
 
     try:
-        print("🔄 Syncing positions with broker...")
+        # print("🔄 Syncing positions with broker...") # Silenced as per user request
         response = fy.positions()
         if response.get('s') != 'ok':
             print(f"⚠️ Broker sync failed: {response.get('message', 'Unknown error')}")
@@ -1156,7 +1160,8 @@ def sync_with_broker_positions(fy, dry_run=False):
 
         net_positions = response.get('netPositions', [])
         # Only consider positions with positive net quantity, as closed positions can linger with qty 0
-        broker_symbols = {pos['symbol'] for pos in net_positions if pos.get('symbol') and int(pos.get('netQty', 0)) != 0}
+        broker_symbols = {pos['symbol'] for pos in net_positions if
+                          pos.get('symbol') and int(pos.get('netQty', 0)) != 0}
 
         bot_symbols = list(active_trades.keys())
         trades_changed = False
@@ -1173,6 +1178,7 @@ def sync_with_broker_positions(fy, dry_run=False):
 
     except Exception as e:
         print(f"🚨 Error during broker sync: {e}")
+
 
 # ===================== EXIT MONITOR (for SHORT positions) with FORCE-EXIT =====================
 def monitor_loop(fy, option_manager: RealTimeOptionManager, options_data: Dict, strike_distance: int, dry_run=False):
@@ -1260,7 +1266,7 @@ def monitor_loop(fy, option_manager: RealTimeOptionManager, options_data: Dict, 
             print(f"⚠️ Monitor loop error: {e}")
         time.sleep(1.5)
 
-    # ===================== MAIN =====================
+        # ===================== MAIN =====================
 
 
 def main():
@@ -1295,10 +1301,10 @@ def main():
         access_token = "MOCK_ACCESS"
         fy = fyersModel.FyersModel(client_id=client_id, token=access_token, log_path=".")
 
-    # Load any existing trades from previous sessions
+        # Load any existing trades from previous sessions
     load_active_trades()
 
-        # Initialize real-time option manager
+    # Initialize real-time option manager
     option_manager = RealTimeOptionManager(fy)
 
     print("\n🎯 BUILDING REAL-TIME OPTION WATCHLIST...")
