@@ -124,10 +124,11 @@ LOWER_WICK_MAX = 25  # was 12 (0-25% → Permits small lower shadows)
 ONE_POSITION_AT_A_TIME = True
 
 # ===================== PRODUCT TYPE SETTINGS =====================
-# "NRML" for carry-forward options/futures
+# "MARGIN" for carry-forward options/futures (F&O)
 # "CNC" for carry-forward equity (stocks)
 # "INTRADAY" for intraday-only trades (squared off same day)
-PRODUCT_TYPE = "NRML"
+# "MTF" for Margin Trading Facility (equity only)
+PRODUCT_TYPE = "MARGIN"
 
 # Tick setup (NSE equities typically 0.05)
 TICK_SIZE = 0.05
