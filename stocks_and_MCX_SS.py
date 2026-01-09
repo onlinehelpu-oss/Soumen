@@ -65,6 +65,10 @@ except Exception as e:
         def symbol_details(self, payload):
             return {"s": "ok", "d": {payload.get("symbol"): {"lot_size": 65}}}
 
+        def positions(self):
+            print("[MOCK] positions() -> returning empty list")
+            return {"s": "ok", "netPositions": []}
+
 
     class MockDataSocket:
         def __init__(self, access_token=None, log_path=None, litemode=False, write_to_file=False, reconnect=True,
@@ -679,13 +683,61 @@ def make_onmsg(fy, dry_run=False):
     return onmsg
 
 
+def sync_positions_with_broker(fy):
+    """
+    Checks Fyers positions and removes any trades from active_trades
+    that are no longer open. This handles manual closing.
+    """
+    global active_trades
+    try:
+        response = fy.positions()
+        if response.get('s') != 'ok':
+            print(f"[{dt.datetime.now():%H:%M:%S}] ⚠️ Could not fetch broker positions: {response.get('message')}")
+            return False
+
+        # Create a set of symbols for open positions at the broker
+        broker_open_symbols = {
+            pos['symbol'] for pos in response.get('netPositions', [])
+            if pos.get('netQty', 0) != 0
+        }
+
+        # Find trades in memory that are no longer open at the broker
+        manually_closed_trades = [
+            sym for sym, trade in active_trades.items()
+            if trade['status'] == 'open' and sym not in broker_open_symbols
+        ]
+
+        if manually_closed_trades:
+            print(f"[{dt.datetime.now():%H:%M:%S}]  Detected {len(manually_closed_trades)} manually closed trade(s). Syncing state...")
+            for sym in manually_closed_trades:
+                print(f"    - Removing {sym} from active trades.")
+                active_trades.pop(sym, None)
+
+            # Return True to indicate that the state has changed
+            return True
+
+    except Exception as e:
+        print(f"[{dt.datetime.now():%H:%M:%S}] ❌ Error syncing positions: {e}")
+
+    return False
+
 # ===================== EXIT MONITOR (for SHORT positions) with FORCE-EXIT =====================
 def monitor_loop(fy, dry_run=False):
     global FORCE_CLOSED_ALL, FORCE_CLOSED_ALL_MCX
+    last_sync = time.time()
+    sync_interval = 60 # Sync every 60 seconds
+
     while True:
         try:
+            now = time.time()
             now_dt = dt.datetime.now()
             now_time = now_dt.time()
+
+            # Periodically sync with broker positions
+            if now - last_sync > sync_interval:
+                if sync_positions_with_broker(fy):
+                    save_state() # Save state if changes were made
+                last_sync = now
 
             # 1) Force-exit non-MCX open trades at or after EXIT_ALL_TIME (run once)
             if (not FORCE_CLOSED_ALL) and (now_time >= EXIT_ALL_TIME):
