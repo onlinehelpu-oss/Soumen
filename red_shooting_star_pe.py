@@ -106,9 +106,11 @@ LOT_MULTIPLIER = 1  # Number of lots to trade
 EPS = 1e-6
 
 # ===================== OPTION SETTINGS =====================
-# For CE selling, a negative distance means ITM (In-the-Money)
+# For PE selling, the logic is inverted relative to the underlying's price movement.
+# A negative distance means ITM (In-the-Money) -> Strike price HIGHER than spot.
 # -1 = 1 strike ITM, -2 = 2 strikes ITM etc.
 #  0 = ATM (At-the-Money)
+# A positive distance means OTM (Out-of-the-Money) -> Strike price LOWER than spot.
 # +1 = 1 strike OTM etc.
 STRIKE_DISTANCE = 0
 
@@ -295,7 +297,7 @@ class RealTimeOptionManager:
             print(f"❌ Error getting index LTP: {e}")
         return None
 
-    def get_option_details(self, index_symbol: str, strike_distance: int = 0, option_type: str = "CE") -> Optional[
+    def get_option_details(self, index_symbol: str, strike_distance: int = 0, option_type: str = "PE") -> Optional[
         Dict]:
         """Get real-time option details with correct lot size and expiry."""
         try:
@@ -320,11 +322,11 @@ class RealTimeOptionManager:
                 atm_strike = round(index_ltp / strike_interval) * strike_interval
 
                 if strike_distance < 0:
-                    # ITM: For CE selling, we want higher strikes
+                    # ITM for PE: Strike > Spot
                     target_strike = atm_strike + (abs(strike_distance) * strike_interval)
                     strike_type = "ITM"
                 else:
-                    # OTM: For CE selling, we want lower strikes
+                    # OTM for PE: Strike < Spot
                     target_strike = atm_strike - (strike_distance * strike_interval)
                     strike_type = "OTM"
 
@@ -663,7 +665,7 @@ class RealTimeOptionManager:
 
         for index in indices:
             print(f"\n🔍 Refreshing {index}...")
-            option_data = self.get_option_details(index, strike_distance, "CE")
+            option_data = self.get_option_details(index, strike_distance, "PE")
 
             if option_data:
                 options_data[option_data['symbol']] = option_data
@@ -1136,7 +1138,7 @@ def make_onmsg(fy, option_manager: RealTimeOptionManager, options_data: Dict, dr
                 t["triggered"] = True
                 trigger.pop(sym, None)
                 print(
-                    f"[{tick_time:%H:%M:%S}] ✅ SHORT-CE {sym} @ {entry_price:.2f}, SL={sl_price:.2f}, TGT={tgt_price:.2f}, QTY={qty_lots} lots ({qty_shares} shares), Lot Size={lot_size}")
+                    f"[{tick_time:%H:%M:%S}] ✅ SHORT-PE {sym} @ {entry_price:.2f}, SL={sl_price:.2f}, TGT={tgt_price:.2f}, QTY={qty_lots} lots ({qty_shares} shares), Lot Size={lot_size}")
             else:
                 # Order failed (margin shortfall or other error)
                 print(f"[{tick_time:%H:%M:%S}] ❌ Order NOT placed for {sym}, cleaning trigger...")
