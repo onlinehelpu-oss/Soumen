@@ -207,7 +207,7 @@ FORCE_CLOSED_ALL_MCX = False
 LOG_FILE = "trade_log.csv"
 
 # Product type for NSE stocks ("INTRADAY" or "CNC")
-STOCK_PRODUCT_TYPE = "CNC"
+STOCK_PRODUCT_TYPE = "INTRADAY"
 
 # Product type for MCX futures ("INTRADAY", "MARGIN", or "NRML")
 MCX_PRODUCT_TYPE = "MARGIN"
