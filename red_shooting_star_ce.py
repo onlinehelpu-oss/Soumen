@@ -123,6 +123,12 @@ LOWER_WICK_MAX = 25  # was 12 (0-25% → Permits small lower shadows)
 # One-position-at-a-time control
 ONE_POSITION_AT_A_TIME = True
 
+# ===================== PRODUCT TYPE SETTINGS =====================
+# "NRML" for carry-forward options/futures
+# "CNC" for carry-forward equity (stocks)
+# "INTRADAY" for intraday-only trades (squared off same day)
+PRODUCT_TYPE = "NRML"
+
 # Tick setup (NSE equities typically 0.05)
 TICK_SIZE = 0.05
 
@@ -854,7 +860,7 @@ def place_order(fy, sym: str, side: int, qty: int, tag: str, dry_run=False) -> D
         "qty": int(qty),  # CRITICAL: This must be TOTAL SHARES
         "type": 2,  # market
         "side": int(side),  # 1=buy, -1=sell
-        "productType": "NRML",
+        "productType": PRODUCT_TYPE,
         "validity": "DAY",
         "orderTag": clean_tag[:15] if clean_tag else ""
     }
