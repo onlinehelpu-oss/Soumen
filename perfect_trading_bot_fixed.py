@@ -580,33 +580,33 @@ class PerfectTradingBot:
         if not self.positions:
             return False
 
-        # Find position with highest profit percentage to sell
+        # Find position with the best return to sell, even if it's a loss.
         best_position_idx = -1
-        best_profit_pct = -100
+        best_profit_pct = -float('inf')
 
         for i, position in enumerate(self.positions):
             current_value = position['quantity'] * price
             cost = position['quantity'] * position['entry_price']
-            profit_pct = (current_value - cost) / cost * 100
+            profit_pct = (current_value - cost) / cost * 100 if cost > 0 else 0
 
-            # Only sell if we have reasonable profit
-            if profit_pct >= self.config.MIN_PROFIT_TO_SELL and profit_pct > best_profit_pct:
+            if profit_pct > best_profit_pct:
                 best_profit_pct = profit_pct
                 best_position_idx = i
 
         if best_position_idx >= 0:
             pnl = self._execute_sell(best_position_idx, price, "SIGNAL")
 
-            # CRITICAL FIX: Remove the position after selling
+            # The position is removed from the list after being sold.
             self.positions.pop(best_position_idx)
 
-            # Add reasons to trade history
+            # Add reasons to the trade history
             if self.trade_history:
                 self.trade_history[-1]['reasons'] = reasons
 
             return True
         else:
-            print(f"  ⚠️  No positions with minimum {self.config.MIN_PROFIT_TO_SELL}% profit to sell")
+            # This should not happen if there are positions.
+            print("  ⚠️  Signal to sell, but no position was selected.")
             return False
 
     def run_cycle(self) -> Dict:
