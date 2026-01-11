@@ -281,38 +281,63 @@ class PerfectMarketSimulator:
 # ============================================================================
 
 class MLTradingStrategy:
-    """Trading strategy powered by a trained ML model."""
+    """Trading strategy powered by a trained ML model with rule-based overrides."""
 
     def __init__(self, config: PerfectTradingConfig, model: RandomForestClassifier):
         self.config = config
         self.model = model
         self.feature_names = model.feature_names_in_
+        self.RSI_OVERRIDE_OVERSOLD = 25
+        self.RSI_OVERRIDE_OVERBOUGHT = 75
+
+    def _calculate_rsi(self, prices: List[float]) -> float:
+        """Calculates the current RSI value."""
+        if len(prices) < self.config.RSI_PERIOD + 1:
+            return 50.0
+
+        df = pd.DataFrame({'price': prices})
+        delta = df['price'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=self.config.RSI_PERIOD).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=self.config.RSI_PERIOD).mean()
+
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+
+        return rsi.iloc[-1] if not pd.isna(rsi.iloc[-1]) else 50.0
 
     def generate_signal(self, prices: List[float], has_positions: bool) -> Tuple[int, float, List[str]]:
-        """Generate a signal using the ML model."""
+        """Generate a signal using the ML model, with RSI overrides for HOLD signals."""
         if len(prices) < self.config.EMA_LONG + 10:
-            return 0, 0.5, ["Not enough data to generate features"]
+            return 0, 0.5, ["Not enough data for ML prediction"]
 
-        # 1. Create features for the current moment
+        # 1. Get ML model prediction
         features_df = create_features(prices, self.config)
         if features_df.empty:
             return 0, 0.5, ["Feature creation failed"]
 
-        # 2. Get the latest features and align them
-        latest_features = features_df.tail(1)
-        latest_features = latest_features.drop(columns=['price', 'target'], errors='ignore')
-        latest_features = latest_features[self.feature_names]
+        latest_features = features_df.tail(1).drop(columns=['price', 'target'], errors='ignore')[self.feature_names]
 
-        # 3. Get prediction and confidence (probability)
         prediction = self.model.predict(latest_features)[0]
         probabilities = self.model.predict_proba(latest_features)[0]
         confidence = max(probabilities)
-
-        # 4. Translate prediction to a signal
         signal = int(prediction)
-        reason = f"ML model prediction: {signal} (Confidence: {confidence:.1%})"
 
-        # 5. Apply logic based on current holdings and confidence
+        # 2. If ML signal is HOLD, check for rule-based overrides
+        if signal == 0:
+            rsi = self._calculate_rsi(prices)
+
+            # Override for BUY signal
+            if rsi < self.RSI_OVERRIDE_OVERSOLD and not has_positions:
+                override_reason = f"RSI OVERRIDE: Oversold ({rsi:.1f})"
+                return 1, 0.75, [override_reason] # Return BUY with fixed confidence
+
+            # Override for SELL signal
+            if rsi > self.RSI_OVERRIDE_OVERBOUGHT and has_positions:
+                override_reason = f"RSI OVERRIDE: Overbought ({rsi:.1f})"
+                return -1, 0.75, [override_reason] # Return SELL with fixed confidence
+
+        # 3. If no override, proceed with the original ML signal
+        reason = f"ML model prediction: {signal} (Confidence: {confidence:.1%})"
         if confidence < self.config.MIN_CONFIDENCE:
             return 0, confidence, [f"Confidence below threshold ({self.config.MIN_CONFIDENCE:.1%})"]
 
@@ -321,25 +346,17 @@ class MLTradingStrategy:
         elif signal == -1 and has_positions:
             return -1, confidence, [reason]
         else:
-            return 0, confidence, ["HOLD signal or logic prevents action"]
+            return 0, confidence, ["ML signal is HOLD, no override"]
 
     def calculate_indicators(self, prices: List[float]) -> Dict:
-        """This method is kept for compatibility but is less important for the ML model."""
-        # For display purposes, we can still calculate some basic indicators
-        df = pd.DataFrame({'price': prices})
-        rsi_val = 0
-        if len(df) > self.config.RSI_PERIOD:
-            delta = df['price'].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=self.config.RSI_PERIOD).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=self.config.RSI_PERIOD).mean()
-            rs = gain / loss
-            rsi_val = 100 - (100 / (1 + rs))
-            rsi_val = rsi_val.iloc[-1]
+        """Calculates indicators for display purposes."""
+        rsi_val = self._calculate_rsi(prices)
 
         return {
             'rsi': rsi_val,
             'price': prices[-1] if prices else 0,
-            'rsi_status': 'N/A for ML model',
+            'rsi_status': 'OVERBOUGHT' if rsi_val > self.RSI_OVERRIDE_OVERBOUGHT else \
+                          'OVERSOLD' if rsi_val < self.RSI_OVERRIDE_OVERSOLD else 'NEUTRAL',
             'trend': 'N/A for ML model'
         }
 
