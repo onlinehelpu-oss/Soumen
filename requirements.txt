@@ -4,3 +4,4 @@ scikit-learn
 joblib
 fyers_apiv3
 setuptools
+xgboost

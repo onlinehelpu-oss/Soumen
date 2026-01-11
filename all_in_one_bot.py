@@ -36,6 +36,7 @@ import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 import joblib
+import xgboost as xgb
 
 # Fyers API library
 from fyers_apiv3 import fyersModel
@@ -241,7 +242,7 @@ def train_and_save_model(features_df: pd.DataFrame):
     y = train_data['target']
 
     print(f"Training on {len(X)} data points...")
-    model = RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1, class_weight='balanced')
+    model = xgb.XGBClassifier(n_estimators=100, random_state=42, n_jobs=-1, use_label_encoder=False, eval_metric='logloss')
     model.fit(X, y)
 
     joblib.dump(model, BotConfig.MODEL_FILENAME)
