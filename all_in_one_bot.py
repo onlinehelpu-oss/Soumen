@@ -57,6 +57,9 @@ class BotConfig:
     TIME_FRAME = "1"  # 1-minute candles
     DAYS_OF_DATA_TO_DOWNLOAD = 60
     TRAIN_TEST_SPLIT_RATIO = 0.7
+    BACKTEST_STOP_LOSS_PCT = 0.2  # 0.2% stop loss for backtest trades
+    BACKTEST_TAKE_PROFIT_PCT = 0.4 # 0.4% take profit for backtest trades
+
 
     # --- Live Bot ---
     STRIKE_DISTANCE = 0  # 0 for ATM
@@ -224,12 +227,12 @@ def train_and_save_model(features_df: pd.DataFrame):
     print(f"Model trained and saved to '{BotConfig.MODEL_FILENAME}'")
 
 def run_backtest_simulation(features_df: pd.DataFrame):
-    """Runs a backtest on the unseen test data."""
-    print("\n--- Backtesting ---")
+    """Runs a backtest on the unseen test data with SL/TP logic."""
+    print("\n--- Backtesting with Stop-Loss and Take-Profit ---")
     model = joblib.load(BotConfig.MODEL_FILENAME)
 
     train_size = int(len(features_df) * BotConfig.TRAIN_TEST_SPLIT_RATIO)
-    test_data = features_df.iloc[train_size:]
+    test_data = features_df.iloc[train_size:].copy() # Use .copy() to avoid SettingWithCopyWarning
 
     if test_data.empty:
         print("ERROR: Not enough data for the testing period.")
@@ -237,26 +240,53 @@ def run_backtest_simulation(features_df: pd.DataFrame):
 
     X_test = test_data.drop(columns=['target', 'open', 'high', 'low', 'close', 'volume'])
     predictions = model.predict(X_test)
+    test_data['prediction'] = predictions
 
     balance = BotConfig.PAPER_BALANCE
-    pnl = 0
     trades = []
-    position = 0
+    position = 0  # 0: None, 1: Long, -1: Short
+    entry_price = 0.0
+    stop_loss = 0.0
+    take_profit = 0.0
 
-    for i in range(len(test_data) - 1):
-        signal = predictions[i]
+    for i in range(len(test_data)):
+        current_price = test_data['close'].iloc[i]
+        signal = test_data['prediction'].iloc[i]
+
+        # --- Position Monitoring ---
+        if position != 0:
+            exit_reason = None
+            # Check for SL/TP
+            if position == 1: # Long
+                if current_price <= stop_loss: exit_reason = "STOP_LOSS"
+                elif current_price >= take_profit: exit_reason = "TAKE_PROFIT"
+            elif position == -1: # Short
+                if current_price >= stop_loss: exit_reason = "STOP_LOSS"
+                elif current_price <= take_profit: exit_reason = "TAKE_PROFIT"
+
+            # Check for model-based exit signal
+            if not exit_reason and signal != position and signal != 0:
+                exit_reason = "SIGNAL_EXIT"
+
+            if exit_reason:
+                trade_pnl = (current_price - entry_price) * position
+                trades.append(trade_pnl)
+                position, entry_price, stop_loss, take_profit = 0, 0, 0, 0
+
+        # --- Entry Logic ---
         if position == 0 and signal != 0:
             position = signal
-            entry_price = test_data['close'].iloc[i]
-        elif position != 0 and signal != position:
-            exit_price = test_data['close'].iloc[i]
-            trade_pnl = (exit_price - entry_price) * position
-            pnl += trade_pnl
-            trades.append(trade_pnl)
-            position = 0
+            entry_price = current_price
+            if position == 1: # Long
+                stop_loss = entry_price * (1 - BotConfig.BACKTEST_STOP_LOSS_PCT / 100)
+                take_profit = entry_price * (1 + BotConfig.BACKTEST_TAKE_PROFIT_PCT / 100)
+            else: # Short
+                stop_loss = entry_price * (1 + BotConfig.BACKTEST_STOP_LOSS_PCT / 100)
+                take_profit = entry_price * (1 - BotConfig.BACKTEST_TAKE_PROFIT_PCT / 100)
 
+    total_pnl = sum(trades)
     print("Backtest complete.")
-    analyze_performance(pnl, trades, balance)
+    analyze_performance(total_pnl, trades, balance)
 
 def analyze_performance(total_pnl: float, trades: list, initial_balance: float):
     """Analyzes and prints the backtest performance."""
