@@ -38,6 +38,7 @@ def get_fyers_instance():
     try:
         with open(LOGIN_DETAILS_FILE, 'r') as f:
             details = json.load(f)
+
         client_id = details["client_id"]
         token_file = f"fyers_token_{client_id}.json"
 
@@ -48,6 +49,10 @@ def get_fyers_instance():
     except FileNotFoundError as e:
         print(f"ERROR: Could not find login/token file: {e}")
         print("Please run the live_options_bot.py once to generate the token.")
+        exit()
+    except KeyError as e:
+        print(f"ERROR: Missing key '{e.args[0]}' in '{LOGIN_DETAILS_FILE}'.")
+        print("Please ensure the file is formatted correctly with 'client_id', 'secret_key', and 'redirect_url'.")
         exit()
 
 def download_historical_data(fyers: fyersModel.FyersModel):

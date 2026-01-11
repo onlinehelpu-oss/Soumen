@@ -72,8 +72,9 @@ class FyersService:
             print(f"ERROR: Login file not found at '{self.config.LOGIN_DETAILS_FILE}'")
             print("Please create the file with your Fyers API credentials.")
             exit()
-        except KeyError:
-            print(f"ERROR: The login file is missing required keys (client_id, secret_key, redirect_url).")
+        except KeyError as e:
+            print(f"ERROR: Missing key '{e.args[0]}' in '{self.config.LOGIN_DETAILS_FILE}'.")
+            print("Please ensure the file is formatted correctly with 'client_id', 'secret_key', and 'redirect_url'.")
             exit()
 
     def _login(self):
