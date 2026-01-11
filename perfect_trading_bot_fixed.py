@@ -575,10 +575,13 @@ class PerfectTradingBot:
 
         return pnl
 
-    def execute_signal_sell(self, price: float, confidence: float, reasons: List[str]) -> bool:
-        """Execute sell based on trading signal."""
+    def execute_signal_sell(self, price: float, confidence: float, reasons: List[str]) -> Optional[int]:
+        """
+        Identifies the best position to sell based on a signal and executes the sell.
+        Returns the index of the sold position for removal.
+        """
         if not self.positions:
-            return False
+            return None
 
         # Find position with the best return to sell, even if it's a loss.
         best_position_idx = -1
@@ -594,20 +597,16 @@ class PerfectTradingBot:
                 best_position_idx = i
 
         if best_position_idx >= 0:
-            pnl = self._execute_sell(best_position_idx, price, "SIGNAL")
-
-            # The position is removed from the list after being sold.
-            self.positions.pop(best_position_idx)
+            self._execute_sell(best_position_idx, price, "SIGNAL")
 
             # Add reasons to the trade history
             if self.trade_history:
                 self.trade_history[-1]['reasons'] = reasons
 
-            return True
+            return best_position_idx  # Return index to be removed
         else:
-            # This should not happen if there are positions.
             print("  ⚠️  Signal to sell, but no position was selected.")
-            return False
+            return None
 
     def run_cycle(self) -> Dict:
         """Run one perfect trading cycle."""
@@ -632,13 +631,23 @@ class PerfectTradingBot:
         # Execute trade based on signal
         signal_executed = False
         signal_pnl = 0.0
+        positions_to_remove = []
 
-        if signal == 1 and len(self.positions) < self.config.MAX_POSITIONS:  # Buy if not at max positions
-            signal_executed = self.execute_buy(current_price, confidence, reasons)
+        if signal == 1 and len(self.positions) < self.config.MAX_POSITIONS:
+            if self.execute_buy(current_price, confidence, reasons):
+                signal_executed = True
         elif signal == -1 and has_positions:
-            signal_executed = self.execute_signal_sell(current_price, confidence, reasons)
-            if signal_executed and self.trade_history:
-                signal_pnl = self.trade_history[-1].get('pnl', 0.0)
+            sold_idx = self.execute_signal_sell(current_price, confidence, reasons)
+            if sold_idx is not None:
+                signal_executed = True
+                positions_to_remove.append(sold_idx)
+                if self.trade_history:
+                    signal_pnl = self.trade_history[-1].get('pnl', 0.0)
+
+        # Remove any positions sold by signal
+        for i in sorted(positions_to_remove, reverse=True):
+            if i < len(self.positions):
+                self.positions.pop(i)
 
         # Calculate portfolio value
         portfolio_value = self._calculate_portfolio_value(current_price)
