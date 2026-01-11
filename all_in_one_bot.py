@@ -301,7 +301,7 @@ class FyersService:
 
     def connect_to_websocket(self):
         ws_access_token = f"{self.client_id}:{self.access_token}"
-        fyers_ws = data_ws.FyersDataSocket(access_token=ws_access_token, on_connect=lambda: fyers_ws.subscribe(symbol=[self.config.SYMBOL]), on_message=self._on_ticks)
+        fyers_ws = data_ws.FyersDataSocket(access_token=ws_access_token, on_connect=lambda: fyers_ws.subscribe(symbols=[self.config.SYMBOL]), on_message=self._on_ticks)
         fyers_ws.connect()
 
     def _on_ticks(self, message):
