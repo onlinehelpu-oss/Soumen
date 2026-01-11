@@ -190,16 +190,37 @@ def download_historical_data(fyers: fyersModel.FyersModel):
         return pd.DataFrame()
 
 def create_backtest_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Creates features from the OHLCV data for backtesting."""
-    print("Engineering features for backtest...")
+    """Creates advanced features from the OHLCV data for backtesting."""
+    print("Engineering advanced features for backtest...")
+
+    # Basic returns
     df['returns'] = df['close'].pct_change()
 
+    # 1. Standard Indicators
     df['rsi'] = 100 - (100 / (1 + (df['returns'].rolling(window=14).apply(lambda x: x[x>0].mean()) / -df['returns'].rolling(window=14).apply(lambda x: x[x<0].mean()))))
     df['ema_short'] = df['close'].ewm(span=12, adjust=False).mean()
     df['ema_long'] = df['close'].ewm(span=26, adjust=False).mean()
     df['macd'] = df['ema_short'] - df['ema_long']
     df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
 
+    # 2. Volatility Features (Bollinger Bands)
+    window = 20
+    df['bollinger_mid'] = df['close'].rolling(window=window).mean()
+    df['bollinger_std'] = df['close'].rolling(window=window).std()
+    df['bollinger_upper'] = df['bollinger_mid'] + (df['bollinger_std'] * 2)
+    df['bollinger_lower'] = df['bollinger_mid'] - (df['bollinger_std'] * 2)
+    df['bollinger_width'] = df['bollinger_upper'] - df['bollinger_lower']
+
+    # 3. Time-Based Features
+    df['hour'] = df.index.hour
+    df['minute'] = df.index.minute
+
+    # 4. Lag Features (Momentum)
+    for lag in [1, 2, 3, 5]:
+        df[f'rsi_lag_{lag}'] = df['rsi'].shift(lag)
+        df[f'macd_lag_{lag}'] = df['macd'].shift(lag)
+
+    # --- Target ---
     lookahead_period = 5
     price_change = df['close'].shift(-lookahead_period) - df['close']
     df['target'] = np.sign(price_change)
@@ -339,14 +360,38 @@ class FyersService:
             self.underlying_ltp = message[0]['ltp']
 
 def create_live_features(price_history: list) -> pd.DataFrame:
-    """Creates features from a list of recent prices for the live bot."""
+    """Creates advanced features from a list of recent prices for the live bot."""
     df = pd.DataFrame({'close': price_history})
+    df.index = pd.to_datetime(df.index) # Ensure index is datetime
+
+    # Basic returns
     df['returns'] = df['close'].pct_change()
+
+    # 1. Standard Indicators
     df['rsi'] = 100 - (100 / (1 + (df['returns'].rolling(window=14).apply(lambda x: x[x>0].mean()) / -df['returns'].rolling(window=14).apply(lambda x: x[x<0].mean()))))
     df['ema_short'] = df['close'].ewm(span=12, adjust=False).mean()
     df['ema_long'] = df['close'].ewm(span=26, adjust=False).mean()
     df['macd'] = df['ema_short'] - df['ema_long']
     df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+
+    # 2. Volatility Features (Bollinger Bands)
+    window = 20
+    df['bollinger_mid'] = df['close'].rolling(window=window).mean()
+    df['bollinger_std'] = df['close'].rolling(window=window).std()
+    df['bollinger_upper'] = df['bollinger_mid'] + (df['bollinger_std'] * 2)
+    df['bollinger_lower'] = df['bollinger_mid'] - (df['bollinger_std'] * 2)
+    df['bollinger_width'] = df['bollinger_upper'] - df['bollinger_lower']
+
+    # 3. Time-Based Features
+    now = dt.now()
+    df['hour'] = now.hour
+    df['minute'] = now.minute
+
+    # 4. Lag Features (Momentum)
+    for lag in [1, 2, 3, 5]:
+        df[f'rsi_lag_{lag}'] = df['rsi'].shift(lag)
+        df[f'macd_lag_{lag}'] = df['macd'].shift(lag)
+
     return df.drop(columns=['close']).dropna()
 
 class MLStrategy:
