@@ -447,35 +447,55 @@ def main():
     """Main function to drive the bot's functionality."""
     parser = argparse.ArgumentParser(
         description="All-In-One ML Options Trading Bot",
-        formatter_class=argparse.RawTextHelpFormatter,
-        epilog="""
-Example Usage:
-  1. Setup: python %(prog)s setup --client_id YOUR_ID --secret_key YOUR_KEY --redirect_url YOUR_URL
-  2. Backtest: python %(prog)s backtest
-  3. Run Live Bot: python %(prog)s run
-"""
+        formatter_class=argparse.RawTextHelpFormatter
     )
 
     parser.add_argument(
         "mode",
+        nargs='?',  # Make the mode optional
         choices=["setup", "backtest", "run"],
-        help="The mode to run the script in."
+        help="Optional: The mode to run the script in (setup, backtest, run)."
     )
-
-    # Arguments for 'setup' mode
-    parser.add_argument("--client_id", help="Your Fyers API Client ID.")
-    parser.add_argument("--secret_key", help="Your Fyers API Secret Key.")
-    parser.add_argument("--redirect_url", help="Your Fyers API Redirect URL.")
 
     args = parser.parse_args()
 
-    print(f"--- Running in {args.mode.upper()} mode ---")
+    mode = args.mode
 
-    if args.mode == "setup":
-        setup_credentials(args)
-    elif args.mode == "backtest":
+    if not mode:
+        # --- Interactive Menu ---
+        print("\n--- Welcome to the All-In-One Trading Bot ---")
+        print("Please choose an option:")
+        print("  1. Setup Credentials")
+        print("  2. Run Backtester")
+        print("  3. Run Live Paper Trading Bot")
+
+        choice = input("Enter your choice (1-3): ")
+
+        if choice == '1':
+            mode = 'setup'
+        elif choice == '2':
+            mode = 'backtest'
+        elif choice == '3':
+            mode = 'run'
+        else:
+            print("Invalid choice. Exiting.")
+            return
+
+    print(f"\n--- Running in {mode.upper()} mode ---")
+
+    if mode == "setup":
+        print("\nPlease provide your Fyers API credentials.")
+        client_id = input("Enter Client ID: ")
+        secret_key = input("Enter Secret Key: ")
+        redirect_url = input("Enter Redirect URL: ")
+        # Create a simple object to mimic the args structure
+        setup_args = argparse.Namespace(client_id=client_id, secret_key=secret_key, redirect_url=redirect_url)
+        setup_credentials(setup_args)
+
+    elif mode == "backtest":
         run_backtester()
-    elif args.mode == "run":
+
+    elif mode == "run":
         run_live_bot()
 
 if __name__ == "__main__":
