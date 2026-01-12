@@ -63,6 +63,9 @@ class BotConfig:
     LOGIN_DETAILS_FILE = "fyers_login_details.json"
     MODEL_FILENAME = "real_options_model.joblib"
 
+    # --- Confidence Threshold ---
+    CONFIDENCE_THRESHOLD = 0.70  # Only take trades with > 70% model confidence
+
     # --- Backtester ---
     SYMBOL = "NSE:NIFTY50-INDEX"
     TIME_FRAME = "1"  # 1-minute candles
@@ -70,7 +73,7 @@ class BotConfig:
     TRAIN_TEST_SPLIT_RATIO = 0.7
     # Adjusted risk parameters for better performance
     BACKTEST_STOP_LOSS_PCT = 0.3  # Widened to avoid noise
-    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.15 # Tighter trail to lock in profits
+    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.25 # Loosened trail to let winners run
 
 
     # --- Live Bot ---
@@ -372,12 +375,25 @@ def run_backtest_simulation(features_df: pd.DataFrame):
     predictions_mapped = np.argmax(probs, axis=1)
     confidences = np.max(probs, axis=1)
 
-    # Filter by confidence threshold (0.60)
+    # Filter by confidence threshold & RSI Trend
     prediction_remap = {0: -1, 1: 0, 2: 1}
     final_predictions = []
-    for pred, conf in zip(predictions_mapped, confidences):
-        if conf >= 0.60:
-            final_predictions.append(prediction_remap[pred])
+
+    # Pre-fetch RSI for filtering
+    rsi_values = test_data['rsi'].values
+
+    for i, (pred, conf) in enumerate(zip(predictions_mapped, confidences)):
+        signal = prediction_remap[pred]
+        rsi = rsi_values[i]
+
+        # Logic: High Confidence AND Momentum Confirmation
+        if conf >= BotConfig.CONFIDENCE_THRESHOLD:
+            if signal == 1 and rsi > 55: # BUY CE context
+                final_predictions.append(1)
+            elif signal == -1 and rsi < 45: # BUY PE context
+                final_predictions.append(-1)
+            else:
+                final_predictions.append(0)
         else:
             final_predictions.append(0) # HOLD if low confidence
 
@@ -574,16 +590,22 @@ class MLStrategy:
             prediction_mapped = np.argmax(probs)
             confidence = probs[prediction_mapped]
 
-            # Only trade if confidence is high (> 60%)
-            if confidence < 0.60:
+            # 1. Check Confidence
+            if confidence < self.config.CONFIDENCE_THRESHOLD:
                 return "HOLD"
 
             # Remap it back: [0, 1, 2] -> [-1, 0, 1]
             prediction_remap = {0: -1, 1: 0, 2: 1}
             prediction = prediction_remap[prediction_mapped]
 
-            if prediction == 1: return "BUY_CE"
-            elif prediction == -1: return "BUY_PE"
+            # 2. Check RSI Trend Filter
+            current_rsi = features['rsi'].iloc[-1]
+
+            if prediction == 1 and current_rsi > 55:
+                return "BUY_CE"
+            elif prediction == -1 and current_rsi < 45:
+                return "BUY_PE"
+
         except Exception as e:
             print(f"Error in signal generation: {e}")
 
