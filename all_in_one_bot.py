@@ -64,7 +64,7 @@ class BotConfig:
     MODEL_FILENAME = "real_options_model.joblib"
 
     # --- Confidence Threshold ---
-    CONFIDENCE_THRESHOLD = 0.60  # Lowered to 0.60 to capture more trades, relying on RSI for safety
+    CONFIDENCE_THRESHOLD = 0.70  # Restored to 0.70 to prioritize high-quality signals
 
     # --- Backtester ---
     SYMBOL = "NSE:NIFTY50-INDEX"
@@ -72,8 +72,9 @@ class BotConfig:
     DAYS_OF_DATA_TO_DOWNLOAD = 60
     TRAIN_TEST_SPLIT_RATIO = 0.7
     # Adjusted risk parameters for better performance
-    BACKTEST_STOP_LOSS_PCT = 0.35  # Relaxed to 0.35% to allow for normal volatility
-    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.30 # Relaxed to 0.30% to capture larger moves
+    BACKTEST_STOP_LOSS_PCT = 0.25  # Tightened to 0.25% to minimize drawdowns
+    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.25 # Tightened to 0.25% to secure profits
+    BACKTEST_TAKE_PROFIT_PCT = 0.5  # New: Take profit at 0.5% (option scalping target)
 
 
     # --- Live Bot ---
@@ -391,11 +392,11 @@ def run_backtest_simulation(features_df: pd.DataFrame):
         signal = prediction_remap[pred]
         rsi = rsi_values[i]
 
-        # Logic: Confidence AND RSI Momentum (Removed strict EMA filter to increase frequency)
+        # Logic: Confidence AND Strong RSI Momentum (Restored strict filter)
         if conf >= BotConfig.CONFIDENCE_THRESHOLD:
-            if signal == 1 and rsi > 50: # BUY CE context (Lowered RSI threshold)
+            if signal == 1 and rsi > 55: # BUY CE context (Stronger Momentum)
                 final_predictions.append(1)
-            elif signal == -1 and rsi < 50: # BUY PE context (Raised RSI threshold)
+            elif signal == -1 and rsi < 45: # BUY PE context (Stronger Momentum)
                 final_predictions.append(-1)
             else:
                 final_predictions.append(0)
@@ -411,20 +412,26 @@ def run_backtest_simulation(features_df: pd.DataFrame):
         current_price = test_data['close'].iloc[i]
         signal = test_data['prediction'].iloc[i]
 
-        # --- Position Monitoring & Trailing Stop ---
+        # --- Position Monitoring & Trailing Stop & Take Profit ---
         if position != 0:
             exit_reason = None
             if position == 1: # Long
                 peak_price = max(peak_price, current_price)
                 new_stop_loss = peak_price * (1 - BotConfig.BACKTEST_TRAILING_STOP_LOSS_PCT / 100)
                 stop_loss = max(stop_loss, new_stop_loss)
+                take_profit_price = entry_price * (1 + BotConfig.BACKTEST_TAKE_PROFIT_PCT / 100)
+
                 if current_price <= stop_loss: exit_reason = "TRAIL_SL"
+                elif current_price >= take_profit_price: exit_reason = "TAKE_PROFIT"
 
             elif position == -1: # Short
                 peak_price = min(peak_price, current_price)
                 new_stop_loss = peak_price * (1 + BotConfig.BACKTEST_TRAILING_STOP_LOSS_PCT / 100)
                 stop_loss = min(stop_loss, new_stop_loss)
+                take_profit_price = entry_price * (1 - BotConfig.BACKTEST_TAKE_PROFIT_PCT / 100)
+
                 if current_price >= stop_loss: exit_reason = "TRAIL_SL"
+                elif current_price <= take_profit_price: exit_reason = "TAKE_PROFIT"
 
             if not exit_reason and signal != position and signal != 0:
                 exit_reason = "SIGNAL_EXIT"
@@ -603,12 +610,12 @@ class MLStrategy:
             prediction_remap = {0: -1, 1: 0, 2: 1}
             prediction = prediction_remap[prediction_mapped]
 
-            # 2. Check RSI Trend Filter (Simplified)
+            # 2. Check RSI Trend Filter (Stronger Momentum)
             current_rsi = features['rsi'].iloc[-1]
 
-            if prediction == 1 and current_rsi > 50: # BUY CE if RSI indicates uptrend
+            if prediction == 1 and current_rsi > 55: # BUY CE if RSI indicates strong uptrend
                 return "BUY_CE"
-            elif prediction == -1 and current_rsi < 50: # BUY PE if RSI indicates downtrend
+            elif prediction == -1 and current_rsi < 45: # BUY PE if RSI indicates strong downtrend
                 return "BUY_PE"
 
         except Exception as e:
