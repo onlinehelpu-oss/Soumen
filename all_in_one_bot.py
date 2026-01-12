@@ -76,6 +76,9 @@ class BotConfig:
     BACKTEST_TRAILING_STOP_LOSS_PCT = 0.25 # Tightened to 0.25% to secure profits
     BACKTEST_TAKE_PROFIT_PCT = 0.5  # New: Take profit at 0.5% (option scalping target)
 
+    # --- Ensemble Model Config ---
+    ENSEMBLE_VOTING = 'soft'
+
 
     # --- Live Bot ---
     STRIKE_DISTANCE = 0  # 0 for ATM
@@ -352,11 +355,21 @@ def train_and_save_model(features_df: pd.DataFrame):
     y_mapped = y.map({-1: 0, 0: 1, 1: 2})
 
     print(f"Training on {len(X)} data points...")
-    # Removed deprecated use_label_encoder parameter
-    model = xgb.XGBClassifier(n_estimators=100, random_state=42, n_jobs=-1, eval_metric='logloss')
-    model.fit(X, y_mapped)
 
-    joblib.dump(model, BotConfig.MODEL_FILENAME)
+    # Initialize Base Models
+    xgb_model = xgb.XGBClassifier(n_estimators=100, random_state=42, n_jobs=-1, eval_metric='logloss')
+    rf_model = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42, n_jobs=-1)
+
+    # Create Voting Classifier (Ensemble)
+    from sklearn.ensemble import VotingClassifier
+    voting_model = VotingClassifier(
+        estimators=[('xgb', xgb_model), ('rf', rf_model)],
+        voting='soft'
+    )
+
+    voting_model.fit(X, y_mapped)
+
+    joblib.dump(voting_model, BotConfig.MODEL_FILENAME)
     print(f"Model trained and saved to '{BotConfig.MODEL_FILENAME}'")
 
 def run_backtest_simulation(features_df: pd.DataFrame):
