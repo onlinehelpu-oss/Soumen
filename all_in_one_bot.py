@@ -31,9 +31,14 @@ import argparse
 import webbrowser
 import hashlib
 import requests
+import warnings
 from urllib.parse import urlparse, parse_qs, quote
 from datetime import datetime as dt, timedelta
 from typing import Optional
+
+# Suppress specific warnings
+warnings.filterwarnings("ignore", message=".*pkg_resources is deprecated.*")
+warnings.filterwarnings("ignore", category=UserWarning, module="xgboost")
 
 import pandas as pd
 import numpy as np
@@ -321,7 +326,8 @@ def train_and_save_model(features_df: pd.DataFrame):
     y_mapped = y.map({-1: 0, 0: 1, 1: 2})
 
     print(f"Training on {len(X)} data points...")
-    model = xgb.XGBClassifier(n_estimators=100, random_state=42, n_jobs=-1, use_label_encoder=False, eval_metric='logloss')
+    # Removed deprecated use_label_encoder parameter
+    model = xgb.XGBClassifier(n_estimators=100, random_state=42, n_jobs=-1, eval_metric='logloss')
     model.fit(X, y_mapped)
 
     joblib.dump(model, BotConfig.MODEL_FILENAME)
@@ -398,8 +404,13 @@ def analyze_performance(total_pnl: float, trades: list, initial_balance: float):
     losses = len(trades) - wins
     win_rate = (wins / len(trades) * 100) if trades else 0
 
+    avg_win = np.mean([t for t in trades if t > 0]) if wins > 0 else 0
+    avg_loss = np.mean([t for t in trades if t <= 0]) if losses > 0 else 0
+
     print(f"Total Trades: {len(trades)}")
     print(f"Win Rate: {win_rate:.2f}%")
+    print(f"Average Win: ₹{avg_win:,.2f}")
+    print(f"Average Loss: ₹{avg_loss:,.2f}")
     print(f"Total P&L: ₹{total_pnl:,.2f}")
     print(f"Return on Initial Capital: {(total_pnl / initial_balance * 100):.2f}%")
 
