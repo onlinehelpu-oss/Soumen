@@ -1,0 +1,5 @@
+{
+  "client_id": "DUMMY_ID",
+  "secret_key": "DUMMY_SECRET",
+  "redirect_url": "https://trade.fyers.in/api-login/redirect-url"
+}

@@ -1,1 +1,2 @@
 {"level":"DEBUG","location":"[get_call:140] fyersModel","message":{"Status Code":500,"API":"/profile"},"timestamp":"2026-01-12 15:02:58,067+0000","service":"FyersAPIRequest"}
+{"level":"DEBUG","location":"[get_call:140] fyersModel","message":{"Status Code":500,"API":"/profile"},"timestamp":"2026-01-12 17:23:09,697+0000","service":"FyersAPIRequest"}

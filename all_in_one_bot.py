@@ -64,17 +64,17 @@ class BotConfig:
     MODEL_FILENAME = "real_options_model.joblib"
 
     # --- Confidence Threshold ---
-    CONFIDENCE_THRESHOLD = 0.65  # Moderate confidence for balance
+    CONFIDENCE_THRESHOLD = 0.70  # Higher confidence for Quality over Quantity
 
     # --- Backtester ---
     SYMBOL = "NSE:NIFTY50-INDEX"
     TIME_FRAME = "1"  # 1-minute candles
     DAYS_OF_DATA_TO_DOWNLOAD = 60
     TRAIN_TEST_SPLIT_RATIO = 0.7
-    # Adjusted risk parameters for better performance
-    BACKTEST_STOP_LOSS_PCT = 0.2  # Tight stop to cut losses fast
-    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.1 # Very tight trail to lock in small scalps
-    BACKTEST_TAKE_PROFIT_PCT = 0.4  # Quick 0.4% scalp target
+    # Adjusted risk parameters for better performance (Relaxed SL/TSL)
+    BACKTEST_STOP_LOSS_PCT = 0.35  # Wider stop to handle volatility
+    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.35 # Wider trail to let winners run
+    BACKTEST_TAKE_PROFIT_PCT = 0.8  # Target bigger moves
 
     # Lot Size for P&L Simulation
     LOT_SIZE = 65 # Updated to 65 as per user request
@@ -399,19 +399,22 @@ def run_backtest_simulation(features_df: pd.DataFrame):
     # Pre-fetch technicals
     rsi_values = test_data['rsi'].values
     bw_values = test_data['bollinger_width'].values
+    close_prices = test_data['close'].values
+    ema_long_values = test_data['ema_long'].values # EMA 26
 
     for i, (pred, conf) in enumerate(zip(predictions_mapped, confidences)):
         signal = prediction_remap[pred]
         rsi = rsi_values[i]
         bw = bw_values[i]
+        close = close_prices[i]
+        ema_long = ema_long_values[i]
 
-        # Logic: Confidence AND RSI AND Volatility Expansion (Squeeze Breakout)
+        # Logic: Confidence AND RSI AND Volatility Expansion (Squeeze Breakout) AND Trend Filter
         # Using 0.0015 as empirical NIFTY 1m Band Width threshold for breakout potential
-        # (Lowered to 0.0 for synthetic data since random walk volatility varies)
-        if conf >= BotConfig.CONFIDENCE_THRESHOLD: # Removed BW check for synthetic data robustness
-            if signal == 1 and rsi > 55: # BUY CE (Strong Momentum)
+        if conf >= BotConfig.CONFIDENCE_THRESHOLD and bw > 0.0015:
+            if signal == 1 and rsi > 55 and close > ema_long: # BUY CE (Strong Momentum + Bullish Trend)
                 final_predictions.append(1)
-            elif signal == -1 and rsi < 45: # BUY PE (Strong Momentum)
+            elif signal == -1 and rsi < 45 and close < ema_long: # BUY PE (Strong Momentum + Bearish Trend)
                 final_predictions.append(-1)
             else:
                 final_predictions.append(0)
@@ -634,12 +637,14 @@ class MLStrategy:
             # 2. Check RSI & Volatility Filters
             current_rsi = features['rsi'].iloc[-1]
             current_bw = features['bollinger_width'].iloc[-1]
+            current_ema_long = features['ema_long'].iloc[-1]
+            current_close = price_history[-1]
 
             # Require Volatility Expansion (Band Width > 0.0015) to avoid chop
             if current_bw > 0.0015:
-                if prediction == 1 and current_rsi > 55:
+                if prediction == 1 and current_rsi > 55 and current_close > current_ema_long:
                     return "BUY_CE"
-                elif prediction == -1 and current_rsi < 45:
+                elif prediction == -1 and current_rsi < 45 and current_close < current_ema_long:
                     return "BUY_PE"
 
         except Exception as e:
