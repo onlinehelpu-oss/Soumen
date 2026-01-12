@@ -80,7 +80,8 @@ class BotConfig:
 
     # --- Session Timing ---
     SESSION_START_TIME = dt.now().replace(hour=9, minute=15, second=0, microsecond=0)
-    SESSION_END_TIME = dt.now().replace(hour=15, minute=30, second=0, microsecond=0)
+    # Extended to 23:59 to allow for after-hours testing/paper trading
+    SESSION_END_TIME = dt.now().replace(hour=23, minute=59, second=59, microsecond=0)
 
 
 # ============================================================================
@@ -600,6 +601,7 @@ class LiveOptionsBot:
             last_underlying_price = current_price
             time.sleep(15)
 
+        print("\n⏳ Session time ended.")
         self._show_paper_summary()
 
     def _open_paper_position(self, price: float, opt_type: str):
