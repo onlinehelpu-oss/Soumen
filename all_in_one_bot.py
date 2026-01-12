@@ -189,7 +189,10 @@ def get_fyers_instance():
         print("Please run 'setup' mode to create the file correctly.")
         sys.exit(1)
 
-    token_file = f"fyers_token_{client_id}.json"
+    # Use standard AccessToken directory structure for compatibility with other bots
+    tokens_dir = "AccessToken"
+    today_str = str(dt.now().date())
+    token_file = os.path.join(tokens_dir, f"{today_str}.json")
 
     # Try to load existing token
     access_token = None
@@ -214,6 +217,7 @@ def get_fyers_instance():
 
             if token_resp.get("access_token"):
                 access_token = token_resp["access_token"]
+                os.makedirs(tokens_dir, exist_ok=True)
                 with open(token_file, 'w') as f: json.dump(access_token, f)
             else:
                 print(f"ERROR: Failed to generate token: {token_resp}")
