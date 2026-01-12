@@ -75,7 +75,7 @@ class BotConfig:
     # --- Live Bot ---
     STRIKE_DISTANCE = 0  # 0 for ATM
     STOP_LOSS_PCT = 15.0  # % on option premium
-    TAKE_PROFIT_PCT = 30.0 # % on option premium
+    TAKE_PROFIT_PCT = 50.0 # % on option premium (Increased from 30.0 for higher profit potential)
     PAPER_BALANCE = 100000
 
     # --- Session Timing ---
