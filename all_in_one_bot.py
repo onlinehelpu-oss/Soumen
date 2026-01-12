@@ -241,9 +241,12 @@ def train_and_save_model(features_df: pd.DataFrame):
     X = train_data.drop(columns=['target', 'open', 'high', 'low', 'close', 'volume'])
     y = train_data['target']
 
+    # Remap labels for XGBoost: [-1, 0, 1] -> [0, 1, 2]
+    y_mapped = y.map({-1: 0, 0: 1, 1: 2})
+
     print(f"Training on {len(X)} data points...")
     model = xgb.XGBClassifier(n_estimators=100, random_state=42, n_jobs=-1, use_label_encoder=False, eval_metric='logloss')
-    model.fit(X, y)
+    model.fit(X, y_mapped)
 
     joblib.dump(model, BotConfig.MODEL_FILENAME)
     print(f"Model trained and saved to '{BotConfig.MODEL_FILENAME}'")
@@ -259,7 +262,11 @@ def run_backtest_simulation(features_df: pd.DataFrame):
     if test_data.empty: return
 
     X_test = test_data.drop(columns=['target', 'open', 'high', 'low', 'close', 'volume'])
-    test_data['prediction'] = model.predict(X_test)
+
+    # Get predictions and remap them back: [0, 1, 2] -> [-1, 0, 1]
+    predictions_mapped = model.predict(X_test)
+    prediction_remap = {0: -1, 1: 0, 2: 1}
+    test_data['prediction'] = [prediction_remap[p] for p in predictions_mapped]
 
     trades = []
     position, entry_price, stop_loss, peak_price = 0, 0.0, 0.0, 0.0
@@ -346,13 +353,41 @@ class FyersService:
         self.underlying_ltp = 0
 
     def connect_to_websocket(self):
+        """Initializes and connects to the Fyers Data WebSocket with detailed logging."""
         ws_access_token = f"{self.client_id}:{self.access_token}"
-        fyers_ws = data_ws.FyersDataSocket(access_token=ws_access_token, on_connect=lambda: fyers_ws.subscribe(symbols=[self.config.SYMBOL]), on_message=self._on_ticks)
-        fyers_ws.connect()
 
-    def _on_ticks(self, message):
-        if message and isinstance(message, list) and 'ltp' in message[0]:
-            self.underlying_ltp = message[0]['ltp']
+        # Define the callbacks with detailed logging
+        def on_connect():
+            print("✅ WebSocket Connected!")
+            print("Subscribing to symbols:", [self.config.SYMBOL])
+            fyers_ws.subscribe(symbols=[self.config.SYMBOL])
+
+        def on_close():
+            print("❌ WebSocket Closed.")
+
+        def on_error(message):
+            print(" WebSocket Error:", message)
+
+        def on_message(message):
+            """Callback function to handle incoming ticks."""
+            print("  [WS MSG]:", message) # Log every message
+            if 'ltp' in message:
+                self.underlying_ltp = message['ltp']
+            elif isinstance(message, list) and 'ltp' in message[0]:
+                self.underlying_ltp = message[0]['ltp']
+
+        # Initialize the WebSocket with the new callbacks
+        fyers_ws = data_ws.FyersDataSocket(
+            access_token=ws_access_token,
+            log_path="",
+            on_connect=on_connect,
+            on_close=on_close,
+            on_error=on_error,
+            on_message=on_message
+        )
+
+        print("🔌 Attempting to connect to WebSocket...")
+        fyers_ws.connect()
 
 def create_live_features(price_history: list) -> pd.DataFrame:
     """Creates advanced features from a list of recent prices for the live bot."""
@@ -399,7 +434,12 @@ class MLStrategy:
         if len(price_history) < 30: return "HOLD"
         features = create_live_features(price_history)
         if features.empty: return "HOLD"
-        prediction = self.model.predict(features.tail(1))[0]
+
+        # Get prediction and remap it back: [0, 1, 2] -> [-1, 0, 1]
+        prediction_mapped = self.model.predict(features.tail(1))[0]
+        prediction_remap = {0: -1, 1: 0, 2: 1}
+        prediction = prediction_remap[prediction_mapped]
+
         if prediction == 1: return "BUY_CE"
         elif prediction == -1: return "BUY_PE"
         return "HOLD"
