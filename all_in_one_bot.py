@@ -93,9 +93,10 @@ def setup_credentials(app_id, secret_key, redirect_url):
         print("ERROR: App ID, Secret Key, and Redirect URL are all required.")
         return
 
+    # Use standard key names 'api_key' and 'api_secret' for compatibility
     credentials = {
-        "client_id": app_id,  # The library expects this key, but it's the App ID
-        "secret_key": secret_key,
+        "api_key": app_id,
+        "api_secret": secret_key,
         "redirect_url": redirect_url
     }
 
@@ -184,7 +185,15 @@ def get_fyers_instance():
     try:
         with open(BotConfig.LOGIN_DETAILS_FILE, 'r') as f:
             details = json.load(f)
-        client_id, secret_key, redirect_url = details["client_id"], details["secret_key"], details["redirect_url"]
+
+        # Support both old keys (client_id/secret_key) and new keys (api_key/api_secret)
+        client_id = details.get("client_id") or details.get("api_key")
+        secret_key = details.get("secret_key") or details.get("api_secret")
+        redirect_url = details.get("redirect_url")
+
+        if not all([client_id, secret_key, redirect_url]):
+             raise KeyError("Missing client_id/api_key, secret_key/api_secret, or redirect_url")
+
     except (FileNotFoundError, KeyError) as e:
         print(f"ERROR: Credential file is missing or invalid: {e}.")
         print("Please run 'setup' mode to create the file correctly.")
