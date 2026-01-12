@@ -77,16 +77,16 @@ class BotConfig:
 # --- SECTION 2: CREDENTIAL SETUP LOGIC ---
 # ============================================================================
 
-def setup_credentials(args):
-    """Creates the fyers_login_details.json file from command-line arguments."""
-    if not all([args.client_id, args.secret_key, args.redirect_url]):
-        print("ERROR: For 'setup' mode, you must provide --client_id, --secret_key, and --redirect_url.")
+def setup_credentials(app_id, secret_key, redirect_url):
+    """Creates the fyers_login_details.json file."""
+    if not all([app_id, secret_key, redirect_url]):
+        print("ERROR: App ID, Secret Key, and Redirect URL are all required.")
         return
 
     credentials = {
-        "client_id": args.client_id,
-        "secret_key": args.secret_key,
-        "redirect_url": args.redirect_url
+        "client_id": app_id,  # The library expects this key, but it's the App ID
+        "secret_key": secret_key,
+        "redirect_url": redirect_url
     }
 
     file_name = BotConfig.LOGIN_DETAILS_FILE
@@ -522,31 +522,31 @@ def main():
 
     parser.add_argument(
         "mode",
-        nargs='?',  # Make the mode optional
+        nargs='?',
         choices=["setup", "backtest", "run"],
         help="Optional: The mode to run the script in (setup, backtest, run)."
     )
+
+    # Arguments specifically for 'setup' mode, using user-friendly names
+    parser.add_argument("--app_id", help="Your Fyers Application ID.")
+    parser.add_argument("--secret_key", help="Your Fyers API Secret Key.")
+    parser.add_argument("--redirect_url", help="Your Fyers API Redirect URL.")
 
     args = parser.parse_args()
 
     mode = args.mode
 
     if not mode:
-        # --- Interactive Menu ---
         print("\n--- Welcome to the All-In-One Trading Bot ---")
         print("Please choose an option:")
         print("  1. Setup Credentials")
         print("  2. Run Backtester")
         print("  3. Run Live Paper Trading Bot")
-
         choice = input("Enter your choice (1-3): ")
 
-        if choice == '1':
-            mode = 'setup'
-        elif choice == '2':
-            mode = 'backtest'
-        elif choice == '3':
-            mode = 'run'
+        if choice == '1': mode = 'setup'
+        elif choice == '2': mode = 'backtest'
+        elif choice == '3': mode = 'run'
         else:
             print("Invalid choice. Exiting.")
             return
@@ -554,13 +554,10 @@ def main():
     print(f"\n--- Running in {mode.upper()} mode ---")
 
     if mode == "setup":
-        print("\nPlease provide your Fyers API credentials.")
-        client_id = input("Enter Client ID: ")
-        secret_key = input("Enter Secret Key: ")
-        redirect_url = input("Enter Redirect URL: ")
-        # Create a simple object to mimic the args structure
-        setup_args = argparse.Namespace(client_id=client_id, secret_key=secret_key, redirect_url=redirect_url)
-        setup_credentials(setup_args)
+        app_id = args.app_id or input("Enter your Fyers App ID: ")
+        secret_key = args.secret_key or input("Enter Secret Key: ")
+        redirect_url = args.redirect_url or input("Enter Redirect URL: ")
+        setup_credentials(app_id, secret_key, redirect_url)
 
     elif mode == "backtest":
         run_backtester()

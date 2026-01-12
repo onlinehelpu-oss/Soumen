@@ -1,5 +1,5 @@
 {
-  "client_id": "YOUR_CLIENT_ID",
-  "secret_key": "YOUR_SECRET_KEY",
-  "redirect_url": "YOUR_REDIRECT_URL"
+  "client_id": "TEST_APP_ID",
+  "secret_key": "TEST_SECRET_KEY",
+  "redirect_url": "http://localhost"
 }
