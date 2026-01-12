@@ -68,8 +68,9 @@ class BotConfig:
     TIME_FRAME = "1"  # 1-minute candles
     DAYS_OF_DATA_TO_DOWNLOAD = 60
     TRAIN_TEST_SPLIT_RATIO = 0.7
-    BACKTEST_STOP_LOSS_PCT = 0.2  # Initial stop loss
-    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.2 # Trail the stop 0.2% behind the peak price
+    # Adjusted risk parameters for better performance
+    BACKTEST_STOP_LOSS_PCT = 0.3  # Widened to avoid noise
+    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.15 # Tighter trail to lock in profits
 
 
     # --- Live Bot ---
@@ -300,6 +301,12 @@ def create_backtest_features(df: pd.DataFrame) -> pd.DataFrame:
     df['macd'] = df['ema_short'] - df['ema_long']
     df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
 
+    # Rate of Change (ROC)
+    df['roc'] = df['close'].pct_change(periods=10) * 100
+
+    # Momentum (Close - Close n periods ago)
+    df['momentum'] = df['close'] - df['close'].shift(4)
+
     # 2. Volatility Features (Bollinger Bands)
     window = 20
     df['bollinger_mid'] = df['close'].rolling(window=window).mean()
@@ -511,6 +518,12 @@ def create_live_features(price_history: list) -> pd.DataFrame:
     df['ema_long'] = df['close'].ewm(span=26, adjust=False).mean()
     df['macd'] = df['ema_short'] - df['ema_long']
     df['macd_signal'] = df['macd'].ewm(span=9, adjust=False).mean()
+
+    # Rate of Change (ROC)
+    df['roc'] = df['close'].pct_change(periods=10) * 100
+
+    # Momentum
+    df['momentum'] = df['close'] - df['close'].shift(4)
 
     # 2. Volatility Features (Bollinger Bands)
     window = 20
