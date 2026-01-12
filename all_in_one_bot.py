@@ -367,10 +367,21 @@ def run_backtest_simulation(features_df: pd.DataFrame):
 
     X_test = test_data.drop(columns=['target', 'open', 'high', 'low', 'close', 'volume'])
 
-    # Get predictions and remap them back: [0, 1, 2] -> [-1, 0, 1]
-    predictions_mapped = model.predict(X_test)
+    # Get predictions and probabilities
+    probs = model.predict_proba(X_test)
+    predictions_mapped = np.argmax(probs, axis=1)
+    confidences = np.max(probs, axis=1)
+
+    # Filter by confidence threshold (0.60)
     prediction_remap = {0: -1, 1: 0, 2: 1}
-    test_data['prediction'] = [prediction_remap[p] for p in predictions_mapped]
+    final_predictions = []
+    for pred, conf in zip(predictions_mapped, confidences):
+        if conf >= 0.60:
+            final_predictions.append(prediction_remap[pred])
+        else:
+            final_predictions.append(0) # HOLD if low confidence
+
+    test_data['prediction'] = final_predictions
 
     trades = []
     position, entry_price, stop_loss, peak_price = 0, 0.0, 0.0, 0.0
@@ -556,13 +567,26 @@ class MLStrategy:
         features = create_live_features(price_history)
         if features.empty: return "HOLD"
 
-        # Get prediction and remap it back: [0, 1, 2] -> [-1, 0, 1]
-        prediction_mapped = self.model.predict(features.tail(1))[0]
-        prediction_remap = {0: -1, 1: 0, 2: 1}
-        prediction = prediction_remap[prediction_mapped]
+        # Get prediction and probabilities
+        try:
+            # Check model confidence
+            probs = self.model.predict_proba(features.tail(1))[0]
+            prediction_mapped = np.argmax(probs)
+            confidence = probs[prediction_mapped]
 
-        if prediction == 1: return "BUY_CE"
-        elif prediction == -1: return "BUY_PE"
+            # Only trade if confidence is high (> 60%)
+            if confidence < 0.60:
+                return "HOLD"
+
+            # Remap it back: [0, 1, 2] -> [-1, 0, 1]
+            prediction_remap = {0: -1, 1: 0, 2: 1}
+            prediction = prediction_remap[prediction_mapped]
+
+            if prediction == 1: return "BUY_CE"
+            elif prediction == -1: return "BUY_PE"
+        except Exception as e:
+            print(f"Error in signal generation: {e}")
+
         return "HOLD"
 
 class PaperPosition:
