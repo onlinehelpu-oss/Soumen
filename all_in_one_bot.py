@@ -64,7 +64,7 @@ class BotConfig:
     MODEL_FILENAME = "real_options_model.joblib"
 
     # --- Confidence Threshold ---
-    CONFIDENCE_THRESHOLD = 0.65  # Lowered slightly to capture more quality trades
+    CONFIDENCE_THRESHOLD = 0.70  # Restored to 0.70 to ensure high quality trades
 
     # --- Backtester ---
     SYMBOL = "NSE:NIFTY50-INDEX"
@@ -72,8 +72,8 @@ class BotConfig:
     DAYS_OF_DATA_TO_DOWNLOAD = 60
     TRAIN_TEST_SPLIT_RATIO = 0.7
     # Adjusted risk parameters for better performance
-    BACKTEST_STOP_LOSS_PCT = 0.5  # Widened to 0.5% to avoid premature stop-outs
-    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.4 # Loosened to 0.4% to capture larger trend moves
+    BACKTEST_STOP_LOSS_PCT = 0.25  # Tightened to 0.25% to control losses
+    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.20 # Tightened to 0.20% to lock in gains
 
 
     # --- Live Bot ---
@@ -382,15 +382,22 @@ def run_backtest_simulation(features_df: pd.DataFrame):
     # Pre-fetch RSI for filtering
     rsi_values = test_data['rsi'].values
 
+    # Pre-fetch technicals for filtering
+    rsi_values = test_data['rsi'].values
+    ema_short = test_data['ema_short'].values
+    ema_long = test_data['ema_long'].values
+
     for i, (pred, conf) in enumerate(zip(predictions_mapped, confidences)):
         signal = prediction_remap[pred]
         rsi = rsi_values[i]
+        trend_up = ema_short[i] > ema_long[i]
+        trend_down = ema_short[i] < ema_long[i]
 
-        # Logic: High Confidence AND Momentum Confirmation
+        # Logic: High Confidence AND Momentum Confirmation AND Trend Alignment
         if conf >= BotConfig.CONFIDENCE_THRESHOLD:
-            if signal == 1 and rsi > 55: # BUY CE context
+            if signal == 1 and rsi > 55 and trend_up: # BUY CE context
                 final_predictions.append(1)
-            elif signal == -1 and rsi < 45: # BUY PE context
+            elif signal == -1 and rsi < 45 and trend_down: # BUY PE context
                 final_predictions.append(-1)
             else:
                 final_predictions.append(0)
@@ -598,12 +605,17 @@ class MLStrategy:
             prediction_remap = {0: -1, 1: 0, 2: 1}
             prediction = prediction_remap[prediction_mapped]
 
-            # 2. Check RSI Trend Filter
+            # 2. Check RSI & EMA Trend Filter
             current_rsi = features['rsi'].iloc[-1]
+            ema_short = features['ema_short'].iloc[-1]
+            ema_long = features['ema_long'].iloc[-1]
 
-            if prediction == 1 and current_rsi > 55:
+            trend_up = ema_short > ema_long
+            trend_down = ema_short < ema_long
+
+            if prediction == 1 and current_rsi > 55 and trend_up:
                 return "BUY_CE"
-            elif prediction == -1 and current_rsi < 45:
+            elif prediction == -1 and current_rsi < 45 and trend_down:
                 return "BUY_PE"
 
         except Exception as e:
