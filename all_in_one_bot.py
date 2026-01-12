@@ -32,6 +32,7 @@ import webbrowser
 import hashlib
 import requests
 import warnings
+import threading
 from urllib.parse import urlparse, parse_qs, quote
 from datetime import datetime as dt, timedelta
 from typing import Optional
@@ -442,6 +443,7 @@ class FyersService:
         self.config = config
         self.fyers, self.client_id, self.access_token = get_fyers_instance()
         self.underlying_ltp = 0
+        self.fyers_ws = None
 
     def connect_to_websocket(self):
         """Initializes and connects to the Fyers Data WebSocket with detailed logging."""
@@ -451,7 +453,7 @@ class FyersService:
         def on_connect():
             print("✅ WebSocket Connected!")
             print("Subscribing to symbols:", [self.config.SYMBOL])
-            fyers_ws.subscribe(symbols=[self.config.SYMBOL])
+            self.fyers_ws.subscribe(symbols=[self.config.SYMBOL])
 
         def on_close():
             print("❌ WebSocket Closed.")
@@ -461,14 +463,16 @@ class FyersService:
 
         def on_message(message):
             """Callback function to handle incoming ticks."""
-            print("  [WS MSG]:", message) # Log every message
-            if 'ltp' in message:
+            # Reduced log verbosity for tick data
+            if isinstance(message, dict) and 'ltp' in message:
                 self.underlying_ltp = message['ltp']
-            elif isinstance(message, list) and 'ltp' in message[0]:
+            elif isinstance(message, list) and len(message) > 0 and 'ltp' in message[0]:
                 self.underlying_ltp = message[0]['ltp']
+            else:
+                print("  [WS MSG]:", message) # Log non-tick messages
 
         # Initialize the WebSocket with the new callbacks
-        fyers_ws = data_ws.FyersDataSocket(
+        self.fyers_ws = data_ws.FyersDataSocket(
             access_token=ws_access_token,
             log_path="",
             on_connect=on_connect,
@@ -478,7 +482,10 @@ class FyersService:
         )
 
         print("🔌 Attempting to connect to WebSocket...")
-        fyers_ws.connect()
+        # Run WebSocket in a background thread to prevent blocking the main loop
+        t = threading.Thread(target=self.fyers_ws.connect)
+        t.daemon = True
+        t.start()
 
 def create_live_features(price_history: list) -> pd.DataFrame:
     """Creates advanced features from a list of recent prices for the live bot."""
