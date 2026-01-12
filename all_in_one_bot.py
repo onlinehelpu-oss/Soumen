@@ -72,9 +72,12 @@ class BotConfig:
     DAYS_OF_DATA_TO_DOWNLOAD = 60
     TRAIN_TEST_SPLIT_RATIO = 0.7
     # Adjusted risk parameters for better performance
-    BACKTEST_STOP_LOSS_PCT = 0.25  # Tightened to 0.25% to minimize drawdowns
-    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.25 # Tightened to 0.25% to secure profits
-    BACKTEST_TAKE_PROFIT_PCT = 0.5  # New: Take profit at 0.5% (option scalping target)
+    BACKTEST_STOP_LOSS_PCT = 0.5  # Widened to 0.5% to capture bigger swings
+    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.4 # Loosened trail to 0.4%
+    BACKTEST_TAKE_PROFIT_PCT = 1.0  # Increased to 1.0% to aim for 20% return target
+
+    # Lot Size for P&L Simulation
+    LOT_SIZE = 65 # Updated to 65 as per user request
 
     # --- Ensemble Model Config ---
     ENSEMBLE_VOTING = 'soft'
@@ -396,20 +399,15 @@ def run_backtest_simulation(features_df: pd.DataFrame):
     # Pre-fetch RSI for filtering
     rsi_values = test_data['rsi'].values
 
-    # Pre-fetch technicals for filtering
-    rsi_values = test_data['rsi'].values
-    ema_short = test_data['ema_short'].values
-    ema_long = test_data['ema_long'].values
-
     for i, (pred, conf) in enumerate(zip(predictions_mapped, confidences)):
         signal = prediction_remap[pred]
         rsi = rsi_values[i]
 
-        # Logic: Confidence AND Strong RSI Momentum (Restored strict filter)
-        if conf >= BotConfig.CONFIDENCE_THRESHOLD:
-            if signal == 1 and rsi > 55: # BUY CE context (Stronger Momentum)
+        # Logic: Confidence AND RSI Momentum (Relaxed filter for frequency)
+        if conf >= 0.60: # Lowered threshold locally to capture more trades
+            if signal == 1 and rsi > 50: # BUY CE context (Lowered RSI threshold)
                 final_predictions.append(1)
-            elif signal == -1 and rsi < 45: # BUY PE context (Stronger Momentum)
+            elif signal == -1 and rsi < 50: # BUY PE context (Raised RSI threshold)
                 final_predictions.append(-1)
             else:
                 final_predictions.append(0)
@@ -450,7 +448,12 @@ def run_backtest_simulation(features_df: pd.DataFrame):
                 exit_reason = "SIGNAL_EXIT"
 
             if exit_reason:
-                trades.append((current_price - entry_price) * position)
+                # Simulate 1 Lot Profit/Loss
+                # Assuming Delta ~ 0.5 for ATM options, so option price moves 0.5x of index
+                # Note: P&L is a simulation using Delta=0.5 and fixed Lot Size.
+                index_points = (current_price - entry_price) * position
+                option_pnl = index_points * 0.5 * BotConfig.LOT_SIZE
+                trades.append(option_pnl)
                 position = 0
 
         # --- Entry Logic ---
@@ -470,6 +473,7 @@ def run_backtest_simulation(features_df: pd.DataFrame):
 def analyze_performance(total_pnl: float, trades: list, initial_balance: float):
     """Analyzes and prints the backtest performance."""
     print("\n--- Performance Analysis ---")
+    print(f"(Note: Simulation based on Lot Size: {BotConfig.LOT_SIZE} and approx. Delta: 0.5)")
     if not trades:
         print("No trades were made during the backtest.")
         return
@@ -623,12 +627,12 @@ class MLStrategy:
             prediction_remap = {0: -1, 1: 0, 2: 1}
             prediction = prediction_remap[prediction_mapped]
 
-            # 2. Check RSI Trend Filter (Stronger Momentum)
+            # 2. Check RSI Trend Filter (Relaxed)
             current_rsi = features['rsi'].iloc[-1]
 
-            if prediction == 1 and current_rsi > 55: # BUY CE if RSI indicates strong uptrend
+            if prediction == 1 and current_rsi > 50: # BUY CE if RSI indicates uptrend
                 return "BUY_CE"
-            elif prediction == -1 and current_rsi < 45: # BUY PE if RSI indicates strong downtrend
+            elif prediction == -1 and current_rsi < 50: # BUY PE if RSI indicates downtrend
                 return "BUY_PE"
 
         except Exception as e:
