@@ -64,7 +64,7 @@ class BotConfig:
     MODEL_FILENAME = "real_options_model.joblib"
 
     # --- Confidence Threshold ---
-    CONFIDENCE_THRESHOLD = 0.70  # Only take trades with > 70% model confidence
+    CONFIDENCE_THRESHOLD = 0.65  # Lowered slightly to capture more quality trades
 
     # --- Backtester ---
     SYMBOL = "NSE:NIFTY50-INDEX"
@@ -72,8 +72,8 @@ class BotConfig:
     DAYS_OF_DATA_TO_DOWNLOAD = 60
     TRAIN_TEST_SPLIT_RATIO = 0.7
     # Adjusted risk parameters for better performance
-    BACKTEST_STOP_LOSS_PCT = 0.3  # Widened to avoid noise
-    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.25 # Loosened trail to let winners run
+    BACKTEST_STOP_LOSS_PCT = 0.5  # Widened to 0.5% to avoid premature stop-outs
+    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.4 # Loosened to 0.4% to capture larger trend moves
 
 
     # --- Live Bot ---
