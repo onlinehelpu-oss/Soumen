@@ -69,7 +69,7 @@ INDEX_SETTINGS = {
     "2": {
         "NAME": "BANKNIFTY",
         "SYMBOL": "NSE:NIFTYBANK-INDEX",
-        "LOT_SIZE": 15,
+        "LOT_SIZE": 30, # Revised for 2026
         "STRIKE_STEP": 100,
         "PREFIX": "BANKNIFTY"
     },
@@ -83,7 +83,7 @@ INDEX_SETTINGS = {
     "4": {
         "NAME": "FINNIFTY",
         "SYMBOL": "NSE:FINNIFTY-INDEX",
-        "LOT_SIZE": 40,
+        "LOT_SIZE": 60, # Revised for 2026
         "STRIKE_STEP": 50,
         "PREFIX": "FINNIFTY"
     }
@@ -866,6 +866,23 @@ def main():
         BotConfig.LOT_SIZE = settings["LOT_SIZE"]
         BotConfig.STRIKE_STEP = settings["STRIKE_STEP"]
         BotConfig.INDEX_PREFIX = settings["PREFIX"]
+
+        # Verify settings with user
+        print(f"\nCurrent Configuration for {settings['NAME']}:")
+        print(f"  Symbol: {BotConfig.SYMBOL}")
+        print(f"  Lot Size: {BotConfig.LOT_SIZE}")
+        print(f"  Strike Step: {BotConfig.STRIKE_STEP}")
+
+        confirm = input("\nIs this configuration correct? (y/n) [Default: y]: ").strip().lower()
+        if confirm == 'n':
+            print("\nPlease enter new values (press Enter to keep current):")
+            new_lot = input(f"  New Lot Size [{BotConfig.LOT_SIZE}]: ").strip()
+            if new_lot:
+                try:
+                    BotConfig.LOT_SIZE = int(new_lot)
+                    print(f"  ✅ Lot Size updated to: {BotConfig.LOT_SIZE}")
+                except ValueError:
+                    print("  ❌ Invalid number. Keeping original Lot Size.")
 
     print(f"\n--- Running in {mode.upper()} mode ---")
 
