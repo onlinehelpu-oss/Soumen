@@ -88,6 +88,7 @@ class BotConfig:
     STOP_LOSS_PCT = 10.0  # Tighter SL for scalping
     TAKE_PROFIT_PCT = 20.0  # Realistic TP for scalping to bank profits
     PAPER_BALANCE = 100000
+    LIVE_DATA_FILE = "live_market_data.csv"
 
     # --- Session Timing ---
     SESSION_START_TIME = dt.now().replace(hour=9, minute=15, second=0, microsecond=0)
@@ -722,6 +723,8 @@ class LiveOptionsBot:
                 time.sleep(5)
                 continue
 
+            self._log_data(current_price)
+
             self.price_history.append(current_price)
             if len(self.price_history) > 200: self.price_history.pop(0)
 
@@ -780,6 +783,17 @@ class LiveOptionsBot:
         elif signal == "BUY_PE":
             self._open_paper_position(price, "PE")
 
+    def _log_data(self, price):
+        """Saves the current timestamp and price to a CSV file."""
+        file_exists = os.path.isfile(self.config.LIVE_DATA_FILE)
+        try:
+            with open(self.config.LIVE_DATA_FILE, 'a') as f:
+                if not file_exists:
+                    f.write("timestamp,price\n")
+                f.write(f"{dt.now().strftime('%Y-%m-%d %H:%M:%S')},{price}\n")
+        except Exception as e:
+            print(f"Warning: Could not save live data: {e}")
+
     def _show_paper_summary(self):
         print("\n--- Paper Trading Summary ---")
         if not self.paper_trades:
@@ -822,6 +836,9 @@ def main():
     parser.add_argument("--secret_key", help="Your Fyers API Secret Key.")
     parser.add_argument("--redirect_url", help="Your Fyers API Redirect URL.")
 
+    # Optional Argument for Auto-Retraining in Run mode
+    parser.add_argument("--retrain", action="store_true", help="Automatically retrain the model before running the live bot.")
+
     args = parser.parse_args()
 
     mode = args.mode
@@ -856,6 +873,10 @@ def main():
         run_backtester()
 
     elif mode == "run":
+        if args.retrain:
+            print("\n🔄 Auto-Retrain Enabled: Updating model with latest data...")
+            run_backtester()
+            print("✅ Retraining complete. Starting Live Bot...")
         run_live_bot()
 
 
