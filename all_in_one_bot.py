@@ -64,7 +64,7 @@ class BotConfig:
     MODEL_FILENAME = "real_options_model.joblib"
 
     # --- Confidence Threshold ---
-    CONFIDENCE_THRESHOLD = 0.70  # Higher confidence for Quality over Quantity
+    CONFIDENCE_THRESHOLD = 0.80  # Very high confidence to reduce noise (Quality >> Quantity)
 
     # --- Backtester ---
     SYMBOL = "NSE:NIFTY50-INDEX"
@@ -74,7 +74,7 @@ class BotConfig:
     # Adjusted risk parameters for better performance (Relaxed SL/TSL)
     BACKTEST_STOP_LOSS_PCT = 0.35  # Wider stop to handle volatility
     BACKTEST_TRAILING_STOP_LOSS_PCT = 0.35  # Wider trail to let winners run
-    BACKTEST_TAKE_PROFIT_PCT = 0.5  # Optimized for 1-minute scalping (High Win Rate)
+    BACKTEST_TAKE_PROFIT_PCT = 1.2  # Higher Target to restore 3:1 Reward:Risk ratio
 
     # Lot Size for P&L Simulation
     LOT_SIZE = 65  # Updated to 65 as per user request
@@ -423,9 +423,11 @@ def run_backtest_simulation(features_df: pd.DataFrame):
         # Logic: Confidence AND RSI AND Volatility Expansion (Squeeze Breakout) AND Trend Filter
         # Using 0.0015 as empirical NIFTY 1m Band Width threshold for breakout potential
         if conf >= BotConfig.CONFIDENCE_THRESHOLD and bw > 0.0015:
-            if signal == 1 and rsi > 55 and close > ema_long:  # BUY CE (Strong Momentum + Bullish Trend)
+            # BUY CE: Stronger Momentum (RSI > 60) + Bullish Trend
+            if signal == 1 and rsi > 60 and close > ema_long:
                 final_predictions.append(1)
-            elif signal == -1 and rsi < 45 and close < ema_long:  # BUY PE (Strong Momentum + Bearish Trend)
+            # BUY PE: Stronger Momentum (RSI < 40) + Bearish Trend
+            elif signal == -1 and rsi < 40 and close < ema_long:
                 final_predictions.append(-1)
             else:
                 final_predictions.append(0)
@@ -666,9 +668,9 @@ class MLStrategy:
 
             # Require Volatility Expansion (Band Width > 0.0015) to avoid chop
             if current_bw > 0.0015:
-                if prediction == 1 and current_rsi > 55 and current_close > current_ema_long:
+                if prediction == 1 and current_rsi > 60 and current_close > current_ema_long:
                     return "BUY_CE"
-                elif prediction == -1 and current_rsi < 45 and current_close < current_ema_long:
+                elif prediction == -1 and current_rsi < 40 and current_close < current_ema_long:
                     return "BUY_PE"
 
         except Exception as e:
