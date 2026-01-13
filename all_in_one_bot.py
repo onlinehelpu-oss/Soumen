@@ -62,30 +62,34 @@ INDEX_SETTINGS = {
     "1": {
         "NAME": "NIFTY",
         "SYMBOL": "NSE:NIFTY50-INDEX",
-        "LOT_SIZE": 65, # User specified
+        "LOT_SIZE": 65,
         "STRIKE_STEP": 50,
-        "PREFIX": "NIFTY"
+        "PREFIX": "NIFTY",
+        "SL_PCT": 0.35, "TP_PCT": 0.8, "TRAIL_SL_PCT": 0.35
     },
     "2": {
         "NAME": "BANKNIFTY",
         "SYMBOL": "NSE:NIFTYBANK-INDEX",
-        "LOT_SIZE": 30, # Revised for 2026
+        "LOT_SIZE": 30,
         "STRIKE_STEP": 100,
-        "PREFIX": "BANKNIFTY"
+        "PREFIX": "BANKNIFTY",
+        "SL_PCT": 0.5, "TP_PCT": 1.0, "TRAIL_SL_PCT": 0.5 # Wider for high volatility
     },
     "3": {
         "NAME": "SENSEX",
         "SYMBOL": "BSE:SENSEX-INDEX",
         "LOT_SIZE": 10,
         "STRIKE_STEP": 100,
-        "PREFIX": "SENSEX"
+        "PREFIX": "SENSEX",
+        "SL_PCT": 0.6, "TP_PCT": 1.2, "TRAIL_SL_PCT": 0.5 # Widest for highest volatility
     },
     "4": {
         "NAME": "FINNIFTY",
         "SYMBOL": "NSE:FINNIFTY-INDEX",
-        "LOT_SIZE": 60, # Revised for 2026
+        "LOT_SIZE": 60,
         "STRIKE_STEP": 50,
-        "PREFIX": "FINNIFTY"
+        "PREFIX": "FINNIFTY",
+        "SL_PCT": 0.4, "TP_PCT": 0.9, "TRAIL_SL_PCT": 0.4
     }
 }
 
@@ -103,10 +107,11 @@ class BotConfig:
     TIME_FRAME = "1"  # 1-minute candles
     DAYS_OF_DATA_TO_DOWNLOAD = 60
     TRAIN_TEST_SPLIT_RATIO = 0.7
-    # Adjusted risk parameters for better performance (Relaxed SL/TSL)
-    BACKTEST_STOP_LOSS_PCT = 0.35  # Wider stop to handle volatility
-    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.35 # Wider trail to let winners run
-    BACKTEST_TAKE_PROFIT_PCT = 0.8  # Target bigger moves
+
+    # --- Dynamic Risk Parameters (Defaults, updated at runtime) ---
+    BACKTEST_STOP_LOSS_PCT = 0.35
+    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.35
+    BACKTEST_TAKE_PROFIT_PCT = 0.8
 
     # Lot Size for P&L Simulation
     LOT_SIZE = 65 # Default to NIFTY (will be updated)
@@ -867,11 +872,17 @@ def main():
         BotConfig.STRIKE_STEP = settings["STRIKE_STEP"]
         BotConfig.INDEX_PREFIX = settings["PREFIX"]
 
+        # Apply Dynamic Risk Parameters
+        BotConfig.BACKTEST_STOP_LOSS_PCT = settings.get("SL_PCT", 0.35)
+        BotConfig.BACKTEST_TRAILING_STOP_LOSS_PCT = settings.get("TRAIL_SL_PCT", 0.35)
+        BotConfig.BACKTEST_TAKE_PROFIT_PCT = settings.get("TP_PCT", 0.8)
+
         # Verify settings with user
         print(f"\nCurrent Configuration for {settings['NAME']}:")
         print(f"  Symbol: {BotConfig.SYMBOL}")
         print(f"  Lot Size: {BotConfig.LOT_SIZE}")
         print(f"  Strike Step: {BotConfig.STRIKE_STEP}")
+        print(f"  Risk Params -> SL: {BotConfig.BACKTEST_STOP_LOSS_PCT}%, TP: {BotConfig.BACKTEST_TAKE_PROFIT_PCT}%, Trail: {BotConfig.BACKTEST_TRAILING_STOP_LOSS_PCT}%")
 
         confirm = input("\nIs this configuration correct? (y/n) [Default: y]: ").strip().lower()
         if confirm == 'n':
