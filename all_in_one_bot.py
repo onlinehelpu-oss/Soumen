@@ -73,7 +73,7 @@ INDEX_SETTINGS = {
         "LOT_SIZE": 30,
         "STRIKE_STEP": 100,
         "PREFIX": "BANKNIFTY",
-        "SL_PCT": 0.5, "TP_PCT": 1.0, "TRAIL_SL_PCT": 0.5 # Wider for high volatility
+        "SL_PCT": 0.4, "TP_PCT": 1.0, "TRAIL_SL_PCT": 0.4 # Tightened SL for better Risk/Reward
     },
     "3": {
         "NAME": "SENSEX",
@@ -81,7 +81,7 @@ INDEX_SETTINGS = {
         "LOT_SIZE": 10,
         "STRIKE_STEP": 100,
         "PREFIX": "SENSEX",
-        "SL_PCT": 0.6, "TP_PCT": 1.2, "TRAIL_SL_PCT": 0.5 # Widest for highest volatility
+        "SL_PCT": 0.4, "TP_PCT": 0.7, "TRAIL_SL_PCT": 0.2 # Scalping mode: Tighter SL, Lower TP, Aggressive Trail
     },
     "4": {
         "NAME": "FINNIFTY",
