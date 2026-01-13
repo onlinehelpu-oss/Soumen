@@ -78,6 +78,7 @@ class BotConfig:
 
     # Lot Size for P&L Simulation
     LOT_SIZE = 65  # Updated to 65 as per user request
+    NUM_LOTS = 1   # Lot Multiplier (Trade multiple lots)
 
     # --- Ensemble Model Config ---
     ENSEMBLE_VOTING = 'soft'
@@ -472,11 +473,11 @@ def run_backtest_simulation(features_df: pd.DataFrame):
                 exit_reason = "SIGNAL_EXIT"
 
             if exit_reason:
-                # Simulate 1 Lot Profit/Loss
+                # Simulate Profit/Loss
                 # Assuming Delta ~ 0.5 for ATM options, so option price moves 0.5x of index
-                # Note: P&L is a simulation using Delta=0.5 and fixed Lot Size.
+                # Note: P&L is a simulation using Delta=0.5, fixed Lot Size, and Multiplier.
                 index_points = (current_price - entry_price) * position
-                option_pnl = index_points * 0.5 * BotConfig.LOT_SIZE
+                option_pnl = index_points * 0.5 * BotConfig.LOT_SIZE * BotConfig.NUM_LOTS
                 trades.append(option_pnl)
                 position = 0
 
@@ -498,7 +499,7 @@ def run_backtest_simulation(features_df: pd.DataFrame):
 def analyze_performance(total_pnl: float, trades: list, initial_balance: float):
     """Analyzes and prints the backtest performance."""
     print("\n--- Performance Analysis ---")
-    print(f"(Note: Simulation based on Lot Size: {BotConfig.LOT_SIZE} and approx. Delta: 0.5)")
+    print(f"(Note: Simulation based on Lot Size: {BotConfig.LOT_SIZE}, Lots: {BotConfig.NUM_LOTS}, and approx. Delta: 0.5)")
     if not trades:
         print("No trades were made during the backtest.")
         return
@@ -682,13 +683,14 @@ class MLStrategy:
 class PaperPosition:
     """Represents a single simulated position."""
 
-    def __init__(self, symbol: str, entry_price: float, stop_loss: float, take_profit: float):
+    def __init__(self, symbol: str, entry_price: float, stop_loss: float, take_profit: float, quantity: int):
         self.symbol, self.entry_price, self.stop_loss, self.take_profit = symbol, entry_price, stop_loss, take_profit
+        self.quantity = quantity
         self.current_price, self.pnl = entry_price, 0.0
 
     def update_pnl(self, current_price: float):
         self.current_price = current_price
-        self.pnl = (self.current_price - self.entry_price)
+        self.pnl = (self.current_price - self.entry_price) * self.quantity
 
 
 class LiveOptionsBot:
@@ -742,8 +744,9 @@ class LiveOptionsBot:
         tp = entry_premium * (1 + self.config.TAKE_PROFIT_PCT / 100)
         strike = int(round(price / 50) * 50)
         symbol = f"NIFTY_DEMO_{strike}_{opt_type}"
-        self.active_position = PaperPosition(symbol, entry_premium, sl, tp)
-        print(f"  ✅ PAPER TRADE: Opened {symbol} @ ₹{entry_premium:.2f} | SL: ₹{sl:.2f}, TP: ₹{tp:.2f}")
+        total_quantity = self.config.LOT_SIZE * self.config.NUM_LOTS
+        self.active_position = PaperPosition(symbol, entry_premium, sl, tp, total_quantity)
+        print(f"  ✅ PAPER TRADE: Opened {symbol} (Qty: {total_quantity}) @ ₹{entry_premium:.2f} | SL: ₹{sl:.2f}, TP: ₹{tp:.2f}")
 
     def _monitor_position(self, price: float, last_price: float):
         pos = self.active_position
