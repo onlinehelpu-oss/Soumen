@@ -91,7 +91,8 @@ class BotConfig:
     LIVE_DATA_FILE = "live_market_data.csv"
 
     # --- Session Timing ---
-    SESSION_START_TIME = dt.now().replace(hour=9, minute=15, second=0, microsecond=0)
+    # Set to 00:00 to allow testing/running at any time of the day
+    SESSION_START_TIME = dt.now().replace(hour=0, minute=0, second=0, microsecond=0)
     # Extended to 23:59 to allow for after-hours testing/paper trading
     SESSION_END_TIME = dt.now().replace(hour=23, minute=59, second=59, microsecond=0)
 
@@ -849,7 +850,8 @@ def main():
         print("  1. Setup Credentials")
         print("  2. Run Backtester")
         print("  3. Run Live Paper Trading Bot")
-        choice = input("Enter your choice (1-3): ")
+        print("  4. Run Live Bot (with Auto-Retrain)")
+        choice = input("Enter your choice (1-4): ")
 
         if choice == '1':
             mode = 'setup'
@@ -857,6 +859,9 @@ def main():
             mode = 'backtest'
         elif choice == '3':
             mode = 'run'
+        elif choice == '4':
+            mode = 'run'
+            args.retrain = True
         else:
             print("Invalid choice. Exiting.")
             return
