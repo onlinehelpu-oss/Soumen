@@ -68,13 +68,13 @@ class BotConfig:
 
     # --- Backtester ---
     SYMBOL = "NSE:NIFTY50-INDEX"
-    TIME_FRAME = "5"  # 5-minute candles
+    TIME_FRAME = "1"  # 1-minute candles
     DAYS_OF_DATA_TO_DOWNLOAD = 60
     TRAIN_TEST_SPLIT_RATIO = 0.7
     # Adjusted risk parameters for better performance (Relaxed SL/TSL)
     BACKTEST_STOP_LOSS_PCT = 0.35  # Wider stop to handle volatility
     BACKTEST_TRAILING_STOP_LOSS_PCT = 0.35  # Wider trail to let winners run
-    BACKTEST_TAKE_PROFIT_PCT = 0.8  # Target bigger moves
+    BACKTEST_TAKE_PROFIT_PCT = 0.5  # Optimized for 1-minute scalping (High Win Rate)
 
     # Lot Size for P&L Simulation
     LOT_SIZE = 65  # Updated to 65 as per user request
@@ -84,8 +84,8 @@ class BotConfig:
 
     # --- Live Bot ---
     STRIKE_DISTANCE = 0  # 0 for ATM
-    STOP_LOSS_PCT = 15.0  # % on option premium
-    TAKE_PROFIT_PCT = 50.0  # % on option premium (Increased from 30.0 for higher profit potential)
+    STOP_LOSS_PCT = 10.0  # Tighter SL for scalping
+    TAKE_PROFIT_PCT = 20.0  # Realistic TP for scalping to bank profits
     PAPER_BALANCE = 100000
 
     # --- Session Timing ---
@@ -421,7 +421,7 @@ def run_backtest_simulation(features_df: pd.DataFrame):
         ema_long = ema_long_values[i]
 
         # Logic: Confidence AND RSI AND Volatility Expansion (Squeeze Breakout) AND Trend Filter
-        # Using 0.0015 as empirical NIFTY 5m Band Width threshold for breakout potential
+        # Using 0.0015 as empirical NIFTY 1m Band Width threshold for breakout potential
         if conf >= BotConfig.CONFIDENCE_THRESHOLD and bw > 0.0015:
             if signal == 1 and rsi > 55 and close > ema_long:  # BUY CE (Strong Momentum + Bullish Trend)
                 final_predictions.append(1)
@@ -664,7 +664,7 @@ class MLStrategy:
             current_ema_long = features['ema_long'].iloc[-1]
             current_close = price_history[-1]
 
-            # Require Volatility Expansion (Band Width > 0.0015) to avoid chop (Adapted for 5m)
+            # Require Volatility Expansion (Band Width > 0.0015) to avoid chop
             if current_bw > 0.0015:
                 if prediction == 1 and current_rsi > 55 and current_close > current_ema_long:
                     return "BUY_CE"
