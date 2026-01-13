@@ -64,17 +64,17 @@ class BotConfig:
     MODEL_FILENAME = "real_options_model.joblib"
 
     # --- Confidence Threshold ---
-    CONFIDENCE_THRESHOLD = 0.75  # Increased to 0.75 for higher precision
+    CONFIDENCE_THRESHOLD = 0.70  # Higher confidence for Quality over Quantity
 
     # --- Backtester ---
     SYMBOL = "NSE:NIFTY50-INDEX"
-    TIME_FRAME = "1"  # 1-minute candles
+    TIME_FRAME = "5"  # 5-minute candles
     DAYS_OF_DATA_TO_DOWNLOAD = 60
     TRAIN_TEST_SPLIT_RATIO = 0.7
     # Adjusted risk parameters for better performance (Relaxed SL/TSL)
     BACKTEST_STOP_LOSS_PCT = 0.35  # Wider stop to handle volatility
     BACKTEST_TRAILING_STOP_LOSS_PCT = 0.35  # Wider trail to let winners run
-    BACKTEST_TAKE_PROFIT_PCT = 1.5  # Increased to 1.5% to capture bigger moves
+    BACKTEST_TAKE_PROFIT_PCT = 0.8  # Target bigger moves
 
     # Lot Size for P&L Simulation
     LOT_SIZE = 65  # Updated to 65 as per user request
@@ -84,8 +84,8 @@ class BotConfig:
 
     # --- Live Bot ---
     STRIKE_DISTANCE = 0  # 0 for ATM
-    STOP_LOSS_PCT = 20.0  # Increased SL to allow breathing room
-    TAKE_PROFIT_PCT = 60.0  # Increased TP for higher profit potential
+    STOP_LOSS_PCT = 15.0  # % on option premium
+    TAKE_PROFIT_PCT = 50.0  # % on option premium (Increased from 30.0 for higher profit potential)
     PAPER_BALANCE = 100000
 
     # --- Session Timing ---
@@ -412,8 +412,6 @@ def run_backtest_simulation(features_df: pd.DataFrame):
     bw_values = test_data['bollinger_width'].values
     close_prices = test_data['close'].values
     ema_long_values = test_data['ema_long'].values  # EMA 26
-    macd_values = test_data['macd'].values
-    macd_signal_values = test_data['macd_signal'].values
 
     for i, (pred, conf) in enumerate(zip(predictions_mapped, confidences)):
         signal = prediction_remap[pred]
@@ -421,17 +419,13 @@ def run_backtest_simulation(features_df: pd.DataFrame):
         bw = bw_values[i]
         close = close_prices[i]
         ema_long = ema_long_values[i]
-        macd = macd_values[i]
-        macd_sig = macd_signal_values[i]
 
         # Logic: Confidence AND RSI AND Volatility Expansion (Squeeze Breakout) AND Trend Filter
-        # Using 0.0015 as empirical NIFTY 1m Band Width threshold for breakout potential
+        # Using 0.0015 as empirical NIFTY 5m Band Width threshold for breakout potential
         if conf >= BotConfig.CONFIDENCE_THRESHOLD and bw > 0.0015:
-            # BUY CE: Strong Momentum (RSI > 60) + Bullish Trend + MACD Confirmed
-            if signal == 1 and rsi > 60 and close > ema_long and macd > macd_sig:
+            if signal == 1 and rsi > 55 and close > ema_long:  # BUY CE (Strong Momentum + Bullish Trend)
                 final_predictions.append(1)
-            # BUY PE: Strong Momentum (RSI < 40) + Bearish Trend + MACD Confirmed
-            elif signal == -1 and rsi < 40 and close < ema_long and macd < macd_sig:
+            elif signal == -1 and rsi < 45 and close < ema_long:  # BUY PE (Strong Momentum + Bearish Trend)
                 final_predictions.append(-1)
             else:
                 final_predictions.append(0)
@@ -596,7 +590,7 @@ class FyersService:
 def create_live_features(price_history: list) -> pd.DataFrame:
     """Creates advanced features from a list of recent prices for the live bot."""
     df = pd.DataFrame({'close': price_history})
-    df.index = pd.to_datetime(df.index)  # Ensure index is datetime
+    # Note: df.index is RangeIndex (0, 1, 2...), which is fine for rolling calculations.
 
     # Basic returns
     df['returns'] = df['close'].pct_change()
@@ -669,14 +663,12 @@ class MLStrategy:
             current_bw = features['bollinger_width'].iloc[-1]
             current_ema_long = features['ema_long'].iloc[-1]
             current_close = price_history[-1]
-            current_macd = features['macd'].iloc[-1]
-            current_macd_signal = features['macd_signal'].iloc[-1]
 
-            # Require Volatility Expansion (Band Width > 0.0015) to avoid chop
+            # Require Volatility Expansion (Band Width > 0.0015) to avoid chop (Adapted for 5m)
             if current_bw > 0.0015:
-                if prediction == 1 and current_rsi > 60 and current_close > current_ema_long and current_macd > current_macd_signal:
+                if prediction == 1 and current_rsi > 55 and current_close > current_ema_long:
                     return "BUY_CE"
-                elif prediction == -1 and current_rsi < 40 and current_close < current_ema_long and current_macd < current_macd_signal:
+                elif prediction == -1 and current_rsi < 45 and current_close < current_ema_long:
                     return "BUY_PE"
 
         except Exception as e:
