@@ -57,6 +57,38 @@ from fyers_apiv3.FyersWebsocket import data_ws
 # --- SECTION 1: CONFIGURATION ---
 # ============================================================================
 
+# Dictionary to hold configuration for different indices
+INDEX_SETTINGS = {
+    "1": {
+        "NAME": "NIFTY",
+        "SYMBOL": "NSE:NIFTY50-INDEX",
+        "LOT_SIZE": 65, # User specified
+        "STRIKE_STEP": 50,
+        "PREFIX": "NIFTY"
+    },
+    "2": {
+        "NAME": "BANKNIFTY",
+        "SYMBOL": "NSE:NIFTYBANK-INDEX",
+        "LOT_SIZE": 15,
+        "STRIKE_STEP": 100,
+        "PREFIX": "BANKNIFTY"
+    },
+    "3": {
+        "NAME": "SENSEX",
+        "SYMBOL": "BSE:SENSEX-INDEX",
+        "LOT_SIZE": 10,
+        "STRIKE_STEP": 100,
+        "PREFIX": "SENSEX"
+    },
+    "4": {
+        "NAME": "FINNIFTY",
+        "SYMBOL": "NSE:FINNIFTY-INDEX",
+        "LOT_SIZE": 40,
+        "STRIKE_STEP": 50,
+        "PREFIX": "FINNIFTY"
+    }
+}
+
 class BotConfig:
     """Consolidated configuration for all bot functionalities."""
     # --- File Names ---
@@ -77,7 +109,9 @@ class BotConfig:
     BACKTEST_TAKE_PROFIT_PCT = 0.8  # Target bigger moves
 
     # Lot Size for P&L Simulation
-    LOT_SIZE = 65 # Updated to 65 as per user request
+    LOT_SIZE = 65 # Default to NIFTY (will be updated)
+    STRIKE_STEP = 50 # Default to NIFTY (will be updated)
+    INDEX_PREFIX = "NIFTY" # Default to NIFTY (will be updated)
 
     # --- Ensemble Model Config ---
     ENSEMBLE_VOTING = 'soft'
@@ -693,7 +727,7 @@ class LiveOptionsBot:
             self.price_history.append(current_price)
             if len(self.price_history) > 200: self.price_history.pop(0)
 
-            print(f"[{dt.now().strftime('%H:%M:%S')}] NIFTY: {current_price} | Balance: ₹{self.paper_balance:,.2f}")
+            print(f"[{dt.now().strftime('%H:%M:%S')}] {self.config.INDEX_PREFIX}: {current_price} | Balance: ₹{self.paper_balance:,.2f}")
 
             if self.active_position: self._monitor_position(current_price, last_underlying_price)
             else: self._check_for_entry_signal(current_price)
@@ -708,8 +742,12 @@ class LiveOptionsBot:
         entry_premium = 100.0
         sl = entry_premium * (1 - self.config.STOP_LOSS_PCT / 100)
         tp = entry_premium * (1 + self.config.TAKE_PROFIT_PCT / 100)
-        strike = int(round(price / 50) * 50)
-        symbol = f"NIFTY_DEMO_{strike}_{opt_type}"
+
+        # Dynamic Strike Selection
+        step = self.config.STRIKE_STEP
+        strike = int(round(price / step) * step)
+        symbol = f"{self.config.INDEX_PREFIX}_DEMO_{strike}_{opt_type}"
+
         self.active_position = PaperPosition(symbol, entry_premium, sl, tp)
         print(f"  ✅ PAPER TRADE: Opened {symbol} @ ₹{entry_premium:.2f} | SL: ₹{sl:.2f}, TP: ₹{tp:.2f}")
 
@@ -776,6 +814,12 @@ def main():
         help="Optional: The mode to run the script in (setup, backtest, run)."
     )
 
+    parser.add_argument(
+        "--index",
+        choices=["1", "2", "3", "4"],
+        help="Select Index: 1=NIFTY, 2=BANKNIFTY, 3=SENSEX, 4=FINNIFTY"
+    )
+
     # Arguments specifically for 'setup' mode, using user-friendly names
     parser.add_argument("--app_id", help="Your Fyers Application ID.")
     parser.add_argument("--secret_key", help="Your Fyers API Secret Key.")
@@ -799,6 +843,29 @@ def main():
         else:
             print("Invalid choice. Exiting.")
             return
+
+    # --- Index Selection ---
+    if mode in ['backtest', 'run']:
+        index_choice = args.index
+        if not index_choice:
+            print("\nSelect Index:")
+            print("  1. NIFTY 50")
+            print("  2. BANK NIFTY")
+            print("  3. SENSEX")
+            print("  4. FIN NIFTY")
+            index_choice = input("Enter your choice (1-4) [Default: 1]: ").strip()
+
+        if not index_choice or index_choice not in INDEX_SETTINGS:
+            index_choice = "1"
+
+        settings = INDEX_SETTINGS[index_choice]
+        print(f"\n--- Selected Index: {settings['NAME']} ---")
+
+        # Apply settings to BotConfig
+        BotConfig.SYMBOL = settings["SYMBOL"]
+        BotConfig.LOT_SIZE = settings["LOT_SIZE"]
+        BotConfig.STRIKE_STEP = settings["STRIKE_STEP"]
+        BotConfig.INDEX_PREFIX = settings["PREFIX"]
 
     print(f"\n--- Running in {mode.upper()} mode ---")
 
