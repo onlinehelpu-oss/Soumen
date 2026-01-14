@@ -64,17 +64,17 @@ class BotConfig:
     MODEL_FILENAME = "real_options_model.joblib"
 
     # --- Confidence Threshold ---
-    CONFIDENCE_THRESHOLD = 0.65  # Lowered to capture more moves (Quantity strategy)
+    CONFIDENCE_THRESHOLD = 0.75  # High confidence for Sniper strategy
 
     # --- Backtester ---
     SYMBOL = "NSE:NIFTY50-INDEX"
     TIME_FRAME = "1"  # 1-minute candles
     DAYS_OF_DATA_TO_DOWNLOAD = 60
     TRAIN_TEST_SPLIT_RATIO = 0.7
-    # Adjusted risk parameters for Balanced Trend Strategy
-    BACKTEST_STOP_LOSS_PCT = 0.40  # Widen stop to survive volatility
-    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.40  # Trailing stop
-    BACKTEST_TAKE_PROFIT_PCT = 0.80  # Target larger moves (~200 pts)
+    # Adjusted risk parameters for Sniper Trend Strategy
+    BACKTEST_STOP_LOSS_PCT = 0.75  # Wide stop to survive volatility
+    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.50  # Trailing stop
+    BACKTEST_TAKE_PROFIT_PCT = 1.50  # Target major moves (~300 pts)
 
     # Lot Size for P&L Simulation
     LOT_SIZE = 65  # Updated to 65 as per user request
@@ -85,8 +85,8 @@ class BotConfig:
 
     # --- Live Bot ---
     STRIKE_DISTANCE = 0  # 0 for ATM
-    STOP_LOSS_PCT = 10.0  # Tighter SL for scalping
-    TAKE_PROFIT_PCT = 25.0  # Increased slightly to cover spread/slippage
+    STOP_LOSS_PCT = 15.0  # Wide SL for Premium
+    TAKE_PROFIT_PCT = 40.0  # Big Target for Premium
     TRAILING_STOP_LOSS_PCT = 5.0  # Trailing SL percentage for Live Bot
     PAPER_BALANCE = 100000
     LIVE_DATA_FILE = "live_market_data.csv"
@@ -321,6 +321,7 @@ def create_backtest_features(df: pd.DataFrame) -> pd.DataFrame:
             window=14).apply(lambda x: x[x < 0].mean()))))
     df['ema_9'] = df['close'].ewm(span=9, adjust=False).mean()
     df['ema_21'] = df['close'].ewm(span=21, adjust=False).mean()
+    df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
     df['ema_short'] = df['close'].ewm(span=12, adjust=False).mean()
     df['ema_long'] = df['close'].ewm(span=26, adjust=False).mean()
     df['macd'] = df['ema_short'] - df['ema_long']
@@ -434,27 +435,23 @@ def run_backtest_simulation(features_df: pd.DataFrame):
     final_predictions = []
 
     # Pre-fetch technicals
-    st_signal_values = test_data['supertrend_signal'].values
+    rsi_values = test_data['rsi'].values
+    ema_200_values = test_data['ema_200'].values
     close_prices = test_data['close'].values
-    # Use Supertrend bands to confirm breakout
-    st_upper_values = test_data['st_upper'].values
-    st_lower_values = test_data['st_lower'].values
 
     for i, (pred, conf) in enumerate(zip(predictions_mapped, confidences)):
         signal = prediction_remap[pred]
-        st_signal = st_signal_values[i]
+        rsi = rsi_values[i]
         close = close_prices[i]
-        # Approximate Supertrend Logic
-        st_upper = st_upper_values[i]
-        st_lower = st_lower_values[i]
+        ema_200 = ema_200_values[i]
 
-        # Logic: Confidence AND Supertrend Direction
+        # Logic: Confidence AND Major Trend (EMA 200) AND Momentum (RSI)
         if conf >= BotConfig.CONFIDENCE_THRESHOLD:
-            # BUY CE: ML says Up + Supertrend is Bullish (1) + Close > ST Lower (Trend Support)
-            if signal == 1 and st_signal == 1 and close > st_lower:
+            # BUY CE: ML Up + Above EMA 200 + Strong Momentum (RSI > 60)
+            if signal == 1 and close > ema_200 and rsi > 60:
                 final_predictions.append(1)
-            # BUY PE: ML says Down + Supertrend is Bearish (-1) + Close < ST Upper (Trend Resistance)
-            elif signal == -1 and st_signal == -1 and close < st_upper:
+            # BUY PE: ML Down + Below EMA 200 + Strong Momentum (RSI < 40)
+            elif signal == -1 and close < ema_200 and rsi < 40:
                 final_predictions.append(-1)
             else:
                 final_predictions.append(0)
@@ -494,13 +491,6 @@ def run_backtest_simulation(features_df: pd.DataFrame):
                     exit_reason = "TRAIL_SL"
                 elif current_price <= take_profit_price:
                     exit_reason = "TAKE_PROFIT"
-
-            # Check for Trend Reversal (Supertrend Flip)
-            st_signal = st_signal_values[i]
-            if position == 1 and st_signal == -1:
-                exit_reason = "TREND_REVERSAL"
-            elif position == -1 and st_signal == 1:
-                exit_reason = "TREND_REVERSAL"
 
             if exit_reason:
                 # Simulate Profit/Loss
@@ -637,6 +627,7 @@ def create_live_features(price_history: list) -> pd.DataFrame:
             window=14).apply(lambda x: x[x < 0].mean()))))
     df['ema_9'] = df['close'].ewm(span=9, adjust=False).mean()
     df['ema_21'] = df['close'].ewm(span=21, adjust=False).mean()
+    df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
     df['ema_short'] = df['close'].ewm(span=12, adjust=False).mean()
     df['ema_long'] = df['close'].ewm(span=26, adjust=False).mean()
     df['macd'] = df['ema_short'] - df['ema_long']
@@ -659,7 +650,7 @@ def create_live_features(price_history: list) -> pd.DataFrame:
     hl2 = (df['high'] + df['low']) / 2
     df['st_upper'] = hl2 + (st_multiplier * df['atr'])
     df['st_lower'] = hl2 - (st_multiplier * df['atr'])
-    df['supertrend'] = np.nan
+    df['supertrend_signal'] = np.where(df['close'] > df['close'].ewm(span=50, adjust=False).mean(), 1, -1)
 
     # Vectorized Supertrend is complex, using iterative for correctness in this context
     # (Optimized for backtest performance where vectorization is preferred but iterative is clearer for Supertrend logic)
@@ -692,6 +683,9 @@ def create_live_features(price_history: list) -> pd.DataFrame:
         df[f'macd_lag_{lag}'] = df['macd'].shift(lag)
 
     # Drop OHLC columns to match training features
+    # NOTE: We keep 'st_upper', 'st_lower', 'supertrend_signal' in the returned dataframe
+    # because they ARE used as features for the ML model during training.
+    # Only OHLC columns (and target) are dropped in train_and_save_model.
     return df.drop(columns=['close', 'high', 'low']).dropna()
 
 
@@ -722,17 +716,21 @@ class MLStrategy:
             prediction_remap = {0: -1, 1: 0, 2: 1}
             prediction = prediction_remap[prediction_mapped]
 
-            # 2. Check Supertrend Filters
-            current_st_signal = features['supertrend_signal'].iloc[-1]
+            # 2. Check Sniper Filters
+            current_rsi = features['rsi'].iloc[-1]
+            current_ema_200 = features['ema_200'].iloc[-1]
             current_close = price_history[-1]
-            current_st_lower = features['st_lower'].iloc[-1]
-            current_st_upper = features['st_upper'].iloc[-1]
+            current_time = dt.now()
 
-            # BUY CE: ML says Up + Supertrend Bullish + Close > Lower Band
-            if prediction == 1 and current_st_signal == 1 and current_close > current_st_lower:
+            # Time Filter: No trades before 09:30 or after 15:00
+            if current_time.hour < 9 or (current_time.hour == 9 and current_time.minute < 30) or current_time.hour >= 15:
+                return "HOLD"
+
+            # BUY CE: ML Up + Price > EMA 200 + RSI > 60
+            if prediction == 1 and current_close > current_ema_200 and current_rsi > 60:
                 return "BUY_CE"
-            # BUY PE: ML says Down + Supertrend Bearish + Close < Upper Band
-            elif prediction == -1 and current_st_signal == -1 and current_close < current_st_upper:
+            # BUY PE: ML Down + Price < EMA 200 + RSI < 40
+            elif prediction == -1 and current_close < current_ema_200 and current_rsi < 40:
                 return "BUY_PE"
 
         except Exception as e:
