@@ -669,7 +669,8 @@ def create_live_features(price_history: list) -> pd.DataFrame:
         df[f'rsi_lag_{lag}'] = df['rsi'].shift(lag)
         df[f'macd_lag_{lag}'] = df['macd'].shift(lag)
 
-    return df.drop(columns=['close']).dropna()
+    # Drop OHLC columns to match training features
+    return df.drop(columns=['close', 'high', 'low']).dropna()
 
 
 class MLStrategy:
