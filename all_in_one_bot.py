@@ -87,6 +87,7 @@ class BotConfig:
     STRIKE_DISTANCE = 0  # 0 for ATM
     STOP_LOSS_PCT = 10.0  # Tighter SL for scalping
     TAKE_PROFIT_PCT = 25.0  # Increased slightly to cover spread/slippage
+    TRAILING_STOP_LOSS_PCT = 5.0  # Trailing SL percentage for Live Bot
     PAPER_BALANCE = 100000
     LIVE_DATA_FILE = "live_market_data.csv"
 
@@ -727,10 +728,13 @@ class PaperPosition:
         self.symbol, self.entry_price, self.stop_loss, self.take_profit = symbol, entry_price, stop_loss, take_profit
         self.quantity = quantity
         self.current_price, self.pnl = entry_price, 0.0
+        self.peak_price = entry_price  # Track peak price for Trailing SL
 
     def update_pnl(self, current_price: float):
         self.current_price = current_price
         self.pnl = (self.current_price - self.entry_price) * self.quantity
+        if self.current_price > self.peak_price:
+            self.peak_price = self.current_price
 
 
 class LiveOptionsBot:
@@ -799,8 +803,15 @@ class LiveOptionsBot:
         premium_change = (price_change * 0.5) if opt_type == 'CE' else (-price_change * 0.5)
         pos.update_pnl(pos.current_price + premium_change)
 
+        # Update Trailing Stop Loss
+        if pos.peak_price > pos.entry_price:
+            new_stop_loss = pos.peak_price * (1 - self.config.TRAILING_STOP_LOSS_PCT / 100)
+            if new_stop_loss > pos.stop_loss:
+                pos.stop_loss = new_stop_loss
+                print(f"  🔄 TRAILING SL Updated: ₹{pos.stop_loss:.2f}")
+
         print(
-            f"  HOLDING: {pos.symbol} | Entry: {pos.entry_price:.2f} | Now: {pos.current_price:.2f} | P&L: {pos.pnl:+.2f}")
+            f"  HOLDING: {pos.symbol} | Entry: {pos.entry_price:.2f} | Now: {pos.current_price:.2f} | P&L: {pos.pnl:+.2f} | SL: {pos.stop_loss:.2f}")
         if pos.current_price <= pos.stop_loss:
             self._close_paper_position("STOP LOSS")
         elif pos.current_price >= pos.take_profit:
