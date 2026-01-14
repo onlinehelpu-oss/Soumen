@@ -319,6 +319,8 @@ def create_backtest_features(df: pd.DataFrame) -> pd.DataFrame:
     df['rsi'] = 100 - (100 / (1 + (
                 df['returns'].rolling(window=14).apply(lambda x: x[x > 0].mean()) / -df['returns'].rolling(
             window=14).apply(lambda x: x[x < 0].mean()))))
+    df['ema_9'] = df['close'].ewm(span=9, adjust=False).mean()
+    df['ema_21'] = df['close'].ewm(span=21, adjust=False).mean()
     df['ema_short'] = df['close'].ewm(span=12, adjust=False).mean()
     df['ema_long'] = df['close'].ewm(span=26, adjust=False).mean()
     df['macd'] = df['ema_short'] - df['ema_long']
@@ -330,12 +332,10 @@ def create_backtest_features(df: pd.DataFrame) -> pd.DataFrame:
     # Momentum (Close - Close n periods ago)
     df['momentum'] = df['close'] - df['close'].shift(4)
 
-    # Stochastic RSI
-    period = 14
-    rsi_min = df['rsi'].rolling(window=period).min()
-    rsi_max = df['rsi'].rolling(window=period).max()
-    df['stoch_rsi'] = 100 * (df['rsi'] - rsi_min) / (rsi_max - rsi_min)
-    df['stoch_rsi_k'] = df['stoch_rsi'].rolling(window=3).mean()
+    # ATR Calculation (Volatility)
+    df['tr'] = np.maximum(df['high'] - df['low'],
+                          np.maximum(abs(df['high'] - df['close'].shift(1)), abs(df['low'] - df['close'].shift(1))))
+    df['atr'] = df['tr'].ewm(span=14, adjust=False).mean()
 
     # 2. Volatility Features (Bollinger Bands)
     window = 20
@@ -419,23 +419,24 @@ def run_backtest_simulation(features_df: pd.DataFrame):
     final_predictions = []
 
     # Pre-fetch technicals
-    stoch_k_values = test_data['stoch_rsi_k'].values
+    rsi_values = test_data['rsi'].values
+    ema_9_values = test_data['ema_9'].values
+    ema_21_values = test_data['ema_21'].values
     close_prices = test_data['close'].values
-    ema_long_values = test_data['ema_long'].values  # EMA 26
 
     for i, (pred, conf) in enumerate(zip(predictions_mapped, confidences)):
         signal = prediction_remap[pred]
-        stoch_k = stoch_k_values[i]
-        close = close_prices[i]
-        ema_long = ema_long_values[i]
+        rsi = rsi_values[i]
+        ema_9 = ema_9_values[i]
+        ema_21 = ema_21_values[i]
 
-        # Logic: Confidence AND StochRSI Mean Reversion (Scalping)
+        # Logic: Confidence AND EMA Crossover (Trend Following)
         if conf >= BotConfig.CONFIDENCE_THRESHOLD:
-            # BUY CE: ML says Up + StochRSI Oversold (< 20) + Trend Filter
-            if signal == 1 and stoch_k < 20 and close > ema_long:
+            # BUY CE: ML says Up + EMA9 > EMA21 + RSI > 55 (Trend Confirmation)
+            if signal == 1 and ema_9 > ema_21 and rsi > 55:
                 final_predictions.append(1)
-            # BUY PE: ML says Down + StochRSI Overbought (> 80) + Trend Filter
-            elif signal == -1 and stoch_k > 80 and close < ema_long:
+            # BUY PE: ML says Down + EMA9 < EMA21 + RSI < 45 (Trend Confirmation)
+            elif signal == -1 and ema_9 < ema_21 and rsi < 45:
                 final_predictions.append(-1)
             else:
                 final_predictions.append(0)
@@ -612,6 +613,8 @@ def create_live_features(price_history: list) -> pd.DataFrame:
     df['rsi'] = 100 - (100 / (1 + (
                 df['returns'].rolling(window=14).apply(lambda x: x[x > 0].mean()) / -df['returns'].rolling(
             window=14).apply(lambda x: x[x < 0].mean()))))
+    df['ema_9'] = df['close'].ewm(span=9, adjust=False).mean()
+    df['ema_21'] = df['close'].ewm(span=21, adjust=False).mean()
     df['ema_short'] = df['close'].ewm(span=12, adjust=False).mean()
     df['ema_long'] = df['close'].ewm(span=26, adjust=False).mean()
     df['macd'] = df['ema_short'] - df['ema_long']
@@ -623,12 +626,10 @@ def create_live_features(price_history: list) -> pd.DataFrame:
     # Momentum
     df['momentum'] = df['close'] - df['close'].shift(4)
 
-    # Stochastic RSI
-    period = 14
-    rsi_min = df['rsi'].rolling(window=period).min()
-    rsi_max = df['rsi'].rolling(window=period).max()
-    df['stoch_rsi'] = 100 * (df['rsi'] - rsi_min) / (rsi_max - rsi_min)
-    df['stoch_rsi_k'] = df['stoch_rsi'].rolling(window=3).mean()
+    # ATR Calculation (Volatility)
+    df['tr'] = np.maximum(df['high'] - df['low'],
+                          np.maximum(abs(df['high'] - df['close'].shift(1)), abs(df['low'] - df['close'].shift(1))))
+    df['atr'] = df['tr'].ewm(span=14, adjust=False).mean()
 
     # 2. Volatility Features (Bollinger Bands)
     window = 20
@@ -679,16 +680,16 @@ class MLStrategy:
             prediction_remap = {0: -1, 1: 0, 2: 1}
             prediction = prediction_remap[prediction_mapped]
 
-            # 2. Check StochRSI Filters (Mean Reversion)
-            current_stoch_k = features['stoch_rsi_k'].iloc[-1]
-            current_ema_long = features['ema_long'].iloc[-1]
-            current_close = price_history[-1]
+            # 2. Check EMA Crossover (Trend Following)
+            current_rsi = features['rsi'].iloc[-1]
+            current_ema_9 = features['ema_9'].iloc[-1]
+            current_ema_21 = features['ema_21'].iloc[-1]
 
-            # BUY CE: ML says Up + StochRSI Oversold (< 20) + Trend Filter
-            if prediction == 1 and current_stoch_k < 20 and current_close > current_ema_long:
+            # BUY CE: ML says Up + EMA9 > EMA21 + RSI > 55 (Trend Confirmation)
+            if prediction == 1 and current_ema_9 > current_ema_21 and current_rsi > 55:
                 return "BUY_CE"
-            # BUY PE: ML says Down + StochRSI Overbought (> 80) + Trend Filter
-            elif prediction == -1 and current_stoch_k > 80 and current_close < current_ema_long:
+            # BUY PE: ML says Down + EMA9 < EMA21 + RSI < 45 (Trend Confirmation)
+            elif prediction == -1 and current_ema_9 < current_ema_21 and current_rsi < 45:
                 return "BUY_PE"
 
         except Exception as e:
