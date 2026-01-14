@@ -6,6 +6,7 @@ INCLUDING BSE:SENSEX-INDEX SUPPORT
 WITH CUSTOMIZABLE STRIKE DISTANCE (ITM/ATM/OTM)
 UPDATED: More realistic shooting star geometry (50-80% upper wick, 5-30% body, 0-25% lower wick)
 WITH FIXED MARGIN SHORTFALL HANDLING
+*** SHORT PE VERSION (BULLISH BIAS) ***
 """
 import os
 import sys
@@ -106,7 +107,9 @@ LOT_MULTIPLIER = 1  # Number of lots to trade
 EPS = 1e-6
 
 # ===================== OPTION SETTINGS =====================
-# For CE selling, a negative distance means ITM (In-the-Money)
+# For PE selling:
+# Negative distance = ITM (Strike > Index)
+# Positive distance = OTM (Strike < Index)
 # -1 = 1 strike ITM, -2 = 2 strikes ITM etc.
 #  0 = ATM (At-the-Money)
 # +1 = 1 strike OTM etc.
@@ -173,10 +176,10 @@ def get_strike_from_index_ltp(index_ltp: float, strike_distance: int = 0) -> flo
     """
     Calculate the appropriate strike price based on index LTP and strike distance.
 
-    For CE selling:
-    - Negative distance: ITM strikes (higher than index LTP)
+    For PE selling:
+    - Negative distance: ITM strikes (Strike > Index)
     - Zero distance: ATM strike (closest to index LTP)
-    - Positive distance: OTM strikes (lower than index LTP)
+    - Positive distance: OTM strikes (Strike < Index)
 
     Args:
         index_ltp: Current index LTP
@@ -202,11 +205,11 @@ def get_strike_from_index_ltp(index_ltp: float, strike_distance: int = 0) -> flo
 
     # Adjust based on strike distance
     if strike_distance < 0:
-        # ITM: Lower strike for CE (Strike < Index)
-        target_strike = atm_strike - (abs(strike_distance) * strike_interval)
+        # ITM: Higher strike for PE (Strike > Index)
+        target_strike = atm_strike + (abs(strike_distance) * strike_interval)
     elif strike_distance > 0:
-        # OTM: Higher strike for CE (Strike > Index)
-        target_strike = atm_strike + (strike_distance * strike_interval)
+        # OTM: Lower strike for PE (Strike < Index)
+        target_strike = atm_strike - (strike_distance * strike_interval)
     else:
         # ATM
         target_strike = atm_strike
@@ -296,7 +299,7 @@ class RealTimeOptionManager:
             print(f"❌ Error getting index LTP: {e}")
         return None
 
-    def get_option_details(self, index_symbol: str, strike_distance: int = 0, option_type: str = "CE") -> Optional[
+    def get_option_details(self, index_symbol: str, strike_distance: int = 0, option_type: str = "PE") -> Optional[
         Dict]:
         """Get real-time option details with correct lot size and expiry."""
         try:
@@ -321,12 +324,12 @@ class RealTimeOptionManager:
                 atm_strike = round(index_ltp / strike_interval) * strike_interval
 
                 if strike_distance < 0:
-                    # ITM: Lower strike for CE (Strike < Index)
-                    target_strike = atm_strike - (abs(strike_distance) * strike_interval)
+                    # ITM: Higher strike for PE (Strike > Index)
+                    target_strike = atm_strike + (abs(strike_distance) * strike_interval)
                     strike_type = "ITM"
                 else:
-                    # OTM: Higher strike for CE (Strike > Index)
-                    target_strike = atm_strike + (strike_distance * strike_interval)
+                    # OTM: Lower strike for PE (Strike < Index)
+                    target_strike = atm_strike - (strike_distance * strike_interval)
                     strike_type = "OTM"
 
                 print(f" 📊 ATM Strike: {atm_strike:.2f}")
@@ -664,7 +667,7 @@ class RealTimeOptionManager:
 
         for index in indices:
             print(f"\n🔍 Refreshing {index}...")
-            option_data = self.get_option_details(index, strike_distance, "CE")
+            option_data = self.get_option_details(index, strike_distance, "PE")
 
             if option_data:
                 options_data[option_data['symbol']] = option_data
@@ -1169,7 +1172,7 @@ def make_onmsg(fy, option_manager: RealTimeOptionManager, options_data: Dict, dr
 
             # 3. Place order and save trade for the OPTION
             # Use qty_shares (total shares) for Fyers API
-            order_resp = place_order(fy, sym, side=-1, qty=qty_shares, tag="OptRedShootSell", dry_run=dry_run)
+            order_resp = place_order(fy, sym, side=-1, qty=qty_shares, tag="OptRedShootPE", dry_run=dry_run)
 
             # CRITICAL FIX: Only save trade if order was successful (not margin shortfall)
             if order_resp.get('s') == 'ok' and order_resp.get('code') == 1101:
@@ -1180,7 +1183,7 @@ def make_onmsg(fy, option_manager: RealTimeOptionManager, options_data: Dict, dr
                 t["triggered"] = True
                 trigger.pop(sym, None)
                 print(
-                    f"[{tick_time:%H:%M:%S}] ✅ SHORT-CE {sym} @ {entry_price:.2f}, SL={sl_price:.2f}, TGT={tgt_price:.2f}, QTY={qty_lots} lots ({qty_shares} shares), Lot Size={lot_size}")
+                    f"[{tick_time:%H:%M:%S}] ✅ SHORT-PE {sym} @ {entry_price:.2f}, SL={sl_price:.2f}, TGT={tgt_price:.2f}, QTY={qty_lots} lots ({qty_shares} shares), Lot Size={lot_size}")
             else:
                 # Order failed (margin shortfall or other error)
                 print(f"[{tick_time:%H:%M:%S}] ❌ Order NOT placed for {sym}, cleaning trigger...")
@@ -1409,7 +1412,7 @@ def main():
                      daemon=True).start()
 
     print("\n" + "=" * 70)
-    print("🎯 RED-SHOOTING STAR OPTIONS STRATEGY - REAL-TIME")
+    print("🎯 RED-SHOOTING STAR (PE SELL) STRATEGY - REAL-TIME")
     print("=" * 70)
     print(f"📊 DYNAMIC LOT SIZES (fetched from Fyers Symbol Master)")
     print(f"  (Fallbacks: NIFTY=65, BANKNIFTY=30, FINNIFTY=60, SENSEX=20)")
