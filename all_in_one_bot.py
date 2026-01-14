@@ -71,10 +71,10 @@ class BotConfig:
     TIME_FRAME = "1"  # 1-minute candles
     DAYS_OF_DATA_TO_DOWNLOAD = 60
     TRAIN_TEST_SPLIT_RATIO = 0.7
-    # Adjusted risk parameters for High Win Rate Scalping
-    BACKTEST_STOP_LOSS_PCT = 0.25  # Tight stop to cut losers fast
-    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.25  # Tight trail
-    BACKTEST_TAKE_PROFIT_PCT = 0.45  # Small target for high frequency wins (~100 pts)
+    # Adjusted risk parameters for Balanced Trend Strategy
+    BACKTEST_STOP_LOSS_PCT = 0.40  # Widen stop to survive volatility
+    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.40  # Trailing stop
+    BACKTEST_TAKE_PROFIT_PCT = 0.80  # Target larger moves (~200 pts)
 
     # Lot Size for P&L Simulation
     LOT_SIZE = 65  # Updated to 65 as per user request
@@ -329,6 +329,19 @@ def create_backtest_features(df: pd.DataFrame) -> pd.DataFrame:
     # Momentum (Close - Close n periods ago)
     df['momentum'] = df['close'] - df['close'].shift(4)
 
+    # ADX Calculation
+    df['tr'] = np.maximum(df['high'] - df['low'],
+                          np.maximum(abs(df['high'] - df['close'].shift(1)), abs(df['low'] - df['close'].shift(1))))
+    df['plus_dm'] = np.where((df['high'] - df['high'].shift(1)) > (df['low'].shift(1) - df['low']),
+                             np.maximum(df['high'] - df['high'].shift(1), 0), 0)
+    df['minus_dm'] = np.where((df['low'].shift(1) - df['low']) > (df['high'] - df['high'].shift(1)),
+                              np.maximum(df['low'].shift(1) - df['low'], 0), 0)
+    atr = df['tr'].ewm(alpha=1 / 14, adjust=False).mean()
+    plus_di = 100 * (df['plus_dm'].ewm(alpha=1 / 14, adjust=False).mean() / atr)
+    minus_di = 100 * (df['minus_dm'].ewm(alpha=1 / 14, adjust=False).mean() / atr)
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+    df['adx'] = dx.ewm(alpha=1 / 14, adjust=False).mean()
+
     # 2. Volatility Features (Bollinger Bands)
     window = 20
     df['bollinger_mid'] = df['close'].rolling(window=window).mean()
@@ -415,6 +428,7 @@ def run_backtest_simulation(features_df: pd.DataFrame):
     bw_values = test_data['bollinger_width'].values
     close_prices = test_data['close'].values
     ema_long_values = test_data['ema_long'].values  # EMA 26
+    adx_values = test_data['adx'].values
 
     for i, (pred, conf) in enumerate(zip(predictions_mapped, confidences)):
         signal = prediction_remap[pred]
@@ -422,15 +436,17 @@ def run_backtest_simulation(features_df: pd.DataFrame):
         bw = bw_values[i]
         close = close_prices[i]
         ema_long = ema_long_values[i]
+        adx = adx_values[i]
 
         # Logic: Confidence AND RSI AND Volatility Expansion (Squeeze Breakout) AND Trend Filter
         # Using 0.0015 as empirical NIFTY 1m Band Width threshold for breakout potential
-        if conf >= BotConfig.CONFIDENCE_THRESHOLD and bw > 0.0015:
-            # BUY CE: Momentum (RSI > 55) + Bullish Trend
-            if signal == 1 and rsi > 55 and close > ema_long:
+        # Added ADX > 25 filter to ensure trending market
+        if conf >= BotConfig.CONFIDENCE_THRESHOLD and bw > 0.0015 and adx > 25:
+            # BUY CE: Strong Momentum (RSI > 60) + Bullish Trend
+            if signal == 1 and rsi > 60 and close > ema_long:
                 final_predictions.append(1)
-            # BUY PE: Momentum (RSI < 45) + Bearish Trend
-            elif signal == -1 and rsi < 45 and close < ema_long:
+            # BUY PE: Strong Momentum (RSI < 40) + Bearish Trend
+            elif signal == -1 and rsi < 40 and close < ema_long:
                 final_predictions.append(-1)
             else:
                 final_predictions.append(0)
@@ -594,7 +610,10 @@ class FyersService:
 
 def create_live_features(price_history: list) -> pd.DataFrame:
     """Creates advanced features from a list of recent prices for the live bot."""
+    # Note: Live bot uses tick/close history. Proxying High/Low as Close for indicator compatibility.
     df = pd.DataFrame({'close': price_history})
+    df['high'] = df['close']
+    df['low'] = df['close']
     # Note: df.index is RangeIndex (0, 1, 2...), which is fine for rolling calculations.
 
     # Basic returns
@@ -614,6 +633,23 @@ def create_live_features(price_history: list) -> pd.DataFrame:
 
     # Momentum
     df['momentum'] = df['close'] - df['close'].shift(4)
+
+    # ADX Calculation (Simplified using Pandas)
+    # 1. True Range
+    df['tr'] = np.maximum(df['high'] - df['low'],
+                          np.maximum(abs(df['high'] - df['close'].shift(1)), abs(df['low'] - df['close'].shift(1))))
+    # 2. Directional Movement
+    df['plus_dm'] = np.where((df['high'] - df['high'].shift(1)) > (df['low'].shift(1) - df['low']),
+                             np.maximum(df['high'] - df['high'].shift(1), 0), 0)
+    df['minus_dm'] = np.where((df['low'].shift(1) - df['low']) > (df['high'] - df['high'].shift(1)),
+                              np.maximum(df['low'].shift(1) - df['low'], 0), 0)
+    # 3. Smoothed TR and DM (Using Wilder's Smoothing ~ EWM span=2*14-1)
+    atr = df['tr'].ewm(alpha=1 / 14, adjust=False).mean()
+    plus_di = 100 * (df['plus_dm'].ewm(alpha=1 / 14, adjust=False).mean() / atr)
+    minus_di = 100 * (df['minus_dm'].ewm(alpha=1 / 14, adjust=False).mean() / atr)
+    # 4. ADX
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+    df['adx'] = dx.ewm(alpha=1 / 14, adjust=False).mean()
 
     # 2. Volatility Features (Bollinger Bands)
     window = 20
@@ -667,13 +703,14 @@ class MLStrategy:
             current_rsi = features['rsi'].iloc[-1]
             current_bw = features['bollinger_width'].iloc[-1]
             current_ema_long = features['ema_long'].iloc[-1]
+            current_adx = features['adx'].iloc[-1]
             current_close = price_history[-1]
 
-            # Require Volatility Expansion (Band Width > 0.0015) to avoid chop
-            if current_bw > 0.0015:
-                if prediction == 1 and current_rsi > 55 and current_close > current_ema_long:
+            # Require Volatility Expansion (Band Width > 0.0015) and Trend (ADX > 25) to avoid chop
+            if current_bw > 0.0015 and current_adx > 25:
+                if prediction == 1 and current_rsi > 60 and current_close > current_ema_long:
                     return "BUY_CE"
-                elif prediction == -1 and current_rsi < 45 and current_close < current_ema_long:
+                elif prediction == -1 and current_rsi < 40 and current_close < current_ema_long:
                     return "BUY_PE"
 
         except Exception as e:
