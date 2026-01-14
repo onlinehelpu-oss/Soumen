@@ -72,6 +72,7 @@ MIN_LOT_SIZES = {
 LOG_FILE = "trade_log.csv"
 STATE_DUMP = "symbol_states.json"
 PARTIAL_CANDLES_FILE = "partial_candles.json"
+STATE_PERSISTENCE_FILE = "bot_state.json"
 
 # Strike selection: 0=ATM, 1=1st OTM, -1=1st ITM
 STRIKE_DISTANCE = 0
@@ -105,7 +106,7 @@ REAUTH_ATTEMPTS = 0
 MAX_REAUTH_ATTEMPTS = 3
 
 # Default product type: "INTRADAY", "CNC", "MARGIN", "CO", "BO"
-PRODUCT_TYPE = "INTRADAY"
+PRODUCT_TYPE = "MARGIN"
 
 
 # ============================== OPTION SPECIFIC FUNCTIONS ==============================
@@ -399,7 +400,97 @@ SYMBOL_STATES: Dict[str, SymbolState] = {s: SymbolState(s) for s in SPOT_INDICES
 ACTIVE_SUBSCRIPTIONS: List[str] = SPOT_INDICES.copy()
 
 
+def save_state():
+    """Saves the current state of all symbols to a file."""
+    try:
+        state_to_save = {}
+        for symbol, state in SYMBOL_STATES.items():
+            # Convert non-serializable objects to string representations
+            state_dict = state.__dict__.copy()
+            state_dict['data'] = state.data.to_json(orient='split') if not state.data.empty else None
+            state_dict['signal_candle'] = state.signal_candle if state.signal_candle else None
+            state_dict['last_candle_ts'] = state.last_candle_ts.isoformat() if state.last_candle_ts else None
+            state_to_save[symbol] = state_dict
+
+        with open(STATE_PERSISTENCE_FILE, 'w') as f:
+            json.dump(state_to_save, f, indent=4)
+        print(f"[state] Successfully saved state to {STATE_PERSISTENCE_FILE}")
+    except Exception as e:
+        print(f"[state] Error saving state: {e}")
+
+
+def load_state():
+    """Loads the state of all symbols from a file."""
+    if not os.path.exists(STATE_PERSISTENCE_FILE):
+        print("[state] No state file found to load.")
+        return
+
+    try:
+        with open(STATE_PERSISTENCE_FILE, 'r') as f:
+            loaded_states = json.load(f)
+
+        for symbol, state_dict in loaded_states.items():
+            if symbol in SYMBOL_STATES:
+                state = SYMBOL_STATES[symbol]
+                state.status = state_dict.get('status', 'watch')
+                state.option_symbol = state_dict.get('option_symbol')
+                state.option_entry_price = state_dict.get('option_entry_price', 0.0)
+                state.spot_entry_price = state_dict.get('spot_entry_price', 0.0)
+                state.spot_stop_price = state_dict.get('spot_stop_price', 0.0)
+                state.qty = state_dict.get('qty', 0)
+                state.strike_price = state_dict.get('strike_price', 0.0)
+                state.expiry = state_dict.get('expiry')
+
+                # Restore DataFrame
+                data_json = state_dict.get('data')
+                if data_json:
+                    df = pd.read_json(data_json, orient='split')
+                    df.index = pd.to_datetime(df.index)
+                    state.data = df
+                else:
+                    state.data = pd.DataFrame()
+
+                # Restore timestamps and other objects
+                ts_str = state_dict.get('last_candle_ts')
+                if ts_str:
+                    state.last_candle_ts = dt.fromisoformat(ts_str)
+                state.signal_candle = state_dict.get('signal_candle')
+
+                print(f"[state] Loaded state for {symbol}: Status={state.status}, Position={state.option_symbol}")
+
+        print(f"[state] Successfully loaded state from {STATE_PERSISTENCE_FILE}")
+    except Exception as e:
+        print(f"[state] Error loading state: {e}")
+
 # ============================== CANDLE MANAGER ==============================
+
+def sync_with_broker_positions():
+    """Syncs the bot's internal state with the broker's positions."""
+    if not FYERS:
+        return
+
+    try:
+        response = FYERS.positions()
+        if response.get('s') != 'ok':
+            print(f"[sync] Failed to fetch broker positions: {response.get('message')}")
+            return
+
+        broker_positions = response.get('netPositions', [])
+        open_symbols = {pos['symbol'] for pos in broker_positions if pos['netQty'] != 0}
+
+        for symbol, state in SYMBOL_STATES.items():
+            if state.status == "position" and state.option_symbol not in open_symbols:
+                print(f"\n[sync] Position for {state.option_symbol} seems to be manually closed.")
+                print(f"[sync] Resetting state for {symbol}.")
+                state.reset_position()
+                state.status = "watch"  # Reset to watch status after manual close
+
+        update_subscriptions() # Ensure subscriptions are correct after sync
+
+    except Exception as e:
+        print(f"[sync] Error during position synchronization: {e}")
+
+
 class CandleManager:
     def __init__(self, timeframe_min: int = 5, on_candle=None, tz="Asia/Kolkata"):
         self.tf = int(timeframe_min)
@@ -583,7 +674,7 @@ def place_market_order(symbol: str, qty: int, side: int) -> dict:
         "qty": qty,
         "type": 2,  # Market order
         "side": side,
-        "productType": "INTRADAY",  # Options are always intraday
+        "productType": PRODUCT_TYPE,
         "limitPrice": 0,
         "stopPrice": 0,
         "validity": "DAY",
@@ -1099,6 +1190,7 @@ def main():
     print(f"RSI Entry Range: {RSI_ENTRY_MIN}-{RSI_ENTRY_MAX}")
     print(f"RSI Exit Range: {RSI_EXIT_MIN}-{RSI_EXIT_MAX}")
     print(f"Lot Size per trade: {LOT_MULTIPLIER}")
+    print(f"Product Type: {PRODUCT_TYPE}")
     print(f"Spot Indices: {SPOT_INDICES}")
     print(f"Fyers Lot Sizes: NIFTY=65, BANKNIFTY=30, FINNIFTY=60")
     print(f"Trading Enabled: {TRADING_ENABLED}")
@@ -1107,7 +1199,10 @@ def main():
     if not TRADING_ENABLED:
         print("[WARNING] Trading is DISABLED (--no-trade flag). Running in paper trading mode.\n")
 
-        # Initialize Candle Manager
+    # Register the save_state function to be called on exit
+    atexit.register(save_state)
+
+    # Initialize Candle Manager
     CANDLE_MANAGER = CandleManager(TIMEFRAME_MIN, on_candle=on_completed_candle, tz=TIMEZONE)
 
     if args.test:
@@ -1128,6 +1223,12 @@ def main():
         )
 
         print("[auth] Fyers model initialized successfully")
+
+        # Load previous state
+        load_state()
+
+        # Sync positions with broker
+        sync_with_broker_positions()
 
         # Warmup historical data
         warmup_data()
@@ -1155,9 +1256,18 @@ def main():
 
         # Keep running
         print("\n[bot] Strategy is running. Press Ctrl+C to stop.\n")
+        last_sync_time = time.time()
         while True:
             # Periodic subscription updates
             update_subscriptions()
+
+            # Sync with broker positions every 5 minutes
+            current_time = time.time()
+            if current_time - last_sync_time >= 300:
+                print("[sync] Performing periodic position synchronization...")
+                sync_with_broker_positions()
+                last_sync_time = current_time
+
             time.sleep(5)
 
     except KeyboardInterrupt:
