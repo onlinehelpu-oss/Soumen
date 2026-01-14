@@ -157,6 +157,7 @@ def floor_to_tick(x, tick=TICK_SIZE):
 # ===================== CONSTANTS & PATHS =====================
 CONFIG_FILE = "fyers_login_details.json"
 ACTIVE_TRADES_FILE = "active_trades.json"
+BOT_SETTINGS_FILE = "bot_settings.json"
 TOKENS_DIR = "AccessToken"
 TOKENS_STORE = "tokens_store.json"
 TODAY = dt.date.today()
@@ -720,6 +721,40 @@ def save_active_trades():
     """Saves the current active_trades dictionary to the JSON file."""
     _write_json(ACTIVE_TRADES_FILE, active_trades)
 
+
+def load_dynamic_settings():
+    """Loads dynamic settings from JSON file and updates globals."""
+    global REGIME_EMA_PERIOD, STRIKE_DISTANCE, R_MULTIPLIER
+
+    settings = _read_json(BOT_SETTINGS_FILE, {})
+    if not settings:
+        return
+
+    updated = False
+
+    if "regime_ema_period" in settings:
+        new_val = int(settings["regime_ema_period"])
+        if new_val != REGIME_EMA_PERIOD:
+            print(f"🔄 Dynamic Setting Update: REGIME_EMA_PERIOD {REGIME_EMA_PERIOD} -> {new_val}")
+            REGIME_EMA_PERIOD = new_val
+            updated = True
+
+    if "strike_distance" in settings:
+        new_val = int(settings["strike_distance"])
+        if new_val != STRIKE_DISTANCE:
+            print(f"🔄 Dynamic Setting Update: STRIKE_DISTANCE {STRIKE_DISTANCE} -> {new_val}")
+            STRIKE_DISTANCE = new_val
+            updated = True
+
+    if "r_multiplier" in settings:
+        new_val = float(settings["r_multiplier"])
+        if new_val != R_MULTIPLIER:
+            print(f"🔄 Dynamic Setting Update: R_MULTIPLIER {R_MULTIPLIER} -> {new_val}")
+            R_MULTIPLIER = new_val
+            updated = True
+
+    return updated
+
     # ===================== LOGIN & TOKEN MGMT =====================
 
 
@@ -1229,17 +1264,29 @@ def sync_with_broker_positions(fy, dry_run=False):
 
 # ===================== EXIT MONITOR (for SHORT positions) with FORCE-EXIT =====================
 def monitor_loop(fy, option_manager: RealTimeOptionManager, options_data: Dict, strike_distance: int, dry_run=False):
-    global FORCE_CLOSED_ALL
+    global FORCE_CLOSED_ALL, STRIKE_DISTANCE
     last_refresh = time.time()
     refresh_interval = 300  # 5 minutes
     last_sync = time.time()
     sync_interval = 20  # Sync every 20 seconds
+    last_settings_check = time.time()
+    settings_interval = 5 # Check settings every 5 seconds
 
     while True:
         try:
             now = time.time()
             now_dt = dt.datetime.now()
             now_time = now_dt.time()
+
+            # Check for dynamic settings updates
+            if now - last_settings_check > settings_interval:
+                if load_dynamic_settings():
+                    # If strike distance changed, force refresh of options
+                    if STRIKE_DISTANCE != strike_distance:
+                        print(f"⚠️ Strike distance changed from {strike_distance} to {STRIKE_DISTANCE}. Triggering refresh.")
+                        last_refresh = 0 # Force refresh immediately
+                        strike_distance = STRIKE_DISTANCE # Update local var
+                last_settings_check = now
 
             # Sync with broker positions periodically
             if now - last_sync > sync_interval:
@@ -1249,12 +1296,14 @@ def monitor_loop(fy, option_manager: RealTimeOptionManager, options_data: Dict, 
             # Auto-refresh option contracts every 5 minutes
             if now - last_refresh > refresh_interval:
                 print(f"\n🔄 AUTO-REFRESHING OPTION CONTRACTS...")
+                # Use global STRIKE_DISTANCE
+                current_strike_dist = STRIKE_DISTANCE
                 print(
-                    f"📊 Strike Distance: {strike_distance} ({'ITM' if strike_distance < 0 else 'OTM' if strike_distance > 0 else 'ATM'})")
+                    f"📊 Strike Distance: {current_strike_dist} ({'ITM' if current_strike_dist < 0 else 'OTM' if current_strike_dist > 0 else 'ATM'})")
                 print(
                     f"📊 Candle Geometry: Upper={UPPER_WICK_MIN}-{UPPER_WICK_MAX}%, Body={BODY_MIN}-{BODY_MAX}%, Lower=0-{LOWER_WICK_MAX}%")
 
-                new_options = option_manager.refresh_options(SPOT_INDICES, strike_distance)
+                new_options = option_manager.refresh_options(SPOT_INDICES, current_strike_dist)
                 if new_options:
                     # Update options data
                     options_data.clear()
