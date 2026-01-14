@@ -908,12 +908,12 @@ def evaluate_on_new_candle(st: SymbolState):
     if st.status == "watch" and is_market_hours():
         open_below_vwap = curr_open <= vwap
         closed_above_vwap = curr_close > vwap
-        fast_ema_above_vwap = ema_fast > vwap
+        fast_ema_below_vwap = ema_fast < vwap
         green_ok = (not REQUIRE_GREEN_SIGNAL) or (curr_close > curr_open)
         ok_signal = bool(curr.get("ok_signal", True))
         rsi_ok = RSI_ENTRY_MIN <= rsi_val <= RSI_ENTRY_MAX
 
-        if open_below_vwap and closed_above_vwap and fast_ema_above_vwap and green_ok and ok_signal and rsi_ok:
+        if open_below_vwap and closed_above_vwap and fast_ema_below_vwap and green_ok and ok_signal and rsi_ok:
             st.signal_candle = {
                 "ts": curr.name,
                 "open": curr_open,
