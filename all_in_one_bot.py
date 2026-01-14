@@ -1065,6 +1065,34 @@ def make_onmsg(fy, option_manager: RealTimeOptionManager, options_data: Dict, dr
             prev_ltp_cache[sym] = float(prev_ltp)
             # update websocket LTP cache
         ltp_cache[sym] = (ltp, time.time())
+
+        # --- FAST EXIT CHECK (Instant Reaction to Tick) ---
+        if sym in active_trades:
+            trade = active_trades[sym]
+            if trade["status"] == "open" and trade.get("order_placed_successfully", False):
+                sl = trade["sl"]
+                tgt = trade["tgt"]
+                qty_lots = trade["qty"]
+                lot_size = trade.get("lot_size", 65)
+                side = trade.get("side", -1)
+
+                # Check exit conditions for SHORT trade (side == -1)
+                if side == -1:
+                    if ltp >= sl:
+                        print(f"[{dt.datetime.now():%H:%M:%S}] ⚡ FAST EXIT: SL HIT {sym} @ {ltp:.2f}")
+                        active_trades[sym]["status"] = "exiting"
+                        threading.Thread(target=exit_short_by_buy_market,
+                                         args=(fy, sym, qty_lots, lot_size, dry_run)).start()
+                        active_trades.pop(sym, None)
+                        save_active_trades()
+                    elif ltp <= tgt:
+                        print(f"[{dt.datetime.now():%H:%M:%S}] ⚡ FAST EXIT: TARGET HIT {sym} @ {ltp:.2f}")
+                        active_trades[sym]["status"] = "exiting"
+                        threading.Thread(target=exit_short_by_buy_market,
+                                         args=(fy, sym, qty_lots, lot_size, dry_run)).start()
+                        active_trades.pop(sym, None)
+                        save_active_trades()
+
         tick_time = dt.datetime.fromtimestamp(ts)
         cstart = candle_start(tick_time)
         key = (sym, cstart)
@@ -1319,6 +1347,8 @@ def monitor_loop(fy, option_manager: RealTimeOptionManager, options_data: Dict, 
                 last_refresh = now
 
             # Normal SL/TGT monitoring for open option trades
+            # NOTE: Main exit check is now done in make_onmsg for speed.
+            # This loop acts as a backup/redundancy for quotes if WS misses something.
             if active_trades:
                 for sym in list(active_trades.keys()):
                     trade = active_trades.get(sym)
@@ -1332,6 +1362,8 @@ def monitor_loop(fy, option_manager: RealTimeOptionManager, options_data: Dict, 
                         active_trades.pop(sym, None)
                         continue
 
+                    # We can use get_ltp here, but it might be slower than WS.
+                    # Redundant check:
                     ltp = get_ltp(fy, sym)
                     if ltp is None:
                         continue
@@ -1344,7 +1376,7 @@ def monitor_loop(fy, option_manager: RealTimeOptionManager, options_data: Dict, 
                     if side == -1:
                         if ltp >= sl:
                             print(
-                                f"[{dt.datetime.now():%H:%M:%S}] ❌ SL HIT {sym} @ {ltp:.2f} → BUY market to cover (exit)")
+                                f"[{dt.datetime.now():%H:%M:%S}] ❌ REDUNDANT CHECK: SL HIT {sym} @ {ltp:.2f}")
                             active_trades[sym]["status"] = "exiting"
                             # Pass both qty_lots and lot_size
                             exit_short_by_buy_market(fy, sym, qty_lots, lot_size, dry_run=dry_run)
@@ -1352,7 +1384,7 @@ def monitor_loop(fy, option_manager: RealTimeOptionManager, options_data: Dict, 
                             save_active_trades()
                         elif ltp <= tgt:
                             print(
-                                f"[{dt.datetime.now():%H:%M:%S}] 🎯 TARGET HIT {sym} @ {ltp:.2f} → BUY market to cover (exit)")
+                                f"[{dt.datetime.now():%H:%M:%S}] 🎯 REDUNDANT CHECK: TARGET HIT {sym} @ {ltp:.2f}")
                             active_trades[sym]["status"] = "exiting"
                             # Pass both qty_lots and lot_size
                             exit_short_by_buy_market(fy, sym, qty_lots, lot_size, dry_run=dry_run)
@@ -1360,7 +1392,7 @@ def monitor_loop(fy, option_manager: RealTimeOptionManager, options_data: Dict, 
                             save_active_trades()
         except Exception as e:
             print(f"⚠️ Monitor loop error: {e}")
-        time.sleep(1.5)
+        time.sleep(1.0) # Reduced from 1.5 since main work is in WS
 
         # ===================== MAIN =====================
 
