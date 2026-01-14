@@ -330,18 +330,12 @@ def create_backtest_features(df: pd.DataFrame) -> pd.DataFrame:
     # Momentum (Close - Close n periods ago)
     df['momentum'] = df['close'] - df['close'].shift(4)
 
-    # ADX Calculation
-    df['tr'] = np.maximum(df['high'] - df['low'],
-                          np.maximum(abs(df['high'] - df['close'].shift(1)), abs(df['low'] - df['close'].shift(1))))
-    df['plus_dm'] = np.where((df['high'] - df['high'].shift(1)) > (df['low'].shift(1) - df['low']),
-                             np.maximum(df['high'] - df['high'].shift(1), 0), 0)
-    df['minus_dm'] = np.where((df['low'].shift(1) - df['low']) > (df['high'] - df['high'].shift(1)),
-                              np.maximum(df['low'].shift(1) - df['low'], 0), 0)
-    atr = df['tr'].ewm(alpha=1 / 14, adjust=False).mean()
-    plus_di = 100 * (df['plus_dm'].ewm(alpha=1 / 14, adjust=False).mean() / atr)
-    minus_di = 100 * (df['minus_dm'].ewm(alpha=1 / 14, adjust=False).mean() / atr)
-    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-    df['adx'] = dx.ewm(alpha=1 / 14, adjust=False).mean()
+    # Stochastic RSI
+    period = 14
+    rsi_min = df['rsi'].rolling(window=period).min()
+    rsi_max = df['rsi'].rolling(window=period).max()
+    df['stoch_rsi'] = 100 * (df['rsi'] - rsi_min) / (rsi_max - rsi_min)
+    df['stoch_rsi_k'] = df['stoch_rsi'].rolling(window=3).mean()
 
     # 2. Volatility Features (Bollinger Bands)
     window = 20
@@ -425,29 +419,23 @@ def run_backtest_simulation(features_df: pd.DataFrame):
     final_predictions = []
 
     # Pre-fetch technicals
-    rsi_values = test_data['rsi'].values
-    bw_values = test_data['bollinger_width'].values
+    stoch_k_values = test_data['stoch_rsi_k'].values
     close_prices = test_data['close'].values
     ema_long_values = test_data['ema_long'].values  # EMA 26
-    adx_values = test_data['adx'].values
 
     for i, (pred, conf) in enumerate(zip(predictions_mapped, confidences)):
         signal = prediction_remap[pred]
-        rsi = rsi_values[i]
-        bw = bw_values[i]
+        stoch_k = stoch_k_values[i]
         close = close_prices[i]
         ema_long = ema_long_values[i]
-        adx = adx_values[i]
 
-        # Logic: Confidence AND RSI AND Volatility Expansion (Squeeze Breakout) AND Trend Filter
-        # Using 0.0015 as empirical NIFTY 1m Band Width threshold for breakout potential
-        # Added ADX > 25 filter to ensure trending market
-        if conf >= BotConfig.CONFIDENCE_THRESHOLD and bw > 0.0015 and adx > 25:
-            # BUY CE: Strong Momentum (RSI > 60) + Bullish Trend
-            if signal == 1 and rsi > 60 and close > ema_long:
+        # Logic: Confidence AND StochRSI Mean Reversion (Scalping)
+        if conf >= BotConfig.CONFIDENCE_THRESHOLD:
+            # BUY CE: ML says Up + StochRSI Oversold (< 20) + Trend Filter
+            if signal == 1 and stoch_k < 20 and close > ema_long:
                 final_predictions.append(1)
-            # BUY PE: Strong Momentum (RSI < 40) + Bearish Trend
-            elif signal == -1 and rsi < 40 and close < ema_long:
+            # BUY PE: ML says Down + StochRSI Overbought (> 80) + Trend Filter
+            elif signal == -1 and stoch_k > 80 and close < ema_long:
                 final_predictions.append(-1)
             else:
                 final_predictions.append(0)
@@ -635,22 +623,12 @@ def create_live_features(price_history: list) -> pd.DataFrame:
     # Momentum
     df['momentum'] = df['close'] - df['close'].shift(4)
 
-    # ADX Calculation (Simplified using Pandas)
-    # 1. True Range
-    df['tr'] = np.maximum(df['high'] - df['low'],
-                          np.maximum(abs(df['high'] - df['close'].shift(1)), abs(df['low'] - df['close'].shift(1))))
-    # 2. Directional Movement
-    df['plus_dm'] = np.where((df['high'] - df['high'].shift(1)) > (df['low'].shift(1) - df['low']),
-                             np.maximum(df['high'] - df['high'].shift(1), 0), 0)
-    df['minus_dm'] = np.where((df['low'].shift(1) - df['low']) > (df['high'] - df['high'].shift(1)),
-                              np.maximum(df['low'].shift(1) - df['low'], 0), 0)
-    # 3. Smoothed TR and DM (Using Wilder's Smoothing ~ EWM span=2*14-1)
-    atr = df['tr'].ewm(alpha=1 / 14, adjust=False).mean()
-    plus_di = 100 * (df['plus_dm'].ewm(alpha=1 / 14, adjust=False).mean() / atr)
-    minus_di = 100 * (df['minus_dm'].ewm(alpha=1 / 14, adjust=False).mean() / atr)
-    # 4. ADX
-    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
-    df['adx'] = dx.ewm(alpha=1 / 14, adjust=False).mean()
+    # Stochastic RSI
+    period = 14
+    rsi_min = df['rsi'].rolling(window=period).min()
+    rsi_max = df['rsi'].rolling(window=period).max()
+    df['stoch_rsi'] = 100 * (df['rsi'] - rsi_min) / (rsi_max - rsi_min)
+    df['stoch_rsi_k'] = df['stoch_rsi'].rolling(window=3).mean()
 
     # 2. Volatility Features (Bollinger Bands)
     window = 20
@@ -701,19 +679,17 @@ class MLStrategy:
             prediction_remap = {0: -1, 1: 0, 2: 1}
             prediction = prediction_remap[prediction_mapped]
 
-            # 2. Check RSI & Volatility Filters
-            current_rsi = features['rsi'].iloc[-1]
-            current_bw = features['bollinger_width'].iloc[-1]
+            # 2. Check StochRSI Filters (Mean Reversion)
+            current_stoch_k = features['stoch_rsi_k'].iloc[-1]
             current_ema_long = features['ema_long'].iloc[-1]
-            current_adx = features['adx'].iloc[-1]
             current_close = price_history[-1]
 
-            # Require Volatility Expansion (Band Width > 0.0015) and Trend (ADX > 25) to avoid chop
-            if current_bw > 0.0015 and current_adx > 25:
-                if prediction == 1 and current_rsi > 60 and current_close > current_ema_long:
-                    return "BUY_CE"
-                elif prediction == -1 and current_rsi < 40 and current_close < current_ema_long:
-                    return "BUY_PE"
+            # BUY CE: ML says Up + StochRSI Oversold (< 20) + Trend Filter
+            if prediction == 1 and current_stoch_k < 20 and current_close > current_ema_long:
+                return "BUY_CE"
+            # BUY PE: ML says Down + StochRSI Overbought (> 80) + Trend Filter
+            elif prediction == -1 and current_stoch_k > 80 and current_close < current_ema_long:
+                return "BUY_PE"
 
         except Exception as e:
             print(f"Error in signal generation: {e}")
