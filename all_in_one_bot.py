@@ -111,6 +111,7 @@ EPS = 1e-6
 #  0 = ATM (At-the-Money)
 # +1 = 1 strike OTM etc.
 STRIKE_DISTANCE = 0
+REGIME_EMA_PERIOD = 50
 
 # ===================== CANDLE GEOMETRY SETTINGS =====================
 # UPDATED: More realistic shooting star geometry
@@ -949,6 +950,7 @@ processed_candles = set()
 trigger = {}
 ltp_cache = {}  # symbol -> (ltp, ts)
 prev_ltp_cache = {}  # symbol -> previous ltp (for strict cross)
+ema_store = {} # symbol -> current ema value
 _last_quote_error = {}
 ERROR_THROTTLE_SECS = 10
 
@@ -1040,15 +1042,37 @@ def make_onmsg(fy, option_manager: RealTimeOptionManager, options_data: Dict, dr
         if tick_time >= cstart + dt.timedelta(minutes=TIMEFRAME_MIN) - dt.timedelta(seconds=1):
             if key not in processed_candles:
                 processed_candles.add(key)
+
+                # --- UPDATE REGIME EMA ---
+                current_close = bar["c"]
+                prev_ema = ema_store.get(sym)
+                if prev_ema is None:
+                    # Initialize with current close if no history
+                    new_ema = current_close
+                else:
+                    k = 2 / (REGIME_EMA_PERIOD + 1)
+                    new_ema = (current_close * k) + (prev_ema * (1 - k))
+                ema_store[sym] = new_ema
+
                 prev_cstart = cstart - dt.timedelta(minutes=TIMEFRAME_MIN)
                 prev_bar = bars.get((sym, prev_cstart))
                 if ONE_POSITION_AT_A_TIME and has_open_positions():
                     return
+
+                # --- CHECK SIGNAL + REGIME EMA ---
+                # "if price below Regime Ema , then if signal generate then only signal valid"
+                is_below_ema = current_close < new_ema
+
                 if prev_bar and is_bearish_shooting_star_candle(
                         bar["o"], bar["h"], bar["l"], bar["c"],
                         prev_bar["o"], prev_bar["c"],
                         min_range_pct=MIN_RANGE_PCT
                 ):
+                    # EMA Filter Check
+                    if not is_below_ema:
+                        print(f"[{tick_time:%H:%M:%S}] ⚠️ Signal on {sym} ignored: Price {current_close:.2f} >= Regime EMA {new_ema:.2f}")
+                        return
+
                     next_cstart = cstart + dt.timedelta(minutes=TIMEFRAME_MIN)
                     # CRITICAL FIX: Get FRESH lot size for THIS symbol
                     if sym.startswith('NSE:'):
@@ -1290,7 +1314,7 @@ def monitor_loop(fy, option_manager: RealTimeOptionManager, options_data: Dict, 
 
 
 def main():
-    global TIMEFRAME_MIN, R_MULTIPLIER, STRIKE_DISTANCE
+    global TIMEFRAME_MIN, R_MULTIPLIER, STRIKE_DISTANCE, REGIME_EMA_PERIOD
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--tf", type=int, default=TIMEFRAME_MIN, help="Timeframe in minutes (e.g., 5, 15, 60)")
@@ -1298,6 +1322,8 @@ def main():
                         help="Risk:Reward multiple (e.g., 2.0 means target = entry - 2 * risk)")
     parser.add_argument("--strike", type=int, default=STRIKE_DISTANCE,
                         help="Strike distance (-ve for ITM, 0 for ATM, +ve for OTM)")
+    parser.add_argument("--regime-ema", type=int, default=REGIME_EMA_PERIOD,
+                        help="Period for Regime EMA filter (default 50)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Enable dry-run: simulate orders instead of placing live ones")
     parser.add_argument("--run-tests", action="store_true", help="Run unit tests for detector logic and exit")
@@ -1306,6 +1332,7 @@ def main():
     TIMEFRAME_MIN = max(1, int(args.tf))
     R_MULTIPLIER = float(args.rmult)
     STRIKE_DISTANCE = int(args.strike)
+    REGIME_EMA_PERIOD = int(args.regime_ema)
     dry_run = args.dry_run or (not HAS_FYERS)
 
     if args.run_tests:
@@ -1392,10 +1419,11 @@ def main():
     print(f"   Upper Wick: {UPPER_WICK_MIN}-{UPPER_WICK_MAX}% (Clear rejection)")
     print(f"   Body: {BODY_MIN}-{BODY_MAX}% (Small-medium body)")
     print(f"   Lower Wick: 0-{LOWER_WICK_MAX}% (Small/no lower shadow)")
+    print(f"📊 REGIME EMA: {REGIME_EMA_PERIOD} (Signal valid only if Price < EMA)")
     print(f"📊 LOT MULTIPLIER: {LOT_MULTIPLIER} lot(s) per trade")
     print("=" * 70)
     print(f"🧩 Python: {sys.version.split()[0]} | Symbols: {len(option_symbols)}")
-    print(f"📈 TF={TIMEFRAME_MIN}m | Rmult={R_MULTIPLIER} | Strike Distance={STRIKE_DISTANCE} | dry_run={dry_run}")
+    print(f"📈 TF={TIMEFRAME_MIN}m | Rmult={R_MULTIPLIER} | Strike={STRIKE_DISTANCE} | EMA={REGIME_EMA_PERIOD} | dry_run={dry_run}")
     print("=" * 70)
     print("🚀 Real-time SHORT scanner started …\n")
     ws_connection.connect()
