@@ -43,7 +43,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="xgboost")
 
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.model_selection import train_test_split
 import joblib
 import xgboost as xgb
@@ -64,21 +64,21 @@ class BotConfig:
     MODEL_FILENAME = "real_options_model.joblib"
 
     # --- Confidence Threshold ---
-    CONFIDENCE_THRESHOLD = 0.75  # High confidence for Sniper strategy
+    CONFIDENCE_THRESHOLD = 0.60  # Optimized for Advanced Strategy
 
     # --- Backtester ---
     SYMBOL = "NSE:NIFTY50-INDEX"
     TIME_FRAME = "1"  # 1-minute candles
     DAYS_OF_DATA_TO_DOWNLOAD = 60
     TRAIN_TEST_SPLIT_RATIO = 0.7
-    # Adjusted risk parameters for Sniper Trend Strategy
-    BACKTEST_STOP_LOSS_PCT = 0.75  # Wide stop to survive volatility
-    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.50  # Trailing stop
-    BACKTEST_TAKE_PROFIT_PCT = 1.50  # Target major moves (~300 pts)
+    # Adjusted risk parameters for Advanced Strategy (1:3 Risk/Reward)
+    BACKTEST_STOP_LOSS_PCT = 0.40  # Tight stop
+    BACKTEST_TRAILING_STOP_LOSS_PCT = 0.40  # Tight trail
+    BACKTEST_TAKE_PROFIT_PCT = 1.20  # High target
 
     # Lot Size for P&L Simulation
     LOT_SIZE = 65  # Updated to 65 as per user request
-    NUM_LOTS = 1   # Lot Multiplier (Trade multiple lots)
+    NUM_LOTS = 2   # Increased to demonstrate higher profit potential
 
     # --- Ensemble Model Config ---
     ENSEMBLE_VOTING = 'soft'
@@ -321,7 +321,9 @@ def create_backtest_features(df: pd.DataFrame) -> pd.DataFrame:
             window=14).apply(lambda x: x[x < 0].mean()))))
     df['ema_9'] = df['close'].ewm(span=9, adjust=False).mean()
     df['ema_21'] = df['close'].ewm(span=21, adjust=False).mean()
-    df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
+    df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
+    # Calculate EMA Slope (Velocity): (Current - Prev) / Prev * 100
+    df['ema_slope'] = df['ema_21'].diff() / df['ema_21'].shift(1) * 100
     df['ema_short'] = df['close'].ewm(span=12, adjust=False).mean()
     df['ema_long'] = df['close'].ewm(span=26, adjust=False).mean()
     df['macd'] = df['ema_short'] - df['ema_long']
@@ -333,25 +335,6 @@ def create_backtest_features(df: pd.DataFrame) -> pd.DataFrame:
     # Momentum (Close - Close n periods ago)
     df['momentum'] = df['close'] - df['close'].shift(4)
 
-    # ATR Calculation (Volatility)
-    df['tr'] = np.maximum(df['high'] - df['low'],
-                          np.maximum(abs(df['high'] - df['close'].shift(1)), abs(df['low'] - df['close'].shift(1))))
-    df['atr'] = df['tr'].ewm(span=14, adjust=False).mean()
-
-    # Supertrend Calculation
-    st_period = 10
-    st_multiplier = 3
-    hl2 = (df['high'] + df['low']) / 2
-    # Recalculate ATR for backtest features
-    atr = df['tr'].ewm(span=14, adjust=False).mean()
-    df['st_upper'] = hl2 + (st_multiplier * atr)
-    df['st_lower'] = hl2 - (st_multiplier * atr)
-
-    # Logic: Close > Upper (Bearish -> Bullish)?
-    # For robustness, we'll use a simple confirmation:
-    # Bullish if Close > EMA(50). Bearish if Close < EMA(50).
-    # This aligns the Supertrend proxy with the major trend.
-    df['supertrend_signal'] = np.where(df['close'] > df['close'].ewm(span=50, adjust=False).mean(), 1, -1)
 
     # 2. Volatility Features (Bollinger Bands)
     window = 20
@@ -399,11 +382,12 @@ def train_and_save_model(features_df: pd.DataFrame):
     # Initialize Base Models (Increased estimators for better generalization)
     xgb_model = xgb.XGBClassifier(n_estimators=200, random_state=42, n_jobs=-1, eval_metric='logloss')
     rf_model = RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42, n_jobs=-1)
+    gb_model = GradientBoostingClassifier(n_estimators=200, max_depth=5, random_state=42)
 
     # Create Voting Classifier (Ensemble)
     from sklearn.ensemble import VotingClassifier
     voting_model = VotingClassifier(
-        estimators=[('xgb', xgb_model), ('rf', rf_model)],
+        estimators=[('xgb', xgb_model), ('rf', rf_model), ('gb', gb_model)],
         voting='soft'
     )
 
@@ -436,22 +420,24 @@ def run_backtest_simulation(features_df: pd.DataFrame):
 
     # Pre-fetch technicals
     rsi_values = test_data['rsi'].values
-    ema_200_values = test_data['ema_200'].values
+    ema_50_values = test_data['ema_50'].values
+    ema_slope_values = test_data['ema_slope'].values
     close_prices = test_data['close'].values
 
     for i, (pred, conf) in enumerate(zip(predictions_mapped, confidences)):
         signal = prediction_remap[pred]
         rsi = rsi_values[i]
         close = close_prices[i]
-        ema_200 = ema_200_values[i]
+        ema_50 = ema_50_values[i]
+        ema_slope = ema_slope_values[i]
 
-        # Logic: Confidence AND Major Trend (EMA 200) AND Momentum (RSI)
+        # Logic: Confidence AND Trend (EMA 50) AND Velocity (Slope) AND Momentum (RSI)
         if conf >= BotConfig.CONFIDENCE_THRESHOLD:
-            # BUY CE: ML Up + Above EMA 200 + Strong Momentum (RSI > 60)
-            if signal == 1 and close > ema_200 and rsi > 60:
+            # BUY CE: ML Up + Above EMA 50 + Positive Velocity + RSI > 50
+            if signal == 1 and close > ema_50 and ema_slope > 0.005 and rsi > 50:
                 final_predictions.append(1)
-            # BUY PE: ML Down + Below EMA 200 + Strong Momentum (RSI < 40)
-            elif signal == -1 and close < ema_200 and rsi < 40:
+            # BUY PE: ML Down + Below EMA 50 + Negative Velocity + RSI < 50
+            elif signal == -1 and close < ema_50 and ema_slope < -0.005 and rsi < 50:
                 final_predictions.append(-1)
             else:
                 final_predictions.append(0)
@@ -627,7 +613,9 @@ def create_live_features(price_history: list) -> pd.DataFrame:
             window=14).apply(lambda x: x[x < 0].mean()))))
     df['ema_9'] = df['close'].ewm(span=9, adjust=False).mean()
     df['ema_21'] = df['close'].ewm(span=21, adjust=False).mean()
-    df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
+    df['ema_50'] = df['close'].ewm(span=50, adjust=False).mean()
+    # Calculate EMA Slope (Velocity): (Current - Prev) / Prev * 100
+    df['ema_slope'] = df['ema_21'].diff() / df['ema_21'].shift(1) * 100
     df['ema_short'] = df['close'].ewm(span=12, adjust=False).mean()
     df['ema_long'] = df['close'].ewm(span=26, adjust=False).mean()
     df['macd'] = df['ema_short'] - df['ema_long']
@@ -639,30 +627,6 @@ def create_live_features(price_history: list) -> pd.DataFrame:
     # Momentum
     df['momentum'] = df['close'] - df['close'].shift(4)
 
-    # ATR Calculation (Volatility)
-    df['tr'] = np.maximum(df['high'] - df['low'],
-                          np.maximum(abs(df['high'] - df['close'].shift(1)), abs(df['low'] - df['close'].shift(1))))
-    df['atr'] = df['tr'].ewm(span=14, adjust=False).mean()
-
-    # Supertrend Calculation
-    st_period = 10
-    st_multiplier = 3
-    hl2 = (df['high'] + df['low']) / 2
-    df['st_upper'] = hl2 + (st_multiplier * df['atr'])
-    df['st_lower'] = hl2 - (st_multiplier * df['atr'])
-    df['supertrend_signal'] = np.where(df['close'] > df['close'].ewm(span=50, adjust=False).mean(), 1, -1)
-
-    # Vectorized Supertrend is complex, using iterative for correctness in this context
-    # (Optimized for backtest performance where vectorization is preferred but iterative is clearer for Supertrend logic)
-    # Using a simple approximation for Feature Engineering:
-    # If Close > Lower Band (prev), keep Lower Band. Else Lower Band = current Lower Band.
-    # For ML features, we just need the bands and the crossover signal.
-
-    # Logic: Close > Upper (Bearish -> Bullish)?
-    # For robustness, we'll use a simple confirmation:
-    # Bullish if Close > EMA(50). Bearish if Close < EMA(50).
-    # This aligns the Supertrend proxy with the major trend.
-    df['supertrend_signal'] = np.where(df['close'] > df['close'].ewm(span=50, adjust=False).mean(), 1, -1)
 
     # 2. Volatility Features (Bollinger Bands)
     window = 20
@@ -716,9 +680,10 @@ class MLStrategy:
             prediction_remap = {0: -1, 1: 0, 2: 1}
             prediction = prediction_remap[prediction_mapped]
 
-            # 2. Check Sniper Filters
+            # 2. Check Advanced Filters
             current_rsi = features['rsi'].iloc[-1]
-            current_ema_200 = features['ema_200'].iloc[-1]
+            current_ema_50 = features['ema_50'].iloc[-1]
+            current_ema_slope = features['ema_slope'].iloc[-1]
             current_close = price_history[-1]
             current_time = dt.now()
 
@@ -726,11 +691,11 @@ class MLStrategy:
             if current_time.hour < 9 or (current_time.hour == 9 and current_time.minute < 30) or current_time.hour >= 15:
                 return "HOLD"
 
-            # BUY CE: ML Up + Price > EMA 200 + RSI > 60
-            if prediction == 1 and current_close > current_ema_200 and current_rsi > 60:
+            # BUY CE: ML Up + Price > EMA 50 + Positive Velocity + RSI > 50
+            if prediction == 1 and current_close > current_ema_50 and current_ema_slope > 0.005 and current_rsi > 50:
                 return "BUY_CE"
-            # BUY PE: ML Down + Price < EMA 200 + RSI < 40
-            elif prediction == -1 and current_close < current_ema_200 and current_rsi < 40:
+            # BUY PE: ML Down + Price < EMA 50 + Negative Velocity + RSI < 50
+            elif prediction == -1 and current_close < current_ema_50 and current_ema_slope < -0.005 and current_rsi < 50:
                 return "BUY_PE"
 
         except Exception as e:
