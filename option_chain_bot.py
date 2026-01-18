@@ -307,22 +307,12 @@ def fetch_and_merge_quotes(fyers, chain_data):
         if sym in quote_map:
             q = quote_map[sym]
             # Map Quote keys to Chain keys expected by our logic
-            # q keys: lp (LTP), vol (Volume), oi (Open Interest), ch (Change), etc.
             item['ltp'] = q.get('lp', item.get('ltp', 0))
-            item['volume'] = q.get('volume', 0) # API uses 'volume' or 'vol'? Fyers v3 usually 'volume' in quotes? CHECK.
-                                                # Actually, usually it's 'volume' in quotes data.
+            item['volume'] = q.get('volume', 0)
             if 'volume' not in q and 'vol' in q: item['volume'] = q['vol']
 
             item['oi'] = q.get('oi', 0)
             item['prev_close_price'] = q.get('prev_close_price', item.get('ltp', 0) - q.get('ch', 0))
-
-            # OI Change might be tricky. Quotes usually have 'oich' or 'oi_change' ?
-            # Let's try finding it.
-            # Fyers quotes dict 'v' often has: 'lp', 'volume', 'ch', 'chp', 'ask', 'bid', 'spread', 'tt', 'cmd'
-            # Does it have OI change? Not always.
-            # If not, we might have to rely on what we have or calculate it if we had prev OI (which we don't).
-            # But the user's main issue was MISSING keys entirely.
-            # If `quotes` API gives OI, we are good for at least OI.
 
     return chain_data
 
@@ -346,18 +336,32 @@ def setup_sheet():
     client = gspread.authorize(creds)
     return client.open_by_key(SPREADSHEET_ID).sheet1
 
+def print_dashboard(df, spot_price, sentiment, pcr):
+    """Prints a mini-dashboard to the console."""
+    print("\n" + "-"*60)
+    print(f"📊 LIVE DASHBOARD | Spot: {spot_price} | PCR: {pcr} ({sentiment})")
+    print("-"*60)
+
+    # Filter for signals
+    signals = df[df['⚠️ SIGNAL ⚠️'] != ""]
+    if not signals.empty:
+        print("🚀 ACTIVE SIGNALS:")
+        print(signals[['Strike Price', '⚠️ SIGNAL ⚠️']].to_string(index=False))
+    else:
+        print("   No strong signals yet.")
+    print("-"*60 + "\n")
+
 def run_live_cycle():
     # Credentials Check
-    if not os.path.exists(CREDENTIALS_FILE):
+    has_credentials = False
+    if os.path.exists(CREDENTIALS_FILE):
+        has_credentials = True
+    else:
         print("\n" + "="*60)
-        print(f"❌ MISSING FILE: '{CREDENTIALS_FILE}'")
-        print("="*60)
-        print("To use the Google Sheet feature, you must:")
-        print("1. Download your Service Account JSON key from Google Cloud.")
-        print("2. Rename it to 'credentials.json'.")
-        print("3. Place it in this folder.")
+        print(f"⚠️  MISSING FILE: '{CREDENTIALS_FILE}'")
+        print("   Google Sheet updates will be SKIPPED.")
+        print("   (To enable: place 'credentials.json' in this folder)")
         print("="*60 + "\n")
-        # We proceed, but sheet updates will fail.
 
     fyers = get_fyers_client()
     if not fyers: return
@@ -390,15 +394,11 @@ def run_live_cycle():
             chain_data = response['data']['optionsChain']
 
             # --- ENRICHMENT STEP ---
-            # Fetch full quote data (OI, Vol) because optionchain endpoint might be shallow
             chain_data = fetch_and_merge_quotes(fyers, chain_data)
 
-            # --- DEBUG: PRINT RAW KEYS ONCE ---
             if not printed_debug and len(chain_data) > 0:
-                print("\n" + "="*50)
-                print("   🔍 DEBUG: RAW DATA KEYS FROM FYERS (Post-Merge)")
-                print(f"   Keys: {list(chain_data[0].keys())}")
-                print("="*50 + "\n")
+                # Debug only prints once, useful for confirming keys
+                # print(f"   Keys: {list(chain_data[0].keys())}")
                 printed_debug = True
 
             clean_data = []
@@ -458,23 +458,34 @@ def run_live_cycle():
             cols = ['Call OI', 'Call Chng OI', 'Call Vol', 'Call IV', 'Call Trend', 'Call Delta', 'Call Theta', 'Call Gamma', 'Call Vega', 'Call LTP', 'Call Chng', 'Strike Price', '⚠️ SIGNAL ⚠️', 'Put LTP', 'Put Chng', 'Put Delta', 'Put Theta', 'Put Gamma', 'Put Vega', 'Put Trend', 'Put IV', 'Put Vol', 'Put Chng OI', 'Put OI']
             df = pd.DataFrame(clean_data, columns=cols)
 
+            pcr = 0
+            sentiment = "-"
+            max_ce = 0
+            max_pe = 0
             try:
                 pcr = round(df['Put OI'].sum() / df['Call OI'].sum(), 2) if df['Call OI'].sum() > 0 else 0
                 sentiment = "BULLISH" if pcr > 1.2 else "BEARISH" if pcr < 0.6 else "NEUTRAL"
                 max_ce = df.loc[df['Call OI'].idxmax()]['Strike Price']
                 max_pe = df.loc[df['Put OI'].idxmax()]['Strike Price']
-            except: pcr=0; sentiment="-"; max_ce=0; max_pe=0
+            except: pass
 
-            try:
-                sheet = setup_sheet()
-                sheet.clear()
-                sheet.append_row([f"Symbol: {SYMBOL}", f"Spot: {spot_price}", f"Updated: {datetime.datetime.now().strftime('%H:%M:%S')}", f"Expiry: {resolved_expiry_date}"])
-                sheet.append_row([f"PCR: {pcr} ({sentiment})", f"Support: {max_pe}", f"Resistance: {max_ce}", "Source: Fyers API (Key Hunter V2.1)"])
-                sheet.append_row(df.columns.tolist())
-                sheet.update(range_name='A4', values=df.values.tolist())
-                print(f"   -> ✅ Updated {len(df)} strikes.")
-            except Exception as e:
-                print(f"   [Error] Google Sheet Update Failed: {e}")
+            # --- CONSOLE DASHBOARD ---
+            print_dashboard(df, spot_price, sentiment, pcr)
+
+            # --- SHEET UPDATE ---
+            if has_credentials:
+                try:
+                    sheet = setup_sheet()
+                    sheet.clear()
+                    sheet.append_row([f"Symbol: {SYMBOL}", f"Spot: {spot_price}", f"Updated: {datetime.datetime.now().strftime('%H:%M:%S')}", f"Expiry: {resolved_expiry_date}"])
+                    sheet.append_row([f"PCR: {pcr} ({sentiment})", f"Support: {max_pe}", f"Resistance: {max_ce}", "Source: Fyers API (Key Hunter V2.1)"])
+                    sheet.append_row(df.columns.tolist())
+                    sheet.update(range_name='A4', values=df.values.tolist())
+                    print(f"   -> ✅ Updated Google Sheet ({len(df)} strikes).")
+                except Exception as e:
+                    print(f"   [Error] Google Sheet Update Failed: {e}")
+            else:
+                 print(f"   -> ℹ️  Cycle Complete. (Sheet skipped). Sleeping 60s...")
 
             time.sleep(60)
 
