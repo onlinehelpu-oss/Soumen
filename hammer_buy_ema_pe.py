@@ -326,23 +326,15 @@ class RealTimeOptionManager:
                 # Calculate ATM strike first
                 atm_strike = round(index_ltp / strike_interval) * strike_interval
 
-                if option_type == "PE":
-                    if strike_distance < 0:
-                        # ITM: Higher strike for PE (Strike > Index)
-                        target_strike = atm_strike + (abs(strike_distance) * strike_interval)
-                        strike_type = "ITM"
-                    else:
-                        # OTM: Lower strike for PE (Strike < Index)
-                        target_strike = atm_strike - (strike_distance * strike_interval)
-                        strike_type = "OTM"
+                # PE Logic Only
+                if strike_distance < 0:
+                    # ITM: Higher strike for PE (Strike > Index)
+                    target_strike = atm_strike + (abs(strike_distance) * strike_interval)
+                    strike_type = "ITM"
                 else:
-                    # CE Logic (Fallback)
-                    if strike_distance < 0:
-                        target_strike = atm_strike - (abs(strike_distance) * strike_interval)
-                        strike_type = "ITM"
-                    else:
-                        target_strike = atm_strike + (strike_distance * strike_interval)
-                        strike_type = "OTM"
+                    # OTM: Lower strike for PE (Strike < Index)
+                    target_strike = atm_strike - (strike_distance * strike_interval)
+                    strike_type = "OTM"
 
                 print(f" 📊 ATM Strike: {atm_strike:.2f}")
                 print(f" 📊 Target {strike_type} Strike: {target_strike:.2f}")
@@ -452,16 +444,10 @@ class RealTimeOptionManager:
             # Calculate strike position relative to index LTP
             if strike > index_ltp:
                 # PE: Higher Strike = ITM
-                if option_type == 'PE':
-                    strike_position = f"ITM (Strike {strike:.2f} > Index {index_ltp:.2f})"
-                else: # CE
-                    strike_position = f"ITM (Strike {strike:.2f} > Index {index_ltp:.2f})"
+                strike_position = f"ITM (Strike {strike:.2f} > Index {index_ltp:.2f})"
             elif strike < index_ltp:
                 # PE: Lower Strike = OTM
-                if option_type == 'PE':
-                     strike_position = f"OTM (Strike {strike:.2f} < Index {index_ltp:.2f})"
-                else: # CE
-                     strike_position = f"OTM (Strike {strike:.2f} < Index {index_ltp:.2f})"
+                strike_position = f"OTM (Strike {strike:.2f} < Index {index_ltp:.2f})"
             else:
                 strike_position = "ATM"
 
