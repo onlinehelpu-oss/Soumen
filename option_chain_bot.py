@@ -38,8 +38,13 @@ CREDENTIALS_FILE = "credentials.json"
 GSHEET_SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
 # 3. TRADING CONFIG
-SYMBOL = "NSE:RELIANCE-EQ"
-EXPIRY_DATE = "AUTO" # Set to "AUTO" to fetch the nearest expiry, or "YYYY-MM-DD" for a specific one.
+# List of symbols to track (NSE Equity, Index, or MCX)
+SYMBOLS = [
+    "NSE:NIFTY50-INDEX",
+    "NSE:NIFTYBANK-INDEX",
+    "NSE:RELIANCE-EQ"
+]
+EXPIRY_DATE = "AUTO" # Set to "AUTO" to fetch the nearest expiry for EACH symbol.
 RISK_FREE_RATE = 0.07
 
 # 4. AUTH PATHS
@@ -270,28 +275,19 @@ def get_expiry_identifier(fyers, symbol, user_config_date="AUTO"):
         print(f"   -> [Error] Expiry Lookup Failed: {e}")
         return None, None
 
-# --- NEW: QUOTE ENRICHMENT ---
+# --- QUOTE ENRICHMENT ---
 def fetch_and_merge_quotes(fyers, chain_data):
-    """
-    Fetches deep quote data (OI, Vol, LTP) for all symbols in the chain
-    and merges it back into the chain_data objects.
-    """
     if not chain_data: return chain_data
-
     symbols = [item['symbol'] for item in chain_data if 'symbol' in item]
     if not symbols: return chain_data
 
-    # Batch symbols (Fyers limit is usually 50)
     batch_size = 50
     quote_map = {}
-
     for i in range(0, len(symbols), batch_size):
         batch = symbols[i:i+batch_size]
         try:
-            # fyers.quotes(data={"symbols": "sym1,sym2"})
             q_data = {"symbols": ",".join(batch)}
             response = fyers.quotes(data=q_data)
-
             if 'd' in response:
                 for q_item in response['d']:
                     sym = q_item.get('n')
@@ -301,16 +297,13 @@ def fetch_and_merge_quotes(fyers, chain_data):
         except Exception as e:
             print(f"   [Warning] Quote Batch Failed: {e}")
 
-    # Merge back
     for item in chain_data:
         sym = item.get('symbol')
         if sym in quote_map:
             q = quote_map[sym]
-            # Map Quote keys to Chain keys expected by our logic
             item['ltp'] = q.get('lp', item.get('ltp', 0))
             item['volume'] = q.get('volume', 0)
             if 'volume' not in q and 'vol' in q: item['volume'] = q['vol']
-
             item['oi'] = q.get('oi', 0)
             item['prev_close_price'] = q.get('prev_close_price', item.get('ltp', 0) - q.get('ch', 0))
 
@@ -331,161 +324,196 @@ def get_safe_val(data_dict, keys_to_try):
             return data_dict[key]
     return 0
 
-def setup_sheet():
+# --- SHEET ---
+def get_client():
     creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, GSHEET_SCOPE)
     client = gspread.authorize(creds)
-    return client.open_by_key(SPREADSHEET_ID).sheet1
+    return client
 
-def print_dashboard(df, spot_price, sentiment, pcr):
-    """Prints a mini-dashboard to the console."""
-    print("\n" + "-"*60)
-    print(f"📊 LIVE DASHBOARD | Spot: {spot_price} | PCR: {pcr} ({sentiment})")
-    print("-"*60)
+def get_or_create_worksheet(client, title):
+    try:
+        return client.open_by_key(SPREADSHEET_ID).worksheet(title)
+    except gspread.exceptions.WorksheetNotFound:
+        # Create new worksheet
+        try:
+            return client.open_by_key(SPREADSHEET_ID).add_worksheet(title=title, rows=100, cols=26)
+        except Exception as e:
+            print(f"   [Error] Could not create worksheet '{title}': {e}")
+            return None
+    except Exception as e:
+        print(f"   [Error] Worksheet access failed: {e}")
+        return None
 
-    # Filter for signals
-    signals = df[df['⚠️ SIGNAL ⚠️'] != ""]
-    if not signals.empty:
-        print("🚀 ACTIVE SIGNALS:")
-        print(signals[['Strike Price', '⚠️ SIGNAL ⚠️']].to_string(index=False))
-    else:
-        print("   No strong signals yet.")
-    print("-"*60 + "\n")
+# --- PROCESSING LOGIC ---
+def analyze_chain_data(chain_data, spot_price, T):
+    clean_data = []
+    strikes_dict = {}
+    for item in chain_data:
+        strikes_dict.setdefault(item['strike_price'], {})[item['option_type']] = item
+
+    for strike in sorted(strikes_dict.keys()):
+        ce, pe = strikes_dict[strike].get('CE'), strikes_dict[strike].get('PE')
+        if not ce or not pe: continue
+
+        oi_chg_keys = ['oi_change', 'oich', 'changeinOpenInterest', 'net_change_oi', 'change_oi', 'oiChange']
+        def get_v(d, k): return d.get(k, 0)
+
+        c_oi = get_v(ce, 'oi')
+        c_chng_oi = get_safe_val(ce, oi_chg_keys)
+        c_vol, c_ltp = get_v(ce, 'volume'), get_v(ce, 'ltp')
+        c_chng = c_ltp - get_v(ce, 'prev_close_price')
+
+        p_oi = get_v(pe, 'oi')
+        p_chng_oi = get_safe_val(pe, oi_chg_keys)
+        p_vol, p_ltp = get_v(pe, 'volume'), get_v(pe, 'ltp')
+        p_chng = p_ltp - get_v(pe, 'prev_close_price')
+
+        c_iv = get_implied_volatility(c_ltp, spot_price, strike, T, RISK_FREE_RATE, 'CE') * 100
+        p_iv = get_implied_volatility(p_ltp, spot_price, strike, T, RISK_FREE_RATE, 'PE') * 100
+        c_greeks = calculate_greeks(spot_price, strike, T, RISK_FREE_RATE, c_iv/100, 'CE')
+        p_greeks = calculate_greeks(spot_price, strike, T, RISK_FREE_RATE, p_iv/100, 'PE')
+
+        c_trend = get_smart_trend(c_chng, c_chng_oi)
+        p_trend = get_smart_trend(p_chng, p_chng_oi)
+
+        signal = ""
+        min_oi = 100
+        if c_oi > min_oi and p_oi > min_oi:
+            if c_chng_oi < 0 and p_chng_oi > 0 and p_oi > c_oi: signal = "STRONG BUY CE 🚀"
+            elif p_chng_oi < 0 and c_chng_oi > 0 and c_oi > p_oi: signal = "STRONG BUY PE 🩸"
+            elif p_chng_oi > 0 and p_oi > c_oi * 1.5: signal = "Bullish Bias 🟢"
+            elif c_chng_oi > 0 and c_oi > p_oi * 1.5: signal = "Bearish Bias 🔴"
+
+        clean_data.append([
+            c_oi, c_chng_oi, c_vol, round(c_iv,2), c_trend,
+            c_greeks['delta'], c_greeks['theta'], c_greeks['gamma'], c_greeks['vega'],
+            c_ltp, round(c_chng,2), strike, signal,
+            p_ltp, round(p_chng,2), p_greeks['delta'], p_greeks['theta'], p_greeks['gamma'], p_greeks['vega'],
+            p_trend, round(p_iv,2), p_vol, p_chng_oi, p_oi
+        ])
+
+    cols = ['Call OI', 'Call Chng OI', 'Call Vol', 'Call IV', 'Call Trend', 'Call Delta', 'Call Theta', 'Call Gamma', 'Call Vega', 'Call LTP', 'Call Chng', 'Strike Price', '⚠️ SIGNAL ⚠️', 'Put LTP', 'Put Chng', 'Put Delta', 'Put Theta', 'Put Gamma', 'Put Vega', 'Put Trend', 'Put IV', 'Put Vol', 'Put Chng OI', 'Put OI']
+    return pd.DataFrame(clean_data, columns=cols)
+
+def process_symbol(fyers, symbol, has_credentials, client):
+    """Process a single symbol: fetch, analyze, update sheet/console."""
+    print(f"\n   🔄 Processing: {symbol} ...")
+
+    expiry_code, resolved_expiry_date = get_expiry_identifier(fyers, symbol, EXPIRY_DATE)
+    if not expiry_code: return None
+
+    spot_price = 0
+    try:
+        q = fyers.quotes(data={"symbols": symbol})
+        spot_price = q['d'][0]['v'].get('lp', 0)
+    except: pass
+
+    if spot_price == 0:
+        print(f"   [Warning] Spot Price 0 for {symbol}. Skipping.")
+        return None
+
+    try:
+        # Reduced strikecount for multi-symbol performance
+        data = {"symbol": symbol, "strikecount": 30, "timestamp": expiry_code}
+        response = fyers.optionchain(data=data)
+        if 'data' not in response or 'optionsChain' not in response['data']:
+            print(f"   [Error] No Option Chain data for {symbol}")
+            return None
+        chain_data = response['data']['optionsChain']
+    except Exception as e:
+        print(f"   [Error] API call failed: {e}")
+        return None
+
+    chain_data = fetch_and_merge_quotes(fyers, chain_data)
+    T = get_time_to_expiry(resolved_expiry_date)
+    df = analyze_chain_data(chain_data, spot_price, T)
+
+    if df.empty: return None
+
+    pcr = 0; sentiment = "-"; max_ce = 0; max_pe = 0
+    try:
+        pcr = round(df['Put OI'].sum() / df['Call OI'].sum(), 2) if df['Call OI'].sum() > 0 else 0
+        sentiment = "BULLISH" if pcr > 1.2 else "BEARISH" if pcr < 0.6 else "NEUTRAL"
+        max_ce = df.loc[df['Call OI'].idxmax()]['Strike Price']
+        max_pe = df.loc[df['Put OI'].idxmax()]['Strike Price']
+    except: pass
+
+    # Update Sheet
+    if has_credentials and client:
+        try:
+            # Clean tab name (max 31 chars)
+            tab_name = symbol.replace("NSE:", "").replace("MCX:", "").replace("-INDEX", "").replace("-EQ", "")[:30]
+            sheet = get_or_create_worksheet(client, tab_name)
+            if sheet:
+                sheet.clear()
+                sheet.append_row([f"Symbol: {symbol}", f"Spot: {spot_price}", f"Updated: {datetime.datetime.now().strftime('%H:%M:%S')}", f"Expiry: {resolved_expiry_date}"])
+                sheet.append_row([f"PCR: {pcr} ({sentiment})", f"Support: {max_pe}", f"Resistance: {max_ce}", "Source: Fyers API"])
+                sheet.append_row(df.columns.tolist())
+                sheet.update(range_name='A4', values=df.values.tolist())
+                print(f"   -> ✅ Updated Sheet '{tab_name}'")
+        except Exception as e:
+            print(f"   [Error] Sheet Update Failed: {e}")
+
+    return {
+        'symbol': symbol,
+        'spot': spot_price,
+        'pcr': pcr,
+        'sentiment': sentiment,
+        'signals': df[df['⚠️ SIGNAL ⚠️'] != ""]
+    }
+
+def print_dashboard(aggregated_results):
+    """Prints a consolidated dashboard for all symbols."""
+    print("\n" + "="*80)
+    print(f"📊 MULTI-SYMBOL DASHBOARD | {datetime.datetime.now().strftime('%H:%M:%S')}")
+    print("="*80)
+
+    for res in aggregated_results:
+        print(f"🔹 {res['symbol']:<20} | Spot: {res['spot']:<8} | PCR: {res['pcr']:<4} ({res['sentiment']})")
+        if not res['signals'].empty:
+            print("   🚀 Signals:")
+            # Indent signals for readability
+            sig_str = res['signals'][['Strike Price', '⚠️ SIGNAL ⚠️']].to_string(index=False, header=False)
+            for line in sig_str.split('\n'):
+                print(f"      {line}")
+        else:
+            print("   (No strong signals)")
+        print("-" * 40)
+    print("="*80 + "\n")
 
 def run_live_cycle():
-    # Credentials Check
     has_credentials = False
+    client = None
     if os.path.exists(CREDENTIALS_FILE):
         has_credentials = True
+        try:
+            client = get_client()
+        except Exception as e:
+            print(f"   [Error] Google Auth Failed: {e}")
+            has_credentials = False
     else:
         print("\n" + "="*60)
         print(f"⚠️  MISSING FILE: '{CREDENTIALS_FILE}'")
         print("   Google Sheet updates will be SKIPPED.")
-        print("   (To enable: place 'credentials.json' in this folder)")
         print("="*60 + "\n")
 
     fyers = get_fyers_client()
     if not fyers: return
 
-    print(f"--- Fyers API Connected. Tracking {SYMBOL} ---")
-    expiry_code, resolved_expiry_date = get_expiry_identifier(fyers, SYMBOL, EXPIRY_DATE)
-    if not expiry_code: return
-
-    printed_debug = False
+    print(f"--- Fyers API Connected. Tracking {len(SYMBOLS)} symbols ---")
 
     while True:
         try:
-            print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] ⏳ Fetching Fyers Data...")
+            print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] ⏳ Starting Cycle...")
 
-            spot_price = 0
-            try:
-                q = fyers.quotes(data={"symbols": SYMBOL})
-                spot_price = q['d'][0]['v'].get('lp', 0)
-            except: pass
+            results = []
+            for symbol in SYMBOLS:
+                res = process_symbol(fyers, symbol, has_credentials, client)
+                if res:
+                    results.append(res)
+                time.sleep(1) # Small delay between symbols
 
-            if spot_price == 0:
-                print("   [Warning] Spot Price 0. Retrying..."); time.sleep(5); continue
-
-            data = {"symbol": SYMBOL, "strikecount": 500, "timestamp": expiry_code}
-            response = fyers.optionchain(data=data)
-
-            if 'data' not in response or 'optionsChain' not in response['data']:
-                print(f"   [Error] API Error. Response: {response}"); time.sleep(5); continue
-
-            chain_data = response['data']['optionsChain']
-
-            # --- ENRICHMENT STEP ---
-            chain_data = fetch_and_merge_quotes(fyers, chain_data)
-
-            if not printed_debug and len(chain_data) > 0:
-                # Debug only prints once, useful for confirming keys
-                # print(f"   Keys: {list(chain_data[0].keys())}")
-                printed_debug = True
-
-            clean_data = []
-            T = get_time_to_expiry(resolved_expiry_date)
-            strikes_dict = {}
-            for item in chain_data:
-                strikes_dict.setdefault(item['strike_price'], {})[item['option_type']] = item
-
-            for strike in sorted(strikes_dict.keys()):
-                ce, pe = strikes_dict[strike].get('CE'), strikes_dict[strike].get('PE')
-                if not ce or not pe: continue
-
-                oi_chg_keys = ['oi_change', 'oich', 'changeinOpenInterest', 'net_change_oi', 'change_oi', 'oiChange']
-
-                def get_v(d, k): return d.get(k, 0)
-
-                # Extract
-                c_oi = get_v(ce, 'oi')
-                c_chng_oi = get_safe_val(ce, oi_chg_keys)
-                c_vol, c_ltp = get_v(ce, 'volume'), get_v(ce, 'ltp')
-                c_chng = c_ltp - get_v(ce, 'prev_close_price')
-
-                p_oi = get_v(pe, 'oi')
-                p_chng_oi = get_safe_val(pe, oi_chg_keys)
-                p_vol, p_ltp = get_v(pe, 'volume'), get_v(pe, 'ltp')
-                p_chng = p_ltp - get_v(pe, 'prev_close_price')
-
-                # Math Engine
-                c_iv = get_implied_volatility(c_ltp, spot_price, strike, T, RISK_FREE_RATE, 'CE') * 100
-                p_iv = get_implied_volatility(p_ltp, spot_price, strike, T, RISK_FREE_RATE, 'PE') * 100
-                c_greeks = calculate_greeks(spot_price, strike, T, RISK_FREE_RATE, c_iv/100, 'CE')
-                p_greeks = calculate_greeks(spot_price, strike, T, RISK_FREE_RATE, p_iv/100, 'PE')
-
-                # Trend & Signal
-                c_trend = get_smart_trend(c_chng, c_chng_oi)
-                p_trend = get_smart_trend(p_chng, p_chng_oi)
-
-                signal = ""
-                min_oi = 100
-                if c_oi > min_oi and p_oi > min_oi:
-                    if c_chng_oi < 0 and p_chng_oi > 0 and p_oi > c_oi: signal = "STRONG BUY CE 🚀"
-                    elif p_chng_oi < 0 and c_chng_oi > 0 and c_oi > p_oi: signal = "STRONG BUY PE 🩸"
-                    elif p_chng_oi > 0 and p_oi > c_oi * 1.5: signal = "Bullish Bias 🟢"
-                    elif c_chng_oi > 0 and c_oi > p_oi * 1.5: signal = "Bearish Bias 🔴"
-
-                clean_data.append([
-                    c_oi, c_chng_oi, c_vol, round(c_iv,2), c_trend,
-                    c_greeks['delta'], c_greeks['theta'], c_greeks['gamma'], c_greeks['vega'],
-                    c_ltp, round(c_chng,2), strike, signal,
-                    p_ltp, round(p_chng,2), p_greeks['delta'], p_greeks['theta'], p_greeks['gamma'], p_greeks['vega'],
-                    p_trend, round(p_iv,2), p_vol, p_chng_oi, p_oi
-                ])
-
-            if not clean_data: continue
-
-            # Push
-            cols = ['Call OI', 'Call Chng OI', 'Call Vol', 'Call IV', 'Call Trend', 'Call Delta', 'Call Theta', 'Call Gamma', 'Call Vega', 'Call LTP', 'Call Chng', 'Strike Price', '⚠️ SIGNAL ⚠️', 'Put LTP', 'Put Chng', 'Put Delta', 'Put Theta', 'Put Gamma', 'Put Vega', 'Put Trend', 'Put IV', 'Put Vol', 'Put Chng OI', 'Put OI']
-            df = pd.DataFrame(clean_data, columns=cols)
-
-            pcr = 0
-            sentiment = "-"
-            max_ce = 0
-            max_pe = 0
-            try:
-                pcr = round(df['Put OI'].sum() / df['Call OI'].sum(), 2) if df['Call OI'].sum() > 0 else 0
-                sentiment = "BULLISH" if pcr > 1.2 else "BEARISH" if pcr < 0.6 else "NEUTRAL"
-                max_ce = df.loc[df['Call OI'].idxmax()]['Strike Price']
-                max_pe = df.loc[df['Put OI'].idxmax()]['Strike Price']
-            except: pass
-
-            # --- CONSOLE DASHBOARD ---
-            print_dashboard(df, spot_price, sentiment, pcr)
-
-            # --- SHEET UPDATE ---
-            if has_credentials:
-                try:
-                    sheet = setup_sheet()
-                    sheet.clear()
-                    sheet.append_row([f"Symbol: {SYMBOL}", f"Spot: {spot_price}", f"Updated: {datetime.datetime.now().strftime('%H:%M:%S')}", f"Expiry: {resolved_expiry_date}"])
-                    sheet.append_row([f"PCR: {pcr} ({sentiment})", f"Support: {max_pe}", f"Resistance: {max_ce}", "Source: Fyers API (Key Hunter V2.1)"])
-                    sheet.append_row(df.columns.tolist())
-                    sheet.update(range_name='A4', values=df.values.tolist())
-                    print(f"   -> ✅ Updated Google Sheet ({len(df)} strikes).")
-                except Exception as e:
-                    print(f"   [Error] Google Sheet Update Failed: {e}")
-            else:
-                 print(f"   -> ℹ️  Cycle Complete. (Sheet skipped). Sleeping 60s...")
+            print_dashboard(results)
 
             time.sleep(60)
 
