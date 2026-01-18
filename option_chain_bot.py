@@ -41,7 +41,7 @@ GSHEET_SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis
 
 # 3. TRADING CONFIG
 SYMBOL = "NSE:RELIANCE-EQ"
-EXPIRY_DATE = "2026-02-24" # Format: YYYY-MM-DD
+EXPIRY_DATE = "AUTO" # Set to "AUTO" to fetch the nearest expiry, or "YYYY-MM-DD" for a specific one.
 RISK_FREE_RATE = 0.07
 
 # 4. AUTH PATHS
@@ -233,28 +233,56 @@ def get_time_to_expiry(expiry_date_str):
         return max(T, 0.00001)
     except: return 0.00001
 
-# --- EXPIRY LOOKUP ---
-def get_expiry_identifier(fyers, symbol, user_config_date):
-    print(f"   -> Matching Expiry for: {user_config_date}...")
+# --- EXPIRY LOOKUP (AUTO) ---
+def get_expiry_identifier(fyers, symbol, user_config_date="AUTO"):
+    print(f"   -> Fetching Expiry for: {symbol}...")
     try:
         data = {"symbol": symbol, "strikecount": 1}
         response = fyers.optionchain(data=data)
         if 'data' in response and 'expiryData' in response['data']:
-            for item in response['data']['expiryData']:
-                fyers_date_str = item['date']
-                fyers_expiry_code = item['expiry']
+            expiry_list = response['data']['expiryData']
+
+            # Convert list items to objects for sorting/filtering
+            valid_expiries = []
+            for item in expiry_list:
                 try:
-                    dt = datetime.datetime.strptime(fyers_date_str, "%d-%m-%Y")
-                    if dt.strftime("%Y-%m-%d") == user_config_date:
-                        print(f"   -> ✅ Found Match! Expiry Code: {fyers_expiry_code}")
-                        return fyers_expiry_code
+                    dt = datetime.datetime.strptime(item['date'], "%d-%m-%Y").date()
+                    valid_expiries.append({'date_obj': dt, 'str': item['date'], 'code': item['expiry']})
                 except: continue
-            print(f"   -> [Warning] Expiry {user_config_date} not found.")
-            return None
-        return None
+
+            # Sort by date
+            valid_expiries.sort(key=lambda x: x['date_obj'])
+            today = datetime.date.today()
+
+            # Logic: If AUTO, find first date >= today
+            # If specific date, find exact match
+
+            target_date_obj = None
+            if user_config_date != "AUTO":
+                 try:
+                     target_date_obj = datetime.datetime.strptime(user_config_date, "%Y-%m-%d").date()
+                 except:
+                     print(f"   [Error] Invalid Config Date Format: {user_config_date}")
+                     return None, None
+
+            for item in valid_expiries:
+                if target_date_obj:
+                    # Match specific date
+                    if item['date_obj'] == target_date_obj:
+                        print(f"   -> ✅ Found Match! Expiry: {item['str']} Code: {item['code']}")
+                        return item['code'], item['date_obj'].strftime("%Y-%m-%d")
+                else:
+                    # Auto: Find first future expiry
+                    if item['date_obj'] >= today:
+                         print(f"   -> ✅ Auto-Selected Nearest Expiry: {item['str']} Code: {item['code']}")
+                         return item['code'], item['date_obj'].strftime("%Y-%m-%d")
+
+            print(f"   -> [Warning] No matching expiry found.")
+            return None, None
+        return None, None
     except Exception as e:
         print(f"   -> [Error] Expiry Lookup Failed: {e}")
-        return None
+        return None, None
 
 # --- NEW: ADVANCED TREND LOGIC ---
 def get_smart_trend(price_chg, oi_chg):
@@ -286,7 +314,7 @@ def run_live_cycle():
     if not fyers: return
 
     print(f"--- Fyers API Connected. Tracking {SYMBOL} ---")
-    expiry_code = get_expiry_identifier(fyers, SYMBOL, EXPIRY_DATE)
+    expiry_code, resolved_expiry_date = get_expiry_identifier(fyers, SYMBOL, EXPIRY_DATE)
     if not expiry_code: return
 
     # DEBUG FLAG
@@ -323,7 +351,7 @@ def run_live_cycle():
                 printed_debug = True
 
             clean_data = []
-            T = get_time_to_expiry(EXPIRY_DATE)
+            T = get_time_to_expiry(resolved_expiry_date)
             strikes_dict = {}
             for item in chain_data:
                 strikes_dict.setdefault(item['strike_price'], {})[item['option_type']] = item
@@ -392,7 +420,7 @@ def run_live_cycle():
             try:
                 sheet = setup_sheet()
                 sheet.clear()
-                sheet.append_row([f"Symbol: {SYMBOL}", f"Spot: {spot_price}", f"Updated: {datetime.datetime.now().strftime('%H:%M:%S')}", f"Expiry: {EXPIRY_DATE}"])
+                sheet.append_row([f"Symbol: {SYMBOL}", f"Spot: {spot_price}", f"Updated: {datetime.datetime.now().strftime('%H:%M:%S')}", f"Expiry: {resolved_expiry_date}"])
                 sheet.append_row([f"PCR: {pcr} ({sentiment})", f"Support: {max_pe}", f"Resistance: {max_ce}", "Source: Fyers API (Key Hunter V2.1)"])
                 sheet.append_row(df.columns.tolist())
                 sheet.update(range_name='A4', values=df.values.tolist())
