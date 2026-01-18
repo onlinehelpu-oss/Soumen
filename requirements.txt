@@ -1,0 +1,6 @@
+pandas
+gspread
+oauth2client
+fyers_apiv3
+scipy
+numpy

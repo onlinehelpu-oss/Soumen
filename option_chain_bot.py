@@ -1,13 +1,27 @@
 import time
-import pandas as pd
-import gspread
-import datetime
-import numpy as np
 import os
-import webbrowser
-from oauth2client.service_account import ServiceAccountCredentials
-from fyers_apiv3 import fyersModel
-from scipy.stats import norm
+import sys
+
+try:
+    import pandas as pd
+    import gspread
+    import datetime
+    import numpy as np
+    import webbrowser
+    from oauth2client.service_account import ServiceAccountCredentials
+    from fyers_apiv3 import fyersModel
+    from scipy.stats import norm
+except ImportError as e:
+    print("\n" + "="*60)
+    print("❌ MISSING DEPENDENCIES")
+    print("="*60)
+    print(f"Error: {e}")
+    print("\nPlease install the required libraries using pip:")
+    print("👉 pip install -r requirements.txt")
+    print("\nOr install them manually:")
+    print("👉 pip install pandas gspread oauth2client fyers_apiv3 scipy numpy")
+    print("="*60 + "\n")
+    sys.exit(1)
 
 # --- CONFIGURATION ---
 # 1. FYERS API CREDENTIALS
