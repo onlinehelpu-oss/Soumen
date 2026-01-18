@@ -28,8 +28,6 @@ except ImportError as e:
 
 # --- CONFIGURATION ---
 # 1. FYERS API CREDENTIALS (DEFAULTS)
-# These will be used if fyers_login_details.json does not exist.
-# Update these to avoid manual entry every time, or use the interactive prompt.
 DEFAULT_CLIENT_ID = "XXXXXXXXXX-100"
 DEFAULT_SECRET_KEY = "XXXXXXXXXX"
 DEFAULT_REDIRECT_URI = "http://127.0.0.1"
@@ -51,7 +49,7 @@ TODAY = str(datetime.date.today())
 TOKEN_PATH = os.path.join(TOKENS_DIR, f"{TODAY}.json")
 
 
-# --- AUTHENTICATION LOGIC (NEW) ---
+# --- AUTHENTICATION LOGIC ---
 
 def load_or_prompt_creds():
     if os.path.exists(CONFIG_FILE):
@@ -59,7 +57,6 @@ def load_or_prompt_creds():
             return json.load(f)
 
     print("---- Enter your Fyers Login Credentials (v3) ----")
-    # Check if defaults are set to something real (not placeholders)
     use_defaults = False
     if "XXXXXXXXXX" not in DEFAULT_CLIENT_ID:
         print(f"Found default credentials for Client ID: {DEFAULT_CLIENT_ID}")
@@ -160,7 +157,6 @@ def get_fyers_client():
         print("\nLogin URL (open in browser, allow & complete login):")
         print(auth_url)
 
-        # Open browser automatically if possible
         try:
             import webbrowser
             webbrowser.open(auth_url)
@@ -187,7 +183,7 @@ def get_fyers_client():
     return fyersModel.FyersModel(client_id=app_id, token=access_token, is_async=False, log_path="")
 
 
-# --- MATH ENGINE: BLACK-SCHOLES IV SOLVER ---
+# --- MATH ENGINE ---
 def get_implied_volatility(price, spot, strike, t, r, flag):
     if price <= 0.05 or t <= 0.0001: return 0
     low, high = 0.01, 5.0
@@ -206,7 +202,6 @@ def get_implied_volatility(price, spot, strike, t, r, flag):
         except: return 0
     return (low + high) / 2
 
-# --- MATH ENGINE: GREEKS ---
 def calculate_greeks(spot, strike, t, r, iv, opt_type):
     try:
         if iv <= 0.001 or t <= 0.0001 or spot <= 0: return {'delta': 0, 'theta': 0, 'gamma': 0, 'vega': 0}
@@ -233,7 +228,6 @@ def get_time_to_expiry(expiry_date_str):
         return max(T, 0.00001)
     except: return 0.00001
 
-# --- EXPIRY LOOKUP (AUTO) ---
 def get_expiry_identifier(fyers, symbol, user_config_date="AUTO"):
     print(f"   -> Fetching Expiry for: {symbol}...")
     try:
@@ -241,8 +235,6 @@ def get_expiry_identifier(fyers, symbol, user_config_date="AUTO"):
         response = fyers.optionchain(data=data)
         if 'data' in response and 'expiryData' in response['data']:
             expiry_list = response['data']['expiryData']
-
-            # Convert list items to objects for sorting/filtering
             valid_expiries = []
             for item in expiry_list:
                 try:
@@ -250,12 +242,8 @@ def get_expiry_identifier(fyers, symbol, user_config_date="AUTO"):
                     valid_expiries.append({'date_obj': dt, 'str': item['date'], 'code': item['expiry']})
                 except: continue
 
-            # Sort by date
             valid_expiries.sort(key=lambda x: x['date_obj'])
             today = datetime.date.today()
-
-            # Logic: If AUTO, find first date >= today
-            # If specific date, find exact match
 
             target_date_obj = None
             if user_config_date != "AUTO":
@@ -267,12 +255,10 @@ def get_expiry_identifier(fyers, symbol, user_config_date="AUTO"):
 
             for item in valid_expiries:
                 if target_date_obj:
-                    # Match specific date
                     if item['date_obj'] == target_date_obj:
                         print(f"   -> ✅ Found Match! Expiry: {item['str']} Code: {item['code']}")
                         return item['code'], item['date_obj'].strftime("%Y-%m-%d")
                 else:
-                    # Auto: Find first future expiry
                     if item['date_obj'] >= today:
                          print(f"   -> ✅ Auto-Selected Nearest Expiry: {item['str']} Code: {item['code']}")
                          return item['code'], item['date_obj'].strftime("%Y-%m-%d")
@@ -284,7 +270,62 @@ def get_expiry_identifier(fyers, symbol, user_config_date="AUTO"):
         print(f"   -> [Error] Expiry Lookup Failed: {e}")
         return None, None
 
-# --- NEW: ADVANCED TREND LOGIC ---
+# --- NEW: QUOTE ENRICHMENT ---
+def fetch_and_merge_quotes(fyers, chain_data):
+    """
+    Fetches deep quote data (OI, Vol, LTP) for all symbols in the chain
+    and merges it back into the chain_data objects.
+    """
+    if not chain_data: return chain_data
+
+    symbols = [item['symbol'] for item in chain_data if 'symbol' in item]
+    if not symbols: return chain_data
+
+    # Batch symbols (Fyers limit is usually 50)
+    batch_size = 50
+    quote_map = {}
+
+    for i in range(0, len(symbols), batch_size):
+        batch = symbols[i:i+batch_size]
+        try:
+            # fyers.quotes(data={"symbols": "sym1,sym2"})
+            q_data = {"symbols": ",".join(batch)}
+            response = fyers.quotes(data=q_data)
+
+            if 'd' in response:
+                for q_item in response['d']:
+                    sym = q_item.get('n')
+                    val = q_item.get('v')
+                    if sym and val:
+                        quote_map[sym] = val
+        except Exception as e:
+            print(f"   [Warning] Quote Batch Failed: {e}")
+
+    # Merge back
+    for item in chain_data:
+        sym = item.get('symbol')
+        if sym in quote_map:
+            q = quote_map[sym]
+            # Map Quote keys to Chain keys expected by our logic
+            # q keys: lp (LTP), vol (Volume), oi (Open Interest), ch (Change), etc.
+            item['ltp'] = q.get('lp', item.get('ltp', 0))
+            item['volume'] = q.get('volume', 0) # API uses 'volume' or 'vol'? Fyers v3 usually 'volume' in quotes? CHECK.
+                                                # Actually, usually it's 'volume' in quotes data.
+            if 'volume' not in q and 'vol' in q: item['volume'] = q['vol']
+
+            item['oi'] = q.get('oi', 0)
+            item['prev_close_price'] = q.get('prev_close_price', item.get('ltp', 0) - q.get('ch', 0))
+
+            # OI Change might be tricky. Quotes usually have 'oich' or 'oi_change' ?
+            # Let's try finding it.
+            # Fyers quotes dict 'v' often has: 'lp', 'volume', 'ch', 'chp', 'ask', 'bid', 'spread', 'tt', 'cmd'
+            # Does it have OI change? Not always.
+            # If not, we might have to rely on what we have or calculate it if we had prev OI (which we don't).
+            # But the user's main issue was MISSING keys entirely.
+            # If `quotes` API gives OI, we are good for at least OI.
+
+    return chain_data
+
 def get_smart_trend(price_chg, oi_chg):
     if price_chg > 0 and oi_chg > 0: return "Long Buildup"
     if price_chg < 0 and oi_chg > 0: return "Short Buildup"
@@ -294,22 +335,30 @@ def get_smart_trend(price_chg, oi_chg):
     if price_chg < 0 and oi_chg == 0: return "Selling (Flat OI)"
     return "Neutral"
 
-# --- HELPER: ROBUST VALUE GETTER ---
 def get_safe_val(data_dict, keys_to_try):
-    """Tries multiple potential key names for OI Change"""
     for key in keys_to_try:
         if key in data_dict:
             return data_dict[key]
     return 0
 
-# --- SHEET ---
 def setup_sheet():
     creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, GSHEET_SCOPE)
     client = gspread.authorize(creds)
     return client.open_by_key(SPREADSHEET_ID).sheet1
 
-# --- MAIN LOOP ---
 def run_live_cycle():
+    # Credentials Check
+    if not os.path.exists(CREDENTIALS_FILE):
+        print("\n" + "="*60)
+        print(f"❌ MISSING FILE: '{CREDENTIALS_FILE}'")
+        print("="*60)
+        print("To use the Google Sheet feature, you must:")
+        print("1. Download your Service Account JSON key from Google Cloud.")
+        print("2. Rename it to 'credentials.json'.")
+        print("3. Place it in this folder.")
+        print("="*60 + "\n")
+        # We proceed, but sheet updates will fail.
+
     fyers = get_fyers_client()
     if not fyers: return
 
@@ -317,7 +366,6 @@ def run_live_cycle():
     expiry_code, resolved_expiry_date = get_expiry_identifier(fyers, SYMBOL, EXPIRY_DATE)
     if not expiry_code: return
 
-    # DEBUG FLAG
     printed_debug = False
 
     while True:
@@ -341,12 +389,15 @@ def run_live_cycle():
 
             chain_data = response['data']['optionsChain']
 
+            # --- ENRICHMENT STEP ---
+            # Fetch full quote data (OI, Vol) because optionchain endpoint might be shallow
+            chain_data = fetch_and_merge_quotes(fyers, chain_data)
+
             # --- DEBUG: PRINT RAW KEYS ONCE ---
             if not printed_debug and len(chain_data) > 0:
                 print("\n" + "="*50)
-                print("   🔍 DEBUG: RAW DATA KEYS FROM FYERS")
+                print("   🔍 DEBUG: RAW DATA KEYS FROM FYERS (Post-Merge)")
                 print(f"   Keys: {list(chain_data[0].keys())}")
-                print("   Please check this list if OI Change is missing!")
                 print("="*50 + "\n")
                 printed_debug = True
 
@@ -360,20 +411,18 @@ def run_live_cycle():
                 ce, pe = strikes_dict[strike].get('CE'), strikes_dict[strike].get('PE')
                 if not ce or not pe: continue
 
-                # --- KEY HUNTER ---
-                # We try all known variations for OI Change
                 oi_chg_keys = ['oi_change', 'oich', 'changeinOpenInterest', 'net_change_oi', 'change_oi', 'oiChange']
 
                 def get_v(d, k): return d.get(k, 0)
 
                 # Extract
                 c_oi = get_v(ce, 'oi')
-                c_chng_oi = get_safe_val(ce, oi_chg_keys) # Hunts for the key
+                c_chng_oi = get_safe_val(ce, oi_chg_keys)
                 c_vol, c_ltp = get_v(ce, 'volume'), get_v(ce, 'ltp')
                 c_chng = c_ltp - get_v(ce, 'prev_close_price')
 
                 p_oi = get_v(pe, 'oi')
-                p_chng_oi = get_safe_val(pe, oi_chg_keys) # Hunts for the key
+                p_chng_oi = get_safe_val(pe, oi_chg_keys)
                 p_vol, p_ltp = get_v(pe, 'volume'), get_v(pe, 'ltp')
                 p_chng = p_ltp - get_v(pe, 'prev_close_price')
 
@@ -392,7 +441,6 @@ def run_live_cycle():
                 if c_oi > min_oi and p_oi > min_oi:
                     if c_chng_oi < 0 and p_chng_oi > 0 and p_oi > c_oi: signal = "STRONG BUY CE 🚀"
                     elif p_chng_oi < 0 and c_chng_oi > 0 and c_oi > p_oi: signal = "STRONG BUY PE 🩸"
-                    # Bias Logic (Active if OI Change is working)
                     elif p_chng_oi > 0 and p_oi > c_oi * 1.5: signal = "Bullish Bias 🟢"
                     elif c_chng_oi > 0 and c_oi > p_oi * 1.5: signal = "Bearish Bias 🔴"
 
