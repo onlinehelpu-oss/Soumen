@@ -1,13 +1,16 @@
 import time
 import os
 import sys
+import json
+import hashlib
+from urllib.parse import urlparse, parse_qs, quote
 
 try:
     import pandas as pd
     import gspread
     import datetime
     import numpy as np
-    import webbrowser
+    import requests
     from oauth2client.service_account import ServiceAccountCredentials
     from fyers_apiv3 import fyersModel
     from scipy.stats import norm
@@ -19,18 +22,17 @@ except ImportError as e:
     print("\nPlease install the required libraries using pip:")
     print("👉 pip install -r requirements.txt")
     print("\nOr install them manually:")
-    print("👉 pip install pandas gspread oauth2client fyers_apiv3 scipy numpy")
+    print("👉 pip install pandas gspread oauth2client fyers_apiv3 scipy numpy requests")
     print("="*60 + "\n")
     sys.exit(1)
 
 # --- CONFIGURATION ---
-# 1. FYERS API CREDENTIALS
-# Go to https://myapi.fyers.in/dashboard to get these
-CLIENT_ID = "XXXXXXXXXX-100"  # Format: XXXXXX-100
-SECRET_KEY = "XXXXXXXXXX"
-REDIRECT_URI = "http://127.0.0.1" # Must match what you set in Fyers App
-USER_NAME = "XS0000"              # Your Fyers User ID
-TOTP_KEY = ""                     # Leave empty for manual login
+# 1. FYERS API CREDENTIALS (DEFAULTS)
+# These will be used if fyers_login_details.json does not exist.
+# Update these to avoid manual entry every time, or use the interactive prompt.
+DEFAULT_CLIENT_ID = "XXXXXXXXXX-100"
+DEFAULT_SECRET_KEY = "XXXXXXXXXX"
+DEFAULT_REDIRECT_URI = "http://127.0.0.1"
 
 # 2. GOOGLE SHEET SETTINGS
 SPREADSHEET_ID = "1FN6qKkCyWsw2SrlGKCJ09rDbtJX_S8G-rCAB0og55_8"
@@ -38,10 +40,151 @@ CREDENTIALS_FILE = "credentials.json"
 GSHEET_SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 
 # 3. TRADING CONFIG
-# For Fyers, Symbols look like: "NSE:NIFTYBANK-INDEX" or "NSE:NIFTY50-INDEX"
 SYMBOL = "NSE:RELIANCE-EQ"
-EXPIRY_DATE = "2026-02-24" # Format: YYYY-MM-DD. Ensure this matches the STOCK monthly expiry!
+EXPIRY_DATE = "2026-02-24" # Format: YYYY-MM-DD
 RISK_FREE_RATE = 0.07
+
+# 4. AUTH PATHS
+CONFIG_FILE = "fyers_login_details.json"
+TOKENS_DIR = "AccessToken"
+TODAY = str(datetime.date.today())
+TOKEN_PATH = os.path.join(TOKENS_DIR, f"{TODAY}.json")
+
+
+# --- AUTHENTICATION LOGIC (NEW) ---
+
+def load_or_prompt_creds():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
+
+    print("---- Enter your Fyers Login Credentials (v3) ----")
+    # Check if defaults are set to something real (not placeholders)
+    use_defaults = False
+    if "XXXXXXXXXX" not in DEFAULT_CLIENT_ID:
+        print(f"Found default credentials for Client ID: {DEFAULT_CLIENT_ID}")
+        if input("Use these defaults? (Y/N): ").strip().upper() == "Y":
+            creds = {
+                "api_key": DEFAULT_CLIENT_ID,
+                "api_secret": DEFAULT_SECRET_KEY,
+                "redirect_url": DEFAULT_REDIRECT_URI,
+            }
+            use_defaults = True
+
+    if not use_defaults:
+        creds = {
+            "api_key": input("Enter APP ID (e.g., ABCDE12345-100): ").strip(),
+            "api_secret": input("Enter SECRET ID: ").strip(),
+            "redirect_url": input("Enter Redirect URL (must match app): ").strip(),
+        }
+
+    if input("Save to 'fyers_login_details.json'? (Y/N): ").strip().upper() == "Y":
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(creds, f, indent=2)
+        print(f"Saved '{CONFIG_FILE}'.")
+    else:
+        print("Skipping save.")
+    return creds
+
+def build_auth_url(app_id, redirect_uri, state="sample_state"):
+    base = "https://api-t1.fyers.in/api/v3/generate-authcode"
+    params = (
+        f"client_id={quote(app_id)}"
+        f"&redirect_uri={quote(redirect_uri, safe='')}"
+        f"&response_type=code"
+        f"&state={quote(state)}"
+        f"&scope=openid"
+        f"&nonce={int(time.time())}"
+    )
+    return f"{base}?{params}"
+
+def extract_code(user_input):
+    if user_input.startswith("http://") or user_input.startswith("https://"):
+        q = parse_qs(urlparse(user_input).query)
+        code = q.get("code", [None])[0]
+        if not code:
+            raise ValueError("No 'code' param found in the provided URL.")
+        return code
+    return user_input
+
+def sha256_appIdHash(app_id, secret_id):
+    return hashlib.sha256(f"{app_id}:{secret_id}".encode("utf-8")).hexdigest()
+
+def validate_authcode(app_id, secret_id, auth_code, max_retries=5):
+    url = "https://api-t1.fyers.in/api/v3/validate-authcode"
+    payload = {
+        "grant_type": "authorization_code",
+        "appIdHash": sha256_appIdHash(app_id, secret_id),
+        "code": auth_code,
+    }
+    headers = {"Content-Type": "application/json"}
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=20)
+            if r.status_code == 503:
+                sleep_s = min(2 ** attempt, 30)
+                print(f"[{attempt}/{max_retries}] 503 from auth server. Retrying in {sleep_s}s...")
+                time.sleep(sleep_s)
+                continue
+            r.raise_for_status()
+            data = r.json()
+            if data.get("s") == "error":
+                raise RuntimeError(f"Fyers error {data.get('code')}: {data.get('message')}")
+            return data
+        except requests.RequestException as e:
+            if attempt == max_retries:
+                raise
+            sleep_s = min(2 ** attempt, 30)
+            print(f"[{attempt}/{max_retries}] Network error: {e}. Retrying in {sleep_s}s...")
+            time.sleep(sleep_s)
+
+def get_fyers_client():
+    creds = load_or_prompt_creds()
+    app_id = creds["api_key"]
+    secret_id = creds["api_secret"]
+    redirect_uri = creds["redirect_url"]
+
+    access_token = None
+    if os.path.exists(TOKEN_PATH):
+        try:
+            with open(TOKEN_PATH, "r") as f:
+                access_token = json.load(f)
+            print(f"✅ Loaded Access Token from {TOKEN_PATH}")
+        except Exception as e:
+            print(f"⚠️ Error loading token file: {e}")
+
+    if not access_token:
+        print("⚠️ Token not found or invalid. Initiating Login...")
+        auth_url = build_auth_url(app_id, redirect_uri)
+        print("\nLogin URL (open in browser, allow & complete login):")
+        print(auth_url)
+
+        # Open browser automatically if possible
+        try:
+            import webbrowser
+            webbrowser.open(auth_url)
+            print("(Browser tab opened)")
+        except:
+            pass
+
+        user_val = input("\nPaste the FULL redirect URL after login, or just the 'code=' value here: ").strip()
+        try:
+            auth_code = extract_code(user_val)
+            token_resp = validate_authcode(app_id, secret_id, auth_code)
+            access_token = token_resp.get("access_token")
+            if not access_token:
+                raise RuntimeError(f"Unexpected token response: {token_resp}")
+
+            os.makedirs(TOKENS_DIR, exist_ok=True)
+            with open(TOKEN_PATH, "w") as f:
+                json.dump(access_token, f)
+            print(f"\n✅ Login successful. Token saved to {TOKEN_PATH}")
+        except Exception as e:
+            print(f"\n❌ Login Failed: {e}")
+            sys.exit(1)
+
+    return fyersModel.FyersModel(client_id=app_id, token=access_token, is_async=False, log_path="")
 
 
 # --- MATH ENGINE: BLACK-SCHOLES IV SOLVER ---
@@ -89,69 +232,6 @@ def get_time_to_expiry(expiry_date_str):
         T = (diff.days + diff.seconds / 86400) / 365.0
         return max(T, 0.00001)
     except: return 0.00001
-
-# --- CONNECT & AUTHENTICATION ---
-def get_access_token():
-    print("--- Fyers Auto-Login ---")
-
-    # 1. Create Session
-    session = fyersModel.SessionModel(
-        client_id=CLIENT_ID,
-        secret_key=SECRET_KEY,
-        redirect_uri=REDIRECT_URI,
-        response_type="code",
-        grant_type="authorization_code"
-    )
-
-    # 2. Generate and Open Login URL
-    auth_link = session.generate_authcode()
-    print("\n1. Opening Browser to Login...")
-    webbrowser.open(auth_link)
-
-    # 3. User Pastes the URL
-    print("\n2. After login, you will be redirected to Google (or your redirect URI).")
-    print("   COPY the entire URL from the address bar and paste it below.")
-    new_url = input("   👉 Paste Redirect URL: ").strip()
-
-    # 4. Extract Code & Generate Token
-    try:
-        if "auth_code=" not in new_url:
-            print("\n❌ Error: URL does not contain 'auth_code'. Try again.")
-            return None
-
-        auth_code = new_url.split("auth_code=")[1].split("&")[0]
-        session.set_token(auth_code)
-        response = session.generate_token()
-
-        if "access_token" in response:
-            access_token = response["access_token"]
-            with open("access_token.txt", "w") as f:
-                f.write(access_token)
-            print("\n✅ SUCCESS! Token saved to 'access_token.txt'.")
-            return access_token
-        else:
-            print(f"\n❌ Login Failed: {response}")
-            return None
-
-    except Exception as e:
-        print(f"\n❌ Exception: {e}")
-        return None
-
-def get_fyers_client():
-    token = None
-    if os.path.exists("access_token.txt"):
-        with open("access_token.txt", "r") as f:
-            token = f.read().strip()
-
-    if not token:
-        print("⚠️ Access token not found or invalid. Initiating login...")
-        token = get_access_token()
-
-    if not token:
-        print("❌ Error: Could not obtain access token.")
-        return None
-
-    return fyersModel.FyersModel(client_id=CLIENT_ID, token=token, is_async=False, log_path="")
 
 # --- EXPIRY LOOKUP ---
 def get_expiry_identifier(fyers, symbol, user_config_date):
