@@ -120,7 +120,8 @@ except Exception as e:
 # ===================== STRATEGY SETTINGS =====================
 TIMEFRAME_MIN = 5  # change to 5 / 15 / 30 / 60 etc., or override with --tf
 R_MULTIPLIER = 1.0  # default Risk:Reward (1:2)
-LOT_MULTIPLIER = 1  # Number of lots to trade
+LOT_MULTIPLIER = 1  # Number of lots to trade (NSE default)
+MCX_LOT_MULTIPLIER = 1 # Number of lots to trade (MCX specific)
 REGIME_EMA_PERIOD = 26  # Default Regime EMA period (customizable)
 EPS = 1e-6
 
@@ -768,23 +769,29 @@ def make_onmsg(fy, dry_run=False):
                 trigger.pop(sym, None)
                 return
 
-            if POSITION_MODE == "alloc":
-                if ltp > 0:
-                    calculated_shares = int(ALLOCATION_AMOUNT / ltp)
-                else:
-                    calculated_shares = 0
-
-                if calculated_shares < lot_size:
-                    # Enforce at least 1 lot if allocation allows any trade, or just default to 1 lot
-                    # Here defaulting to 1 lot minimum effectively
-                    qty_shares = lot_size
-                else:
-                    qty_shares = (calculated_shares // lot_size) * lot_size
-
-                qty_lots = max(1, qty_shares // lot_size)
+            # Separate logic for MCX (always Lot-based) vs NSE (Alloc or Lot based)
+            if sym.startswith("MCX:"):
+                # MCX always uses fixed lots defined by MCX_LOT_MULTIPLIER
+                qty_lots = MCX_LOT_MULTIPLIER
+                qty_shares = qty_lots * lot_size
             else:
-                qty_shares = LOT_MULTIPLIER * lot_size
-                qty_lots = LOT_MULTIPLIER
+                # NSE follows POSITION_MODE
+                if POSITION_MODE == "alloc":
+                    if ltp > 0:
+                        calculated_shares = int(ALLOCATION_AMOUNT / ltp)
+                    else:
+                        calculated_shares = 0
+
+                    if calculated_shares < lot_size:
+                        # Enforce at least 1 lot if allocation allows any trade, or just default to 1 lot
+                        qty_shares = lot_size
+                    else:
+                        qty_shares = (calculated_shares // lot_size) * lot_size
+
+                    qty_lots = max(1, qty_shares // lot_size)
+                else:
+                    qty_shares = LOT_MULTIPLIER * lot_size
+                    qty_lots = LOT_MULTIPLIER
 
             entry_price = floor_to_tick(ltp)
             sl_price = t["high"]
@@ -980,9 +987,11 @@ def main():
     parser.add_argument("--regime-ema", type=int, default=REGIME_EMA_PERIOD,
                         help="Period for Regime EMA filter (default: 200)")
     parser.add_argument("--mode", type=str, default="qty", choices=["qty", "alloc"],
-                        help="Position sizing mode: 'qty' (fixed lots) or 'alloc' (capital allocation)")
+                        help="Position sizing mode (NSE only): 'qty' (fixed lots) or 'alloc' (capital allocation)")
     parser.add_argument("--alloc", type=float, default=100000,
-                        help="Allocation amount per trade in INR (only used if --mode=alloc)")
+                        help="Allocation amount per trade in INR (only used if --mode=alloc for NSE)")
+    parser.add_argument("--mcx-lots", type=int, default=1,
+                        help="Fixed lot multiplier for MCX trades (always uses lots)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Enable dry-run: simulate orders instead of placing live ones")
     parser.add_argument("--run-tests", action="store_true", help="Run unit tests for detector logic and exit")
@@ -992,9 +1001,10 @@ def main():
     R_MULTIPLIER = float(args.rmult)
     REGIME_EMA_PERIOD = int(args.regime_ema)
 
-    global POSITION_MODE, ALLOCATION_AMOUNT
+    global POSITION_MODE, ALLOCATION_AMOUNT, MCX_LOT_MULTIPLIER
     POSITION_MODE = args.mode
     ALLOCATION_AMOUNT = args.alloc
+    MCX_LOT_MULTIPLIER = max(1, int(args.mcx_lots))
 
     dry_run = args.dry_run or (not HAS_FYERS)
 
@@ -1049,7 +1059,12 @@ def main():
     print(f"   Upper Wick: {UPPER_WICK_MIN}-{UPPER_WICK_MAX}% (Clear rejection)")
     print(f"   Body: {BODY_MIN}-{BODY_MAX}% (Small-medium body)")
     print(f"   Lower Wick: 0-{LOWER_WICK_MAX}% (Small/no lower shadow)")
-    print(f"📊 LOT MULTIPLIER: {LOT_MULTIPLIER} lot(s) per trade")
+    print(f"📊 POSITION SIZING:")
+    if POSITION_MODE == "alloc":
+        print(f"   - NSE Stocks: ALLOCATION mode (₹ {ALLOCATION_AMOUNT:,.2f})")
+    else:
+        print(f"   - NSE Stocks: FIXED LOTS mode ({LOT_MULTIPLIER} lot(s))")
+    print(f"   - MCX Futures: FIXED LOTS mode ({MCX_LOT_MULTIPLIER} lot(s))")
     print("=" * 70)
     print(f"🧩 Python: {sys.version.split()[0]} | Symbols: {len(SYMBOLS)}")
     print(f"📈 TF={TIMEFRAME_MIN}m | Rmult={R_MULTIPLIER} | RegimeEMA={REGIME_EMA_PERIOD} | dry_run={dry_run}")
