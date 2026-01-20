@@ -529,24 +529,28 @@ def monitor_loop(fy, dry_run=False):
                 if (not FORCE_CLOSED_ALL) and (now_time >= EXIT_ALL_TIME):
                     trades = [s for s,t in active_trades.items() if not s.startswith("MCX:")]
                     if trades:
-                        print(f"⏳ EXIT ALL NSE (Intraday)")
+                        print(f"[{now_dt:%H:%M:%S}] ⏳ EXIT ALL NSE (Intraday) - Closing {len(trades)} trades")
                         for s in trades:
                             t = active_trades[s]
                             exit_long_by_sell_market(fy, s, t["qty"], t["lot_size"], dry_run)
                             active_trades.pop(s)
                         save_state()
+                    else:
+                        print(f"[{now_dt:%H:%M:%S}] ⏳ EXIT_ALL (NSE) triggered but no open NSE trades.")
                     FORCE_CLOSED_ALL = True
 
                 # MCX Exit
                 if (not FORCE_CLOSED_ALL_MCX) and (now_time >= EXIT_ALL_TIME_MCX):
                     trades = [s for s,t in active_trades.items() if s.startswith("MCX:")]
                     if trades:
-                        print(f"⏳ EXIT ALL MCX (Intraday)")
+                        print(f"[{now_dt:%H:%M:%S}] ⏳ EXIT ALL MCX (Intraday) - Closing {len(trades)} trades")
                         for s in trades:
                             t = active_trades[s]
                             exit_long_by_sell_market(fy, s, t["qty"], t["lot_size"], dry_run)
                             active_trades.pop(s)
                         save_state()
+                    else:
+                        print(f"[{now_dt:%H:%M:%S}] ⏳ EXIT_ALL (MCX) triggered but no open MCX trades.")
                     FORCE_CLOSED_ALL_MCX = True
 
             # SL/TGT Monitor
