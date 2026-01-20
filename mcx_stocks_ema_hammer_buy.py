@@ -652,11 +652,28 @@ def main():
 
     print("\n✅ WATCHLIST:")
     for s in SYMBOLS: print(f"  - {s}")
-    print("="*60)
-    print(f"Strategy: GREEN HAMMER BUY")
-    print(f"Condition: Close > EMA({REGIME_EMA_PERIOD}) OR At Day Low")
-    print(f"Product: Stocks={STOCK_PRODUCT_TYPE}, MCX={MCX_PRODUCT_TYPE}")
-    print("="*60)
+
+    print("\n" + "=" * 70)
+    print("🎯 GREEN-HAMMER STRATEGY - REAL-TIME (BUY)")
+    print("=" * 70)
+    print(f"📊 LOT SIZES: NSE Equities = 1, MCX Futures = Hardcoded")
+    print(f"📊 PRODUCT TYPE: {STOCK_PRODUCT_TYPE} for NSE, {MCX_PRODUCT_TYPE} for MCX")
+    print(f"📊 REGIME EMA: Period={REGIME_EMA_PERIOD} (Signal Valid if Close > EMA)")
+    print(f"📊 CANDLE GEOMETRY:")
+    print(f"   Lower Wick: {LOWER_WICK_MIN}-{LOWER_WICK_MAX}% (Long rejection)")
+    print(f"   Body: {BODY_MIN}-{BODY_MAX}% (Small body)")
+    print(f"   Upper Wick: 0-{UPPER_WICK_MAX}% (Small/no upper shadow)")
+    print(f"📊 POSITION SIZING:")
+    if POSITION_MODE == "alloc":
+        print(f"   - NSE Stocks: ALLOCATION mode (₹ {ALLOCATION_AMOUNT:,.2f})")
+    else:
+        print(f"   - NSE Stocks: FIXED LOTS mode ({LOT_MULTIPLIER} lot(s))")
+    print(f"   - MCX Futures: FIXED LOTS mode ({MCX_LOT_MULTIPLIER} lot(s))")
+    print("=" * 70)
+    print(f"🧩 Python: {sys.version.split()[0]} | Symbols: {len(SYMBOLS)}")
+    print(f"📈 TF={TIMEFRAME_MIN}m | Rmult={R_MULTIPLIER} | RegimeEMA={REGIME_EMA_PERIOD} | dry_run={dry_run}")
+    print("=" * 70)
+    print("🚀 Real-time LONG scanner started …\n")
 
     on_message = make_onmsg(fy, dry_run=dry_run)
     global ws_connection
