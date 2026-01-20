@@ -755,15 +755,24 @@ def make_onmsg(fy, dry_run=False):
 
                 if not is_at_day_high:
                      # Optional: log rejection
-                     # print(f"[{tick_time:%H:%M:%S}] 🌤️ {sym} Rejected: High {bar['h']} < DayHigh {cached_day_high}")
+                     # print(f"[{tick_time:%H:%M:%S}] 🌤️ {sym} Not at Day High: High {bar['h']} < DayHigh {cached_day_high}")
                      pass
 
-                if is_at_day_high and is_below_ema and prev_bar and is_bearish_shooting_star_candle(
+                # Context Condition: Valid if (Below Regime EMA) OR (At Day High)
+                # If both are true, it's also valid.
+                is_valid_context = is_below_ema or is_at_day_high
+
+                if is_valid_context and prev_bar and is_bearish_shooting_star_candle(
                         bar["o"], bar["h"], bar["l"], bar["c"],
                         prev_bar["o"], prev_bar["c"],
                         min_range_pct=MIN_RANGE_PCT
                 ):
-                    print(f"[{tick_time:%H:%M:%S}] 📉 {sym} EMA Check Passed & At Day High ({bar['h']})")
+                    reasons = []
+                    if is_below_ema: reasons.append(f"Below EMA {new_ema:.2f}")
+                    if is_at_day_high: reasons.append(f"At Day High {bar['h']}")
+                    reason_str = " & ".join(reasons)
+
+                    print(f"[{tick_time:%H:%M:%S}] 📉 {sym} Signal Valid: {reason_str}")
                     next_cstart = cstart + dt.timedelta(minutes=TIMEFRAME_MIN)
                     trigger[sym] = {
                         "low": bar["l"],
