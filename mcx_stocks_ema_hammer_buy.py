@@ -681,7 +681,10 @@ def main():
         access_token=f"{fy.client_id}:{fy.token}", log_path=".", litemode=False,
         write_to_file=False, reconnect=True, on_message=on_message,
         on_error=lambda m: print("🚨", m), on_close=lambda m: print("❌", m),
-        on_connect=lambda: (print("🔌 Connected") or ws_connection.subscribe(symbols=SYMBOLS))
+        on_connect=lambda: (
+                print(f"🔌 Connected → subscribing to {len(SYMBOLS)} symbols.") or
+                ws_connection.subscribe(symbols=SYMBOLS)
+        )
     )
 
     threading.Thread(target=monitor_loop, args=(fy, dry_run), daemon=True).start()
