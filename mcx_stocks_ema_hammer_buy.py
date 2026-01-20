@@ -363,10 +363,10 @@ def ensure_access_token():
 
 
 # ===================== CANDLE DETECTOR (Bullish Hammer) - UPDATED =====================
-def is_bullish_hammer_candle(o, h, l, c, prev_o, prev_c, min_range_pct=0.0015):
+def is_bullish_hammer_candle(o, h, l, c, prev_o, prev_c, min_range_pct=0.0015, ignore_prev_candle=False):
     """
     GREEN Hammer / Pin-bar with UPDATED geometry (Bullish Reversal):
-    - Previous candle RED
+    - Previous candle RED (unless ignore_prev_candle=True)
     - Current candle GREEN
     - Geometry Constraints (as % of total candle range H-L):
       - Lower Wick: 50% - 80% (Long lower shadow)
@@ -376,8 +376,11 @@ def is_bullish_hammer_candle(o, h, l, c, prev_o, prev_c, min_range_pct=0.0015):
     # --- Initial Filters ---
     if c <= o:  # Current candle must be green
         return False
-    if prev_c >= prev_o:  # Previous candle must be red
-        return False
+
+    if not ignore_prev_candle:
+        if prev_c >= prev_o:  # Previous candle must be red
+            return False
+
     if c == 0 or h <= l:
         return False
     total_range = h - l
@@ -741,6 +744,23 @@ def make_onmsg(fy, dry_run=False):
                 if ONE_POSITION_AT_A_TIME and has_open_positions():
                     return
 
+                # --- Session Start Check ---
+                is_session_start = False
+                t_time = cstart.time()
+                # NSE starts 09:15, MCX starts 09:00
+                if sym.startswith("MCX:"):
+                    if t_time == dt.time(9, 0):
+                        is_session_start = True
+                else:
+                    if t_time == dt.time(9, 15):
+                        is_session_start = True
+
+                # Determine previous candle values (safe default if missing)
+                if prev_bar:
+                    p_o, p_c = prev_bar["o"], prev_bar["c"]
+                else:
+                    p_o, p_c = 0.0, 0.0
+
                     # --- Signal Check ---
                 # Added Regime EMA check: Signal valid only if Price (Close) > Regime EMA (Bullish)
                 is_above_ema = False
@@ -767,10 +787,19 @@ def make_onmsg(fy, dry_run=False):
                 # Context Condition: Valid if (Above Regime EMA) OR (At Day Low)
                 is_valid_context = is_above_ema or is_at_day_low
 
-                if is_valid_context and prev_bar and is_bullish_hammer_candle(
+                # We need prev_bar usually, UNLESS it is the very first candle of the session
+                can_check_signal = False
+                if is_valid_context:
+                    if prev_bar:
+                        can_check_signal = True
+                    elif is_session_start:
+                        can_check_signal = True
+
+                if can_check_signal and is_bullish_hammer_candle(
                         bar["o"], bar["h"], bar["l"], bar["c"],
-                        prev_bar["o"], prev_bar["c"],
-                        min_range_pct=MIN_RANGE_PCT
+                        p_o, p_c,
+                        min_range_pct=MIN_RANGE_PCT,
+                        ignore_prev_candle=is_session_start
                 ):
                     reasons = []
                     if is_above_ema: reasons.append(f"Above EMA {new_ema:.2f}")
@@ -1166,6 +1195,14 @@ def run_tests():
     # Test 4: Upper wick too long
     # Open=100, Close=101, High=110, Low=99. Range=11. Upper=9 (81%). Too long.
     assert is_bullish_hammer_candle(100.0, 110.0, 99.0, 101.0, 105.0, 102.0) is False, "Test 4 Failed"
+
+    # Test 5: First candle of session (ignore prev candle check)
+    # Valid geometry but NO previous candle info (passed as dummy 0,0). Should pass if ignore_prev_candle=True
+    assert is_bullish_hammer_candle(100.0, 103.0, 90.0, 102.0, 0.0, 0.0, ignore_prev_candle=True) is True, "Test 5 Failed"
+
+    # Test 6: Not first candle, previous candle was GREEN (should fail)
+    assert is_bullish_hammer_candle(100.0, 103.0, 90.0, 102.0, 100.0, 102.0, ignore_prev_candle=False) is False, "Test 6 Failed"
+
     print("All tests passed ✅")
 
 
