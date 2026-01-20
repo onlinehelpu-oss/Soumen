@@ -367,113 +367,129 @@ def get_ltp(fy, sym):
     return None
 
 # ===================== LOGIC =====================
+import traceback
+
 def make_onmsg(fy, dry_run=False):
     def onmsg(msg):
-        if msg.get("type") != "sf": return
-        sym = msg.get("symbol")
-        ltp = float(msg.get("ltp"))
-        ts = msg.get("timestamp")
+        try:
+            if msg.get("type") != "sf": return
 
-        prev_ltp_cache[sym] = ltp_cache.get(sym, (None,))[0]
-        ltp_cache[sym] = (ltp, time.time())
+            # Validate essential fields
+            raw_ltp = msg.get("ltp")
+            raw_ts = msg.get("timestamp")
 
-        # Update Day Low
-        cur_low = day_low_cache.get(sym, 9999999.0)
-        if ltp < cur_low: day_low_cache[sym] = ltp
+            if raw_ltp is None or raw_ts is None:
+                return
 
-        tick_time = dt.datetime.fromtimestamp(ts)
-        cstart = candle_start(tick_time)
-        key = (sym, cstart)
-        bar = bars.get(key)
-        if not bar: bars[key] = bar = {"o": ltp, "h": ltp, "l": ltp, "c": ltp}
-        else:
-            bar["h"] = max(bar["h"], ltp)
-            bar["l"] = min(bar["l"], ltp)
-            bar["c"] = ltp
+            sym = msg.get("symbol")
+            ltp = float(raw_ltp)
+            ts = raw_ts
 
-        # Check Candle Completion
-        if tick_time >= cstart + dt.timedelta(minutes=TIMEFRAME_MIN) - dt.timedelta(seconds=1):
-            if key not in processed_candles:
-                processed_candles.add(key)
+            prev_ltp_cache[sym] = ltp_cache.get(sym, (None,))[0]
+            ltp_cache[sym] = (ltp, time.time())
 
-                # Update EMA
-                curr_ema = regime_ema_values.get(sym, bar['c'])
-                k = 2/(REGIME_EMA_PERIOD+1)
-                new_ema = (bar['c']*k) + (curr_ema*(1-k))
-                regime_ema_values[sym] = new_ema
+            # Update Day Low
+            cur_low = day_low_cache.get(sym, 9999999.0)
+            if ltp < cur_low: day_low_cache[sym] = ltp
 
-                prev_bar = bars.get((sym, cstart - dt.timedelta(minutes=TIMEFRAME_MIN)))
-
-                if ONE_POSITION_AT_A_TIME and any(t["status"]=="open" for t in active_trades.values()): return
-
-                # SIGNAL LOGIC (BUY)
-                # 1. Close > EMA
-                is_above_ema = bar['c'] > new_ema
-                # 2. At Day Low
-                cached_day_low = day_low_cache.get(sym, bar['l'])
-                # Allow small tolerance above low
-                is_at_day_low = bar['l'] <= (cached_day_low + 0.05)
-
-                is_valid_context = is_above_ema or is_at_day_low
-
-                if is_valid_context and prev_bar and is_bullish_hammer_candle(
-                    bar['o'], bar['h'], bar['l'], bar['c'], prev_bar['o'], prev_bar['c']
-                ):
-                    reasons = []
-                    if is_above_ema: reasons.append(f"Above EMA {new_ema:.2f}")
-                    if is_at_day_low: reasons.append(f"At Day Low {bar['l']:.2f}")
-                    print(f"[{tick_time:%H:%M}] 🎯 BUY SIGNAL {sym}: {' & '.join(reasons)}")
-
-                    trigger[sym] = {
-                        "high": bar['h'], "low": bar['l'],
-                        "active_start": cstart + dt.timedelta(minutes=TIMEFRAME_MIN),
-                        "triggered": False
-                    }
-
-        # CHECK TRIGGER
-        t = trigger.get(sym)
-        if not t: return
-        if tick_time >= t["active_start"] + dt.timedelta(minutes=TIMEFRAME_MIN):
-            trigger.pop(sym, None); return
-        if tick_time < t["active_start"] or t["triggered"]: return
-
-        # GUARD: CUTOFF
-        now_t = dt.datetime.now().time()
-        cutoff = ENTRY_CUTOFF_MCX if sym.startswith("MCX:") else ENTRY_CUTOFF
-        if now_t >= cutoff: return
-
-        # BUY ENTRY: Breakout above High
-        threshold = round_to_tick(t["high"] + ENTRY_BUFFER)
-        prev_ltp = prev_ltp_cache.get(sym)
-
-        if (prev_ltp is not None) and (prev_ltp <= threshold) and (ltp > threshold):
-            print(f"🚀 BREAKOUT BUY {sym} > {threshold}")
-
-            # Sizing
-            lot_size = get_lot_size(sym)
-            if sym.startswith("MCX:"):
-                qty_lots = MCX_LOT_MULTIPLIER
-                qty_shares = qty_lots * lot_size
+            tick_time = dt.datetime.fromtimestamp(ts)
+            cstart = candle_start(tick_time)
+            key = (sym, cstart)
+            bar = bars.get(key)
+            if not bar: bars[key] = bar = {"o": ltp, "h": ltp, "l": ltp, "c": ltp}
             else:
-                if POSITION_MODE == "alloc":
-                    calc = int(ALLOCATION_AMOUNT / ltp)
-                    qty_shares = max(lot_size, (calc // lot_size) * lot_size)
-                    qty_lots = qty_shares // lot_size
-                else:
-                    qty_lots = LOT_MULTIPLIER
+                bar["h"] = max(bar["h"], ltp)
+                bar["l"] = min(bar["l"], ltp)
+                bar["c"] = ltp
+
+            # Check Candle Completion
+            if tick_time >= cstart + dt.timedelta(minutes=TIMEFRAME_MIN) - dt.timedelta(seconds=1):
+                if key not in processed_candles:
+                    processed_candles.add(key)
+
+                    # Update EMA
+                    curr_ema = regime_ema_values.get(sym, bar['c'])
+                    k = 2/(REGIME_EMA_PERIOD+1)
+                    new_ema = (bar['c']*k) + (curr_ema*(1-k))
+                    regime_ema_values[sym] = new_ema
+
+                    prev_bar = bars.get((sym, cstart - dt.timedelta(minutes=TIMEFRAME_MIN)))
+
+                    if ONE_POSITION_AT_A_TIME and any(t["status"]=="open" for t in active_trades.values()): return
+
+                    # SIGNAL LOGIC (BUY)
+                    # 1. Close > EMA
+                    is_above_ema = bar['c'] > new_ema
+                    # 2. At Day Low
+                    cached_day_low = day_low_cache.get(sym, bar['l'])
+                    # Allow small tolerance above low
+                    is_at_day_low = bar['l'] <= (cached_day_low + 0.05)
+
+                    is_valid_context = is_above_ema or is_at_day_low
+
+                    if is_valid_context and prev_bar and is_bullish_hammer_candle(
+                        bar['o'], bar['h'], bar['l'], bar['c'], prev_bar['o'], prev_bar['c']
+                    ):
+                        reasons = []
+                        if is_above_ema: reasons.append(f"Above EMA {new_ema:.2f}")
+                        if is_at_day_low: reasons.append(f"At Day Low {bar['l']:.2f}")
+                        print(f"[{tick_time:%H:%M}] 🎯 BUY SIGNAL {sym}: {' & '.join(reasons)}")
+
+                        trigger[sym] = {
+                            "high": bar['h'], "low": bar['l'],
+                            "active_start": cstart + dt.timedelta(minutes=TIMEFRAME_MIN),
+                            "triggered": False
+                        }
+
+            # CHECK TRIGGER
+            t = trigger.get(sym)
+            if not t: return
+            if tick_time >= t["active_start"] + dt.timedelta(minutes=TIMEFRAME_MIN):
+                trigger.pop(sym, None); return
+            if tick_time < t["active_start"] or t["triggered"]: return
+
+            # GUARD: CUTOFF
+            now_t = dt.datetime.now().time()
+            cutoff = ENTRY_CUTOFF_MCX if sym.startswith("MCX:") else ENTRY_CUTOFF
+            if now_t >= cutoff: return
+
+            # BUY ENTRY: Breakout above High
+            threshold = round_to_tick(t["high"] + ENTRY_BUFFER)
+            prev_ltp = prev_ltp_cache.get(sym)
+
+            if (prev_ltp is not None) and (prev_ltp <= threshold) and (ltp > threshold):
+                print(f"🚀 BREAKOUT BUY {sym} > {threshold}")
+
+                # Sizing
+                lot_size = get_lot_size(sym)
+                if sym.startswith("MCX:"):
+                    qty_lots = MCX_LOT_MULTIPLIER
                     qty_shares = qty_lots * lot_size
+                else:
+                    if POSITION_MODE == "alloc":
+                        calc = int(ALLOCATION_AMOUNT / ltp)
+                        qty_shares = max(lot_size, (calc // lot_size) * lot_size)
+                        qty_lots = qty_shares // lot_size
+                    else:
+                        qty_lots = LOT_MULTIPLIER
+                        qty_shares = qty_lots * lot_size
 
-            sl = t["low"]
-            entry_price = floor_to_tick(ltp)
-            risk = entry_price - sl
-            if risk <= 0: return
-            tgt = round_to_tick(entry_price + (risk * R_MULTIPLIER))
+                sl = t["low"]
+                entry_price = floor_to_tick(ltp)
+                risk = entry_price - sl
+                if risk <= 0: return
+                tgt = round_to_tick(entry_price + (risk * R_MULTIPLIER))
 
-            resp = place_order(fy, sym, 1, qty_shares, "GreenHamBuy", dry_run)
-            if resp.get("s")=="ok":
-                save_trade(sym, entry_price, sl, tgt, qty_lots, lot_size, resp.get("id"))
-                t["triggered"] = True
-                trigger.pop(sym, None)
+                resp = place_order(fy, sym, 1, qty_shares, "GreenHamBuy", dry_run)
+                if resp.get("s")=="ok":
+                    save_trade(sym, entry_price, sl, tgt, qty_lots, lot_size, resp.get("id"))
+                    t["triggered"] = True
+                    trigger.pop(sym, None)
+
+        except Exception as e:
+            print(f"🚨 OnMsg Error: {e}")
+            traceback.print_exc()
+            print(f"📄 Message dump: {msg}")
 
     return onmsg
 
