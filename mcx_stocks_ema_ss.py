@@ -527,6 +527,7 @@ trigger = {}
 ltp_cache = {}  # symbol -> (ltp, ts)
 prev_ltp_cache = {}  # symbol -> previous ltp (for strict cross)
 regime_ema_values = {}  # symbol -> current EMA value
+day_high_cache = {} # symbol -> day high
 _last_quote_error = {}
 ERROR_THROTTLE_SECS = 10
 
@@ -597,6 +598,34 @@ def fetch_initial_emas(fy, symbols, timeframe, period):
 
     print(f"✅ Initialized EMA for {len(regime_ema_values)} symbols.\n")
 
+def fetch_day_highs(fy, symbols):
+    """
+    Fetches the initial day high for all symbols using quotes.
+    """
+    print(f"\n🔄 Fetching initial Day Highs for {len(symbols)} symbols...")
+
+    # Fyers quotes API allows batch fetching (up to 50 symbols usually)
+    # Chunking symbols just in case
+    chunk_size = 50
+    for i in range(0, len(symbols), chunk_size):
+        chunk = symbols[i:i+chunk_size]
+        try:
+            resp = fy.quotes({"symbols": ",".join(chunk)})
+            if resp.get("s") != "ok":
+                print(f"⚠️ Quote fetch failed for chunk {i}: {resp.get('message')}")
+                continue
+
+            for item in resp.get("d", []):
+                sym = item.get("n")
+                v = item.get("v", {})
+                day_high = v.get("high_price") # Check API field for day high
+                if day_high is not None:
+                    day_high_cache[sym] = float(day_high)
+        except Exception as e:
+            print(f"❌ Error fetching Day Highs for chunk {i}: {e}")
+
+    print(f"✅ Initialized Day Highs for {len(day_high_cache)} symbols.\n")
+
 
 # ===================== SAFE QUOTES (cache-first, REST fallback) =====================
 def get_ltp(fy, sym, cache_ttl=10, max_retries=3):
@@ -663,6 +692,13 @@ def make_onmsg(fy, dry_run=False):
             prev_ltp_cache[sym] = float(prev_ltp)
             # update websocket LTP cache
         ltp_cache[sym] = (ltp, time.time())
+
+        # Update Day High Cache
+        current_day_high = day_high_cache.get(sym, 0.0)
+        if ltp > current_day_high:
+            day_high_cache[sym] = ltp
+            # print(f"🚀 New Day High for {sym}: {ltp}")
+
         tick_time = dt.datetime.fromtimestamp(ts)
         cstart = candle_start(tick_time)
         key = (sym, cstart)
@@ -707,12 +743,27 @@ def make_onmsg(fy, dry_run=False):
                         # Optional: log rejected signals
                         # print(f"[{tick_time:%H:%M:%S}] ❄️ Signal Rejected {sym}: Close {bar['c']:.2f} >= EMA {new_ema:.2f}")
 
-                if is_below_ema and prev_bar and is_bearish_shooting_star_candle(
+                # --- Day High Check ---
+                # The signal candle's high must be close to the Day High.
+                # Since we update day_high_cache with every tick, bar['h'] should effectively BE the day_high_cache[sym]
+                # if it made a new high.
+                # We allow a small tolerance (e.g. within 0.05% or just equality if strict)
+                # Let's enforce that the candle's high IS the day high (>= cached day high)
+
+                cached_day_high = day_high_cache.get(sym, bar["h"]) # Fallback to bar high if missing
+                is_at_day_high = bar["h"] >= (cached_day_high - 0.01) # Floating point tolerance
+
+                if not is_at_day_high:
+                     # Optional: log rejection
+                     # print(f"[{tick_time:%H:%M:%S}] 🌤️ {sym} Rejected: High {bar['h']} < DayHigh {cached_day_high}")
+                     pass
+
+                if is_at_day_high and is_below_ema and prev_bar and is_bearish_shooting_star_candle(
                         bar["o"], bar["h"], bar["l"], bar["c"],
                         prev_bar["o"], prev_bar["c"],
                         min_range_pct=MIN_RANGE_PCT
                 ):
-                    print(f"[{tick_time:%H:%M:%S}] 📉 {sym} EMA Check Passed: {bar['c']:.2f} < {new_ema:.2f}")
+                    print(f"[{tick_time:%H:%M:%S}] 📉 {sym} EMA Check Passed & At Day High ({bar['h']})")
                     next_cstart = cstart + dt.timedelta(minutes=TIMEFRAME_MIN)
                     trigger[sym] = {
                         "low": bar["l"],
@@ -1045,6 +1096,9 @@ def main():
 
         # --- Fetch/Initialize Regime EMAs ---
     fetch_initial_emas(fy, SYMBOLS, TIMEFRAME_MIN, REGIME_EMA_PERIOD)
+
+    # --- Fetch/Initialize Day Highs ---
+    fetch_day_highs(fy, SYMBOLS)
 
     print("\n✅ WATCHLIST:")
     print("=" * 60)
