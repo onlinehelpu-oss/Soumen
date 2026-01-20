@@ -984,27 +984,50 @@ def main():
     parser.add_argument("--tf", type=int, default=TIMEFRAME_MIN, help="Timeframe in minutes (e.g., 5, 15, 60)")
     parser.add_argument("--rmult", type=float, default=R_MULTIPLIER,
                         help="Risk:Reward multiple (e.g., 2.0 means target = entry - 2 * risk)")
+    # To properly handle defaults from globals while allowing updates, we use argparse
+    # but we avoid accessing the global variables directly before declaring them global.
+    # The clean way is to rely on argparse defaults, OR to parse args and only update if not None.
+
+    # However, to avoid the syntax error entirely, we can just use the hardcoded values as defaults
+    # in argparse, and trust the user to pass flags OR edit the file.
+    # BUT the user specifically wants to edit the file globals and have them respected.
+
+    # Solution: We do not declare them global in this function until AFTER we have used their values.
+    # Wait, Python forbids "use then global" in the same scope.
+
+    # So we must access them via a helper or different scope, OR just modify the global dictionary directly
+    # if we really want to, but that's messy.
+
+    # simpler approach: Just don't put them in local variables.
+    # Instead, we will NOT declare them global at the top of main.
+    # We will use the globals module or just access them.
+    # To update them, we can use globals()[name] = value.
+
+    pass
+
     parser.add_argument("--regime-ema", type=int, default=REGIME_EMA_PERIOD,
                         help="Period for Regime EMA filter (default: 200)")
-    parser.add_argument("--mode", type=str, default="qty", choices=["qty", "alloc"],
+    parser.add_argument("--mode", type=str, default=POSITION_MODE, choices=["qty", "alloc"],
                         help="Position sizing mode (NSE only): 'qty' (fixed lots) or 'alloc' (capital allocation)")
-    parser.add_argument("--alloc", type=float, default=100000,
+    parser.add_argument("--alloc", type=float, default=ALLOCATION_AMOUNT,
                         help="Allocation amount per trade in INR (only used if --mode=alloc for NSE)")
-    parser.add_argument("--mcx-lots", type=int, default=1,
+    parser.add_argument("--mcx-lots", type=int, default=MCX_LOT_MULTIPLIER,
                         help="Fixed lot multiplier for MCX trades (always uses lots)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Enable dry-run: simulate orders instead of placing live ones")
     parser.add_argument("--run-tests", action="store_true", help="Run unit tests for detector logic and exit")
 
     args, _ = parser.parse_known_args()
-    TIMEFRAME_MIN = max(1, int(args.tf))
-    R_MULTIPLIER = float(args.rmult)
-    REGIME_EMA_PERIOD = int(args.regime_ema)
 
-    global POSITION_MODE, ALLOCATION_AMOUNT, MCX_LOT_MULTIPLIER
-    POSITION_MODE = args.mode
-    ALLOCATION_AMOUNT = args.alloc
-    MCX_LOT_MULTIPLIER = max(1, int(args.mcx_lots))
+    # Update globals based on args
+    # We use globals() dict to avoid SyntaxError of "name used prior to global declaration"
+
+    globals()["TIMEFRAME_MIN"] = max(1, int(args.tf))
+    globals()["R_MULTIPLIER"] = float(args.rmult)
+    globals()["REGIME_EMA_PERIOD"] = int(args.regime_ema)
+    globals()["POSITION_MODE"] = args.mode
+    globals()["ALLOCATION_AMOUNT"] = args.alloc
+    globals()["MCX_LOT_MULTIPLIER"] = max(1, int(args.mcx_lots))
 
     dry_run = args.dry_run or (not HAS_FYERS)
 
