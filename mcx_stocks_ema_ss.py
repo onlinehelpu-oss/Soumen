@@ -537,6 +537,42 @@ def candle_start(t: dt.datetime) -> dt.datetime:
     return t.replace(second=0, microsecond=0) - dt.timedelta(minutes=t.minute % TIMEFRAME_MIN)
 
 
+def get_candle_from_history(fy, sym, timeframe, target_time: dt.datetime) -> Optional[Dict]:
+    """
+    Fetches historical data to find the specific candle at target_time.
+    Returns {o, h, l, c} or None.
+    """
+    try:
+        # Fyers requires YYYY-MM-DD
+        d_str = target_time.strftime("%Y-%m-%d")
+        payload = {
+            "symbol": sym,
+            "resolution": str(timeframe),
+            "date_format": "1",
+            "range_from": d_str,
+            "range_to": d_str,
+            "cont_flag": "1"
+        }
+        resp = fy.history(data=payload)
+        if resp.get("s") != "ok":
+            return None
+
+        target_ts = int(target_time.timestamp())
+        # Fyers returns [ts, o, h, l, c, v]
+        # We need to find the candle with the exact timestamp (or close enough if tz issues)
+        # Usually exact match is expected for candle start.
+
+        for c in resp.get("candles", []):
+            # c[0] is epoch
+            if abs(c[0] - target_ts) < 60: # 1 min tolerance
+                return {"o": c[1], "h": c[2], "l": c[3], "c": c[4]}
+
+        return None
+    except Exception as e:
+        print(f"⚠️ History fetch error for verification {sym}: {e}")
+        return None
+
+
 def fetch_initial_emas(fy, symbols, timeframe, period):
     """
     Fetches historical data for all symbols and calculates the initial EMA.
@@ -780,12 +816,41 @@ def make_onmsg(fy, dry_run=False):
                     # If first candle, we simulate presence of data and ignore green check
                     has_prev_data = True
 
-                if is_valid_context and has_prev_data and is_bearish_shooting_star_candle(
+                # --- VERIFICATION STEP ---
+                # If we think we have a signal, verify the previous candle with history API
+                # to prevent false signals from incomplete data (e.g. late start).
+                is_signal_candidate = False
+                if is_valid_context and has_prev_data:
+                     if is_bearish_shooting_star_candle(
                         bar["o"], bar["h"], bar["l"], bar["c"],
                         prev_o, prev_c,
                         min_range_pct=MIN_RANGE_PCT,
                         ignore_prev_green=is_first_candle
-                ):
+                     ):
+                        is_signal_candidate = True
+
+                if is_signal_candidate and not is_first_candle:
+                    # Verify previous candle
+                    print(f"[{tick_time:%H:%M:%S}] 🔎 Verifying signal for {sym} with History API...")
+                    hist_prev = get_candle_from_history(fy, sym, TIMEFRAME_MIN, prev_cstart)
+                    if hist_prev:
+                        # Update previous data with authoritative source
+                        prev_o, prev_c = hist_prev["o"], hist_prev["c"]
+                        # Re-check signal
+                        if not is_bearish_shooting_star_candle(
+                            bar["o"], bar["h"], bar["l"], bar["c"],
+                            prev_o, prev_c,
+                            min_range_pct=MIN_RANGE_PCT,
+                            ignore_prev_green=False
+                        ):
+                            print(f"[{tick_time:%H:%M:%S}] ⚠️ Signal REJECTED after history verification. Prev Candle mismatch (Real: O={prev_o}, C={prev_c}).")
+                            is_signal_candidate = False
+                        else:
+                            print(f"[{tick_time:%H:%M:%S}] ✅ Signal CONFIRMED by History.")
+                    else:
+                        print(f"[{tick_time:%H:%M:%S}] ⚠️ Could not verify with history, proceeding with in-memory data.")
+
+                if is_signal_candidate:
                     reasons = []
                     if is_below_ema: reasons.append(f"Below EMA {new_ema:.2f}")
                     if is_at_day_high: reasons.append(f"At Day High {bar['h']}")
