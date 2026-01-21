@@ -592,7 +592,11 @@ def fetch_initial_emas(fy, symbols, timeframe, period):
     # Fyers history requires YYYY-MM-DD
     # We might need to handle huge ranges if period is large, but for now assuming reasonable lookback
 
+    count = 0
+    total = len(symbols)
     for sym in symbols:
+        count += 1
+        print(f"\r   ⏳ Initializing EMA {count}/{total}: {sym:<20}", end="", flush=True)
         try:
             # Respect rate limits - simplistic approach
             time.sleep(0.2)
@@ -631,9 +635,9 @@ def fetch_initial_emas(fy, symbols, timeframe, period):
             # print(f"   ✅ {sym} EMA({period}) = {last_ema:.2f}")
 
         except Exception as e:
-            print(f"❌ Error fetching EMA for {sym}: {e}")
+            print(f"\n❌ Error fetching EMA for {sym}: {e}")
 
-    print(f"✅ Initialized EMA for {len(regime_ema_values)} symbols.\n")
+    print(f"\n✅ Initialized EMA for {len(regime_ema_values)} symbols.\n")
 
 
 def fetch_day_highs(fy, symbols):
@@ -646,6 +650,7 @@ def fetch_day_highs(fy, symbols):
     # Chunking symbols just in case
     chunk_size = 50
     for i in range(0, len(symbols), chunk_size):
+        print(f"   ⏳ Fetching Quotes Batch {i//chunk_size + 1}...", end=" ", flush=True)
         chunk = symbols[i:i + chunk_size]
         try:
             resp = fy.quotes({"symbols": ",".join(chunk)})
