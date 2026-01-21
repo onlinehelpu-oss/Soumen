@@ -35,7 +35,7 @@ import warnings
 import threading
 from urllib.parse import urlparse, parse_qs, quote
 from datetime import datetime as dt, timedelta
-from typing import Optional
+from typing import Optional, Tuple, Dict, Any
 
 # Suppress specific warnings
 warnings.filterwarnings("ignore", message=".*pkg_resources is deprecated.*")
@@ -544,6 +544,66 @@ def run_backtester():
 # --- SECTION 4: LIVE BOT LOGIC ---
 # ============================================================================
 
+# --- HELPER FUNCTIONS FOR REAL OPTION RESOLUTION ---
+
+def round_to_nearest_50(x: float) -> int:
+    return int(round(x / 50.0) * 50)
+
+def resolve_option_symbol(fyers: fyersModel.FyersModel, is_ce: bool, spot_ltp: float) -> Tuple[str, Optional[str]]:
+    """
+    Queries FYERS option chain for NIFTY and returns (symbol, 'YYYY-MM-DD' expiry)
+    for nearest 50-strike of earliest expiry for the requested type (CE/PE).
+    """
+    chain = []
+    for root in ("NSE:NIFTY50-INDEX", "NSE:NIFTY50", "NSE:NIFTY"):  # try all NIFTY roots
+        try:
+            resp = fyers.optionchain(data={"symbol": root}) or {}
+            data = (resp.get("data") or {}).get("optionChain", []) or (resp.get("data") or {}).get("optionsChain", [])
+            if data:
+                chain = data
+                break
+        except Exception as e:
+            print(f"[optionchain] root {root} failed: {e}")
+    if not chain:
+        # Fallback if API fails
+        print("Warning: Optionchain response empty. Using fallback simulation.")
+        return "", None
+
+    target = round_to_nearest_50(spot_ltp)
+    opt_type = "CE" if is_ce else "PE"
+    filt = [row for row in chain if str(row.get("option_type", "")).upper() == opt_type]
+    if not filt:
+        print(f"Warning: Optionchain has no rows for type {opt_type}")
+        return "", None
+
+    def expiry_key(row):
+        exp = row.get("expiry_date", row.get("expiry"))
+        try:
+            return dt.strptime(exp, "%d%b%y") if exp and len(exp) == 7 else dt.strptime(exp, "%Y-%m-%d")
+        except Exception:
+            return dt.max
+
+    expiries = [r.get("expiry_date", r.get("expiry")) for r in filt if r.get("expiry_date", r.get("expiry"))]
+    if expiries:
+        earliest_row = min(filt, key=expiry_key)
+        earliest = earliest_row.get("expiry_date", earliest_row.get("expiry"))
+        filt = [r for r in filt if r.get("expiry_date", r.get("expiry")) == earliest]
+        expiry_pick = earliest
+    else:
+        expiry_pick = None
+
+    def strike_key(row):
+        try:
+            sp = row.get("strike_price", row.get("strikePrice"))
+            return abs(float(sp) - target)
+        except Exception:
+            return 1e12
+
+    best = min(filt, key=strike_key)
+    symbol = best.get("symbol") or best.get("tradingsymbol") or best.get("tsym")
+    return symbol, expiry_pick
+
+
 class FyersService:
     """Handles all communication with the Fyers API for the live bot."""
 
@@ -552,6 +612,17 @@ class FyersService:
         self.fyers, self.client_id, self.access_token = get_fyers_instance()
         self.underlying_ltp = 0
         self.fyers_ws = None
+
+    def get_quote(self, symbol: str) -> float:
+        """Fetches the latest LTP for a given symbol via Quote API."""
+        try:
+            data = {"symbols": symbol}
+            response = self.fyers.quotes(data=data)
+            if response.get("d") and len(response["d"]) > 0:
+                return float(response["d"][0]["v"].get("lp", 0))
+        except Exception as e:
+            print(f"Error fetching quote for {symbol}: {e}")
+        return 0.0
 
     def connect_to_websocket(self):
         """Initializes and connects to the Fyers Data WebSocket with detailed logging."""
@@ -733,7 +804,7 @@ class LiveOptionsBot:
         self.price_history = []
 
     def run(self):
-        print(f"🚀 STARTING LIVE BOT (PAPER TRADING) | Balance: ₹{self.paper_balance:,.2f}")
+        print(f"🚀 STARTING LIVE BOT (PAPER TRADING - REAL PRICES) | Balance: ₹{self.paper_balance:,.2f}")
         self.fyers_service.connect_to_websocket()
         time.sleep(5)
         last_underlying_price = 0
@@ -768,24 +839,42 @@ class LiveOptionsBot:
         self._show_paper_summary()
 
     def _open_paper_position(self, price: float, opt_type: str):
-        entry_premium = 100.0
+        # 1. Resolve Real Option Symbol
+        is_ce = (opt_type == "CE")
+        symbol, _ = resolve_option_symbol(self.fyers_service.fyers, is_ce, price)
+
+        if not symbol:
+            print(f"  ❌ Error: Could not resolve {opt_type} option symbol. Trade skipped.")
+            return
+
+        # 2. Fetch Real LTP
+        entry_premium = self.fyers_service.get_quote(symbol)
+
+        if entry_premium == 0:
+            print(f"  ❌ Error: Could not fetch quote for {symbol}. Trade skipped.")
+            return
+
+        # 3. Calculate SL/TP based on Real Premium
         sl = entry_premium * (1 - self.config.STOP_LOSS_PCT / 100)
         tp = entry_premium * (1 + self.config.TAKE_PROFIT_PCT / 100)
-        strike = int(round(price / 50) * 50)
-        symbol = f"NIFTY_DEMO_{strike}_{opt_type}"
+
         total_quantity = self.config.LOT_SIZE * self.config.NUM_LOTS
         self.active_position = PaperPosition(symbol, entry_premium, sl, tp, total_quantity)
-        print(
-            f"  ✅ PAPER TRADE: Opened {symbol} (Qty: {total_quantity}) @ ₹{entry_premium:.2f} | SL: ₹{sl:.2f}, TP: ₹{tp:.2f}")
+
+        print(f"  ✅ PAPER TRADE: Opened {symbol} (Qty: {total_quantity}) @ ₹{entry_premium:.2f} | SL: ₹{sl:.2f}, TP: ₹{tp:.2f}")
 
     def _monitor_position(self, price: float, last_price: float):
         pos = self.active_position
-        if not pos or last_price == 0: return
+        if not pos: return
 
-        price_change = (price - last_price)
-        opt_type = pos.symbol.split('_')[-1]
-        premium_change = (price_change * 0.5) if opt_type == 'CE' else (-price_change * 0.5)
-        pos.update_pnl(pos.current_price + premium_change)
+        # Fetch Real Live Price of the Option
+        current_option_price = self.fyers_service.get_quote(pos.symbol)
+
+        if current_option_price == 0:
+            print(f"  ⚠️ Warning: Could not fetch live quote for {pos.symbol}. Skipping update.")
+            return
+
+        pos.update_pnl(current_option_price)
 
         # Update Trailing Stop Loss
         if pos.peak_price > pos.entry_price:
@@ -796,6 +885,7 @@ class LiveOptionsBot:
 
         print(
             f"  HOLDING: {pos.symbol} | Entry: {pos.entry_price:.2f} | Now: {pos.current_price:.2f} | P&L: {pos.pnl:+.2f} | SL: {pos.stop_loss:.2f}")
+
         if pos.current_price <= pos.stop_loss:
             self._close_paper_position("STOP LOSS")
         elif pos.current_price >= pos.take_profit:
