@@ -985,7 +985,8 @@ def handle_tick(symbol: str, ltp: float, ts: dt):
 
         # P&L Print (throttled)
         current_time = time.time()
-        if current_time - state.last_update_ts > 30:
+        # Increased throttle from 30s to 300s (5 minutes)
+        if current_time - state.last_update_ts > 300:
             current_pnl = (ltp - state.entry_price) * state.qty
             pnl_percent = ((ltp - state.entry_price) / state.entry_price * 100) if state.entry_price else 0
             print(f"[{symbol}] LTP: {ltp:.2f} | Entry: {state.entry_price:.2f} | P&L: {current_pnl:.2f} ({pnl_percent:.2f}%)")
