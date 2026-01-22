@@ -91,6 +91,9 @@ EXIT_ALL_TIME_MCX = dtime(22, 50)  # force-exit all open MCX positions at 10:50 
 FORCE_CLOSED_ALL = False
 FORCE_CLOSED_ALL_MCX = False
 
+# Carry Forward Flag
+CARRY_FORWARD_ENABLED = False
+
 # Product type for NSE stocks ("INTRADAY" or "CNC")
 STOCK_PRODUCT_TYPE = "INTRADAY"
 
@@ -190,6 +193,9 @@ def is_entry_allowed(symbol: str) -> bool:
         return MARKET_START <= now <= ENTRY_CUTOFF
 
 def check_exit_all_condition(symbol: str) -> bool:
+    if CARRY_FORWARD_ENABLED:
+        return False
+
     now = dt.now(IST).time()
     if is_mcx(symbol):
         return now >= EXIT_ALL_TIME_MCX
@@ -446,14 +452,75 @@ def sync_with_broker_positions():
             return
 
         broker_positions = response.get('netPositions', [])
-        open_symbols = {pos['symbol'] for pos in broker_positions if pos['netQty'] != 0}
 
+        # Map symbol -> position dict for easier lookup
+        # Filter for non-zero qty
+        active_positions = {
+            pos['symbol']: pos
+            for pos in broker_positions
+            if pos.get('netQty', 0) != 0
+        }
+
+        # 1. Update BOT state based on BROKER state
         for symbol, state in SYMBOL_STATES.items():
-            if state.status == "position" and symbol not in open_symbols:
-                print(f"\n[sync] Position for {symbol} seems to be manually closed.")
-                print(f"[sync] Resetting state for {symbol}.")
-                state.reset_position()
-                state.status = "watch"  # Reset to watch status after manual close
+            broker_pos = active_positions.get(symbol)
+
+            # CASE A: Bot thinks it has a position
+            if state.status == "position":
+                if not broker_pos:
+                    # Position exists in bot but NOT in broker -> Manual Close
+                    print(f"\n[sync] Position for {symbol} was closed manually at broker.")
+                    print(f"[sync] Resetting state for {symbol} to WATCH.")
+                    state.reset_position()
+                    state.status = "watch"
+                else:
+                    # Position exists in both -> Sync details (Qty, Entry Price)
+                    net_qty = int(broker_pos.get('netQty', 0))
+                    if net_qty > 0:
+                        # Long position logic
+                        if state.qty != net_qty:
+                            print(f"[sync] {symbol} Qty mismatch (Bot: {state.qty}, Broker: {net_qty}). Updating.")
+                            state.qty = net_qty
+
+                        # Optional: Sync entry price if needed
+                        avg_price = float(broker_pos.get('avgPrice', 0.0))
+                        if avg_price > 0 and abs(state.entry_price - avg_price) > 0.5:
+                            state.entry_price = avg_price
+
+                    elif net_qty < 0:
+                        # Bot is Long-only logic, but broker has Short?
+                        # For now, treat as closed or warn?
+                        # Assuming user manually reversed. Let's reset to watch to avoid messing up.
+                        print(f"[sync] {symbol} found SHORT position (Qty: {net_qty}) but bot is LONG-only.")
+                        print("[sync] Resetting bot state to WATCH.")
+                        state.reset_position()
+                        state.status = "watch"
+
+            # CASE B: Bot is in WATCH mode (no position)
+            elif state.status == "watch":
+                if broker_pos:
+                    # Position found at broker but bot is watching -> Manual Entry or Restart
+                    net_qty = int(broker_pos.get('netQty', 0))
+                    if net_qty > 0:
+                        print(f"\n[sync] Found existing LONG position for {symbol} (Qty: {net_qty}). Adopting it.")
+                        state.qty = net_qty
+                        state.entry_price = float(broker_pos.get('avgPrice', 0.0))
+                        state.status = "position"
+                        state.just_entered = False # Don't apply entry cooldown
+
+                        # Set a default SL if we adopted it (optional, maybe Swing Low)
+                        # Since we don't know the signal candle, we can't use 'signal_low' easily.
+                        # We'll rely on the user or next candle evaluation?
+                        # Or calculate a rough SL:
+                        if SL_MODE == "swing_low" and not state.data.empty:
+                             recent_lows = state.data['low'].tail(SWING_LOOKBACK)
+                             state.stop_price = recent_lows.min()
+                        else:
+                             # Fallback SL (e.g. 1% below entry)
+                             state.stop_price = state.entry_price * 0.99
+
+                        print(f"[sync] Adopted {symbol}. Entry: {state.entry_price}, Calc SL: {state.stop_price}")
+
 
         update_subscriptions()  # Ensure subscriptions are correct after sync
 
@@ -1099,6 +1166,7 @@ def main():
                         help="RSI exit range (e.g., 70-75)")
     parser.add_argument("--alloc", type=int, default=ALLOCATION_AMOUNT, help="Allocation amount for NSE stocks")
     parser.add_argument("--mode", type=str, default=POSITION_MODE, help="Position mode: 'alloc' or 'qty'")
+    parser.add_argument("--carry", action="store_true", help="Enable carry forward (do not auto-square off at EOD)")
     parser.add_argument("--test", action="store_true", help="Test mode without live connection")
     parser.add_argument("--no-trade", action="store_true", help="Disable trading")
 
@@ -1110,6 +1178,7 @@ def main():
     RSI_PERIOD = args.rsi_period
     ALLOCATION_AMOUNT = args.alloc
     POSITION_MODE = args.mode
+    CARRY_FORWARD_ENABLED = args.carry
 
     try:
         RSI_ENTRY_MIN, RSI_ENTRY_MAX = map(int, args.rsi_entry.split('-'))
@@ -1133,6 +1202,7 @@ def main():
     print(f"Allocation Amount: {ALLOCATION_AMOUNT}")
     print(f"MCX Lots: {MCX_LOTS}")
     print(f"Symbols: {len(SYMBOLS)} loaded")
+    print(f"Carry Forward: {CARRY_FORWARD_ENABLED}")
     print(f"Trading Enabled: {TRADING_ENABLED}")
     print("=" * 80 + "\n")
 
