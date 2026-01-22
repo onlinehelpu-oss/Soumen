@@ -60,7 +60,7 @@ MCX_LOTS = {
 }
 
 # ============================== CONFIGURATION ==============================
-TIMEFRAME_MIN = 5  # Any TF in minutes (1,2,3,5,10,15,30,60,...)
+TIMEFRAME_MIN = 30  # Any TF in minutes (1,2,3,5,10,15,30,60,...)
 
 # RSI Parameters
 RSI_PERIOD = 14
@@ -102,7 +102,7 @@ SL_MODE = "signal_low"  # "signal_low" or "swing_low"
 SWING_LOOKBACK = 5  # used for swing-low
 
 # Position sizing mode globals
-POSITION_MODE = "alloc"  # "alloc" or "qty"
+POSITION_MODE = "qty"  # "alloc" or "qty"
 ALLOCATION_AMOUNT = 20000
 FIXED_QTY = 1  # default 1 share when using qty mode
 QTY_MAP: Dict[str, int] = {}
