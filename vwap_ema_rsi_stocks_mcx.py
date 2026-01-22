@@ -935,6 +935,9 @@ def handle_tick(symbol: str, ltp: float, ts: dt):
                         # Clear signal
                         state.signal_candle = None
                         state.signal_close_ts = None
+
+                        # Persist state immediately
+                        save_state()
                     else:
                         print(f"[ENTRY FAILED] {symbol}: {resp}")
                         state.status = "watch"
@@ -970,6 +973,9 @@ def handle_tick(symbol: str, ltp: float, ts: dt):
                     print(f"  Approx P&L: ₹{pnl:.2f}")
                     state.status = "cooldown"
                     state.reset_position()
+
+                    # Persist state immediately
+                    save_state()
                 else:
                     print(f"[EXIT FAILED] {symbol}: {resp}")
             except Exception as e:
@@ -1060,6 +1066,9 @@ def evaluate_on_new_candle(st: SymbolState):
                     print(f"  Approx P&L: ₹{pnl:.2f}")
                     st.status = "cooldown"
                     st.reset_position()
+
+                    # Persist state immediately
+                    save_state()
                 else:
                     print(f"[EXIT FAILED] {st.symbol}: {resp}")
             except Exception as e:
