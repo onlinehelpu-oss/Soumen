@@ -854,8 +854,9 @@ def make_onmsg(fy, dry_run=False):
             # breakout condition (Breakout ABOVE High)
         threshold = round_to_tick(t["high"] + ENTRY_BUFFER)
         prev_for_cross = prev_ltp_cache.get(sym)
-        if (prev_for_cross is not None) and (prev_for_cross <= threshold) and (ltp > threshold):
-            print(f"[{tick_time:%H:%M:%S}] 🔥 BREAKOUT {sym} > {threshold:.2f}. Placing trade...")
+        # Using >= to ensure we trigger as soon as price touches or exceeds the breakout level
+        if (prev_for_cross is not None) and (prev_for_cross <= threshold) and (ltp >= threshold):
+            print(f"[{tick_time:%H:%M:%S}] 🔥 BREAKOUT {sym} >= {threshold:.2f}. Placing trade...")
 
             lot_size = get_lot_size(sym)
             if lot_size == 0:
