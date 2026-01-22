@@ -484,8 +484,12 @@ def sync_with_broker_positions():
 
                         # Optional: Sync entry price if needed
                         avg_price = float(broker_pos.get('avgPrice', 0.0))
-                        if avg_price > 0 and abs(state.entry_price - avg_price) > 0.5:
+                        if avg_price == 0:
+                            avg_price = float(broker_pos.get('buyAvg', 0.0))
+
+                        if avg_price > 0 and (state.entry_price == 0 or abs(state.entry_price - avg_price) > 0.5):
                             state.entry_price = avg_price
+                            print(f"[sync] {symbol} Entry updated to {state.entry_price:.2f}")
 
                     elif net_qty < 0:
                         # Bot is Long-only logic, but broker has Short?
@@ -504,7 +508,12 @@ def sync_with_broker_positions():
                     if net_qty > 0:
                         print(f"\n[sync] Found existing LONG position for {symbol} (Qty: {net_qty}). Adopting it.")
                         state.qty = net_qty
-                        state.entry_price = float(broker_pos.get('avgPrice', 0.0))
+
+                        entry_price = float(broker_pos.get('avgPrice', 0.0))
+                        if entry_price == 0:
+                            entry_price = float(broker_pos.get('buyAvg', 0.0))
+
+                        state.entry_price = entry_price
                         state.status = "position"
                         state.just_entered = False # Don't apply entry cooldown
 
