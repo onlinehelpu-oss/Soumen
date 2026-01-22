@@ -628,9 +628,9 @@ class LivePaperBot:
         ltp = float(msg.get("ltp"))
         ts = msg.get("timestamp", time.time())
 
-        # Debug: Print first tick for a symbol to confirm data flow
-        if sym not in self.ltp_cache:
-            print(f"[DEBUG] First tick received for {sym}: {ltp}")
+        # Debug: Print first tick for a symbol to confirm data flow (Optional, verbose)
+        # if sym not in self.ltp_cache:
+        #     print(f"[DEBUG] First tick received for {sym}: {ltp}")
 
         self.ltp_cache[sym] = ltp
 
