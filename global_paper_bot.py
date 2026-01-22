@@ -8,7 +8,7 @@ It handles:
 1. Authentication (Auto-login / Token management)
 2. Real-time Market Data (WebSocket)
 3. Paper Trading Execution (Virtual Balance, Positions, P&L, Stop Loss, Take Profit)
-4. Custom Strategy Implementation (A dedicated section for YOUR logic)
+4. Custom Strategy Implementation (Green Hammer / Green Pinbar Strategy)
 
 **Usage:**
 1. Setup Credentials (Run Once):
@@ -16,10 +16,6 @@ It handles:
 
 2. Run the Bot:
    python global_paper_bot.py run
-
-**How to Add Your Strategy:**
-Scroll down to the 'CUSTOM STRATEGY SECTION'.
-Implement your logic in the `generate_signal` method.
 """
 
 import os
@@ -32,9 +28,13 @@ import hashlib
 import requests
 import threading
 import warnings
+import math
+import re
 from urllib.parse import urlparse, parse_qs, quote
-from datetime import datetime as dt, timedelta
-from typing import Optional, Tuple, Dict, Any, List
+from datetime import datetime as dt, timedelta, time as dttime
+from typing import Optional, Tuple, Dict, Any, List, Set
+import pandas as pd
+import pytz
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -57,21 +57,56 @@ class BotConfig:
     # --- File Names ---
     LOGIN_DETAILS_FILE = "fyers_login_details.json"
     LIVE_DATA_FILE = "paper_trade_data.csv"
+    TRADE_LOG_FILE = "trade_log.csv"
 
-    # --- Trading Parameters ---
-    SYMBOL = "NSE:NIFTY50-INDEX"  # The symbol to monitor and trade
-    PAPER_BALANCE = 100000.0      # Starting virtual capital
+    # --- Strategy Parameters (Green Hammer) ---
+    TIMEFRAME_MIN = 15
+    R_MULTIPLIER = 1.0
+    REGIME_EMA_PERIOD = 26
 
-    # Default Risk Management (Can be overridden by Strategy)
-    DEFAULT_QUANTITY = 50         # Quantity per trade
-    STOP_LOSS_PCT = 10.0          # Default Stop Loss %
-    TAKE_PROFIT_PCT = 20.0        # Default Take Profit %
-    TRAILING_SL_PCT = 5.0         # Trailing Stop Loss %
+    # Candle Geometry
+    LOWER_WICK_MIN = 50
+    LOWER_WICK_MAX = 80
+    BODY_MIN = 5
+    BODY_MAX = 30
+    UPPER_WICK_MAX = 25
+    MIN_RANGE_PCT = 0.0015
 
-    # --- Session Timing ---
-    # Run all day for testing (00:00 to 23:59)
-    SESSION_START_TIME = dt.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    SESSION_END_TIME = dt.now().replace(hour=23, minute=59, second=59, microsecond=0)
+    # Entry Rules
+    ENTRY_BUFFER = 0.05
+
+    # Timing
+    ENTRY_CUTOFF = dttime(15, 0)      # NSE
+    EXIT_ALL_TIME = dttime(15, 9)     # NSE
+    ENTRY_CUTOFF_MCX = dttime(22, 0)  # MCX
+    EXIT_ALL_TIME_MCX = dttime(22, 50)# MCX
+
+    # Capital
+    PAPER_BALANCE = 100000.0
+    ALLOCATION_AMOUNT = 16000     # Per trade allocation for NSE
+    MCX_LOT_MULTIPLIER = 1        # Fixed lots for MCX
+
+    # --- Watchlist ---
+    SYMBOLS = [
+        'NSE:ADANIENT-EQ', 'NSE:ADANIPORTS-EQ', 'NSE:APOLLOHOSP-EQ', 'NSE:ASIANPAINT-EQ', 'NSE:AXISBANK-EQ',
+        'NSE:BAJAJ-AUTO-EQ', 'NSE:BAJFINANCE-EQ', 'NSE:BAJAJFINSV-EQ', 'NSE:BPCL-EQ', 'NSE:BHARTIARTL-EQ',
+        'NSE:BRITANNIA-EQ', 'NSE:CIPLA-EQ', 'NSE:COALINDIA-EQ', 'NSE:DIVISLAB-EQ', 'NSE:DRREDDY-EQ',
+        'NSE:EICHERMOT-EQ', 'NSE:GRASIM-EQ', 'NSE:HCLTECH-EQ', 'NSE:HDFCBANK-EQ', 'NSE:HDFCLIFE-EQ',
+        'NSE:HEROMOTOCO-EQ', 'NSE:HINDALCO-EQ', 'NSE:HINDUNILVR-EQ', 'NSE:ICICIBANK-EQ', 'NSE:ITC-EQ',
+        'NSE:INFY-EQ', 'NSE:JSWSTEEL-EQ', 'NSE:KOTAKBANK-EQ', 'NSE:LTIM-EQ', 'NSE:LT-EQ',
+        'NSE:M&M-EQ', 'NSE:MARUTI-EQ', 'NSE:NTPC-EQ', 'NSE:NESTLEIND-EQ', 'NSE:ONGC-EQ',
+        'NSE:POWERGRID-EQ', 'NSE:RELIANCE-EQ', 'NSE:SBILIFE-EQ', 'NSE:SBIN-EQ', 'NSE:SIEMENS-EQ',
+        'NSE:SUNPHARMA-EQ', 'NSE:TCS-EQ', 'NSE:TATACONSUM-EQ', 'NSE:TATASTEEL-EQ',
+        'NSE:TECHM-EQ', 'NSE:TITAN-EQ', 'NSE:UPL-EQ',
+        # MCX Futures (Make sure these are current expiries or generic if supported)
+        # 'MCX:CRUDEOILM24MARFUT', 'MCX:SILVERMIC24APR24FUT'
+    ]
+
+    MCX_LOTS = {
+        "SILVERMIC": 1,
+        "CRUDEOILM": 1,
+        "NATGASMINI": 1,
+    }
 
 
 # ============================================================================
@@ -184,33 +219,33 @@ def get_fyers_instance():
 # ============================================================================
 
 class MarketDataService:
-    """Manages WebSocket connection and real-time price updates."""
-    def __init__(self, client_id, access_token, symbol):
+    """Manages WebSocket connection and real-time price updates for multiple symbols."""
+    def __init__(self, client_id, access_token, symbols: List[str]):
         self.client_id = client_id
         self.access_token = access_token
-        self.symbol = symbol
-        self.ltp = 0.0
+        self.symbols = symbols
+        self.ltp_store = {} # symbol -> ltp
         self.fyers_ws = None
         self.lock = threading.Lock()
-        # You can store history here if needed for indicators
-        self.price_history = []
+
+        # Initialize LTPs with 0
+        for s in symbols:
+            self.ltp_store[s] = 0.0
 
     def connect(self):
         ws_token = f"{self.client_id}:{self.access_token}"
 
         def on_connect():
-            print(f"✅ WebSocket Connected. Subscribing to {self.symbol}")
-            self.fyers_ws.subscribe(symbols=[self.symbol])
+            print(f"✅ WebSocket Connected. Subscribing to {len(self.symbols)} symbols.")
+            self.fyers_ws.subscribe(symbols=self.symbols)
 
         def on_message(msg):
             # Handle tick data
-            if isinstance(msg, list) and len(msg) > 0 and 'ltp' in msg[0]:
-                price = msg[0]['ltp']
-                with self.lock:
-                    self.ltp = price
-                    self.price_history.append(price)
-                    if len(self.price_history) > 1000: # Keep last 1000 ticks
-                        self.price_history.pop(0)
+            if isinstance(msg, list) and len(msg) > 0:
+                for tick in msg:
+                    if 'ltp' in tick and 'symbol' in tick:
+                        with self.lock:
+                            self.ltp_store[tick['symbol']] = tick['ltp']
 
         def on_error(msg):
             print(f"⚠️ WS Error: {msg}")
@@ -227,13 +262,13 @@ class MarketDataService:
         t.daemon = True
         t.start()
 
-    def get_ltp(self):
+    def get_ltp(self, symbol: str) -> float:
         with self.lock:
-            return self.ltp
+            return self.ltp_store.get(symbol, 0.0)
 
-    def get_history(self):
+    def get_all_ltp(self) -> Dict[str, float]:
         with self.lock:
-            return list(self.price_history)
+            return self.ltp_store.copy()
 
 
 # ============================================================================
@@ -274,113 +309,269 @@ class PaperExchange:
         self.active_positions.remove(position)
 
         record = {
-            "symbol": position.symbol,
-            "side": position.side,
-            "entry": position.entry_price,
-            "exit": price,
-            "pnl": pnl,
-            "reason": reason,
-            "time": dt.now().strftime("%H:%M:%S")
+            "Datetime": dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "Symbol": position.symbol,
+            "Side": position.side,
+            "Entry": position.entry_price,
+            "Exit": price,
+            "PnL": pnl,
+            "Reason": reason
         }
         self.trade_log.append(record)
+
+        # Save to file
+        pd.DataFrame([record]).to_csv(BotConfig.TRADE_LOG_FILE, mode='a', header=not os.path.exists(BotConfig.TRADE_LOG_FILE), index=False)
 
         color = "🟢" if pnl > 0 else "🔴"
         print(f"{color} CLOSE {position.side}: {position.symbol} @ {price:.2f} | P&L: {pnl:.2f} | Reason: {reason}")
         print(f"💰 Current Balance: {self.balance:.2f}")
 
-    def update(self, current_price):
+    def update(self, current_prices: Dict[str, float]):
         """Checks SL/TP for all active positions."""
         for pos in list(self.active_positions):
-            # Update running P&L for display if needed
+            current_price = current_prices.get(pos.symbol, 0)
+            if current_price == 0: continue
+
+            # Update running P&L
             if pos.side == "BUY":
                 pos.pnl = (current_price - pos.entry_price) * pos.quantity
-                # Trailing logic (optional, simple implementation)
                 if current_price > pos.peak_price:
                     pos.peak_price = current_price
-                    # E.g. Trail SL if configured (not implemented here to keep it clean)
 
-                # Check Exits
                 if current_price <= pos.stop_loss:
                     self.close_position(pos, current_price, "STOP_LOSS")
                 elif current_price >= pos.take_profit:
                     self.close_position(pos, current_price, "TAKE_PROFIT")
 
-            elif pos.side == "SELL":
-                pos.pnl = (pos.entry_price - current_price) * pos.quantity
-                if current_price < pos.peak_price:
-                    pos.peak_price = current_price
-
-                if current_price >= pos.stop_loss:
-                    self.close_position(pos, current_price, "STOP_LOSS")
-                elif current_price <= pos.take_profit:
-                    self.close_position(pos, current_price, "TAKE_PROFIT")
+            # (Short logic if needed)
 
 
 # ============================================================================
-# --- SECTION 5: CUSTOM STRATEGY SECTION ---
+# --- SECTION 5: CUSTOM STRATEGY SECTION (GREEN HAMMER) ---
 # ============================================================================
 
 class CustomStrategy:
     """
-    PUT YOUR LOGIC HERE.
-    This class receives market data and decides whether to Buy or Sell.
+    Green-Hammer / Green-Pinbar Strategy logic.
     """
-    def __init__(self, config: BotConfig):
+    def __init__(self, config: BotConfig, fyers_model):
         self.config = config
-        # Initialize any variables/indicators here
-        self.last_signal = None
+        self.fyers = fyers_model
 
-    def on_tick(self, current_price: float, price_history: List[float], active_positions: List[PaperPosition]) -> Optional[Dict]:
+        # State Management
+        self.bars = {}          # (symbol, candle_start_time) -> {o, h, l, c}
+        self.regime_emas = {}   # symbol -> current EMA value
+        self.day_lows = {}      # symbol -> day low value
+        self.triggers = {}      # symbol -> {low, high, active_start, triggered}
+        self.processed_candles = set()
+
+        # Helpers
+        self.TICK_SIZE = 0.05
+
+    def round_to_tick(self, x):
+        return round(round(x / self.TICK_SIZE) * self.TICK_SIZE, 2)
+
+    def candle_start(self, t: dt) -> dt:
+        return t.replace(second=0, microsecond=0) - timedelta(minutes=t.minute % self.config.TIMEFRAME_MIN)
+
+    # --- Initialization ---
+    def fetch_initial_data(self):
+        print("\n🔄 Strategy: Fetching Initial Data (EMAs & Day Lows)...")
+        # 1. Fetch EMAs
+        lookback_days = math.ceil((self.config.REGIME_EMA_PERIOD * self.config.TIMEFRAME_MIN * 3) / (60 * 6.0))
+        lookback_days = max(lookback_days, 5)
+        start_date = dt.now().date() - timedelta(days=lookback_days)
+        end_date = dt.now().date()
+
+        for sym in self.config.SYMBOLS:
+            try:
+                time.sleep(0.1) # Throttle
+                data = {
+                    "symbol": sym, "resolution": str(self.config.TIMEFRAME_MIN),
+                    "date_format": "1", "range_from": start_date.strftime("%Y-%m-%d"),
+                    "range_to": end_date.strftime("%Y-%m-%d"), "cont_flag": "1"
+                }
+                resp = self.fyers.history(data)
+                candles = resp.get("candles", [])
+                if candles:
+                     df = pd.DataFrame(candles, columns=["ts", "o", "h", "l", "c", "v"])
+                     df["ema"] = df["c"].ewm(span=self.config.REGIME_EMA_PERIOD, adjust=False).mean()
+                     self.regime_emas[sym] = df["ema"].iloc[-1]
+            except Exception as e:
+                print(f"  ❌ Error fetching history for {sym}: {e}")
+
+        # 2. Fetch Day Lows
+        try:
+            # Batch fetch
+            chunk_size = 50
+            for i in range(0, len(self.config.SYMBOLS), chunk_size):
+                chunk = self.config.SYMBOLS[i:i+chunk_size]
+                resp = self.fyers.quotes({"symbols": ",".join(chunk)})
+                if resp.get("d"):
+                    for item in resp["d"]:
+                        sym = item.get("n")
+                        low = item.get("v", {}).get("low_price")
+                        if low: self.day_lows[sym] = float(low)
+        except Exception as e:
+            print(f"  ❌ Error fetching quotes: {e}")
+
+        print(f"✅ Strategy Initialized. Tracking {len(self.regime_emas)} EMAs and {len(self.day_lows)} Day Lows.")
+
+    def get_lot_size(self, symbol: str) -> int:
+        if symbol.endswith("-EQ"): return 1
+        base = symbol.split(':')[1]
+        for mcx_base, lot in self.config.MCX_LOTS.items():
+            if base.startswith(mcx_base): return lot
+        return 1
+
+    def is_bullish_hammer_candle(self, o, h, l, c, prev_o, prev_c, ignore_prev=False):
+        # 1. Must be Green
+        if c <= o: return False
+
+        # 2. Prev must be Red (unless ignored)
+        if not ignore_prev:
+            if prev_c >= prev_o: return False
+
+        # 3. Geometry
+        if c == 0 or h <= l: return False
+        total_range = h - l
+        if (total_range / max(abs(c), 1e-9)) < self.config.MIN_RANGE_PCT: return False
+
+        upper_wick_pct = ((h - c) / total_range) * 100
+        body_pct = ((c - o) / total_range) * 100
+        lower_wick_pct = ((o - l) / total_range) * 100
+
+        return (
+            (self.config.LOWER_WICK_MIN <= lower_wick_pct <= self.config.LOWER_WICK_MAX) and
+            (self.config.BODY_MIN <= body_pct <= self.config.BODY_MAX) and
+            (0 <= upper_wick_pct <= self.config.UPPER_WICK_MAX)
+        )
+
+    def on_tick(self, symbol: str, ltp: float, active_positions: List[PaperPosition]) -> Optional[Dict]:
         """
-        Called every time the price updates.
-
-        Args:
-            current_price: The latest LTP.
-            price_history: List of recent prices (ticks).
-            active_positions: List of currently open positions.
-
-        Returns:
-            None (if no action) OR
-            Dict with keys: {'action': 'BUY'/'SELL', 'quantity': int, 'sl_price': float, 'tp_price': float}
+        Main logic called per symbol per tick.
         """
+        if ltp == 0: return None
+        now = dt.now()
 
-        # --- EXAMPLE LOGIC (Simple Trend Following) ---
-        # If we have no position, and price moves up significantly...
+        # 1. Update Day Low
+        curr_low = self.day_lows.get(symbol, float('inf'))
+        if ltp < curr_low: self.day_lows[symbol] = ltp
 
-        # 1. Don't trade if we already have a position (Simple mode)
-        if len(active_positions) > 0:
-            return None
+        # 2. Manage Candle Building
+        cstart = self.candle_start(now)
+        key = (symbol, cstart)
+        bar = self.bars.get(key)
 
-        # 2. Need some history
-        if len(price_history) < 20:
-            return None
+        if not bar:
+            self.bars[key] = bar = {"o": ltp, "h": ltp, "l": ltp, "c": ltp}
+        else:
+            bar["h"] = max(bar["h"], ltp)
+            bar["l"] = min(bar["l"], ltp)
+            bar["c"] = ltp
 
-        # 3. Simple Indicator: Price > Average of last 20 ticks
-        avg_price = sum(price_history[-20:]) / 20
+        # 3. Check Signal (At Candle Close)
+        # Note: We check if current time is just past the candle end
+        next_cstart = cstart + timedelta(minutes=self.config.TIMEFRAME_MIN)
 
-        # LOGIC: Buy if Current Price > Average + 5 points
-        if current_price > avg_price + 5:
-            sl = current_price * (1 - self.config.STOP_LOSS_PCT/100)
-            tp = current_price * (1 + self.config.TAKE_PROFIT_PCT/100)
+        # Logic to process "completed" candle
+        # We can't easily detect "exact" close in loop, so we assume if we see a tick
+        # for a NEW candle (time >= next_cstart), the previous one (key) is done.
+        # However, to be robust, we'll check if the CURRENT time is close to the end of the candle interval
+        # But provided logic used: `if tick_time >= cstart + minutes - 1 sec`.
 
-            return {
-                "action": "BUY",
-                "quantity": self.config.DEFAULT_QUANTITY,
-                "sl_price": sl,
-                "tp_price": tp
-            }
+        is_candle_complete_time = now >= (next_cstart - timedelta(seconds=1))
 
-        # LOGIC: Sell if Current Price < Average - 5 points
-        elif current_price < avg_price - 5:
-             sl = current_price * (1 + self.config.STOP_LOSS_PCT/100)
-             tp = current_price * (1 - self.config.TAKE_PROFIT_PCT/100)
+        if is_candle_complete_time and key not in self.processed_candles:
+            self.processed_candles.add(key)
 
-             return {
-                 "action": "SELL",
-                 "quantity": self.config.DEFAULT_QUANTITY,
-                 "sl_price": sl,
-                 "tp_price": tp
-             }
+            # Update EMA
+            curr_ema = self.regime_emas.get(symbol)
+            if curr_ema:
+                k = 2 / (self.config.REGIME_EMA_PERIOD + 1)
+                new_ema = (bar["c"] * k) + (curr_ema * (1 - k))
+                self.regime_emas[symbol] = new_ema
+            else:
+                new_ema = bar["c"]
+                self.regime_emas[symbol] = new_ema
+
+            # Check Position existence
+            has_pos = any(p.symbol == symbol for p in active_positions)
+            if not has_pos:
+                # Get Prev Bar
+                prev_cstart = cstart - timedelta(minutes=self.config.TIMEFRAME_MIN)
+                prev_bar = self.bars.get((symbol, prev_cstart))
+
+                # Check Context
+                is_above_ema = bar["c"] > new_ema
+                cached_day_low = self.day_lows.get(symbol, bar["l"])
+                is_at_day_low = bar["l"] <= (cached_day_low + 0.01)
+
+                if is_above_ema or is_at_day_low:
+                    # Session Start logic
+                    is_session_start = False
+                    if symbol.startswith("MCX") and cstart.hour == 9 and cstart.minute == 0: is_session_start = True
+                    elif not symbol.startswith("MCX") and cstart.hour == 9 and cstart.minute == 15: is_session_start = True
+
+                    p_o, p_c = (prev_bar["o"], prev_bar["c"]) if prev_bar else (0, 0)
+
+                    if self.is_bullish_hammer_candle(bar["o"], bar["h"], bar["l"], bar["c"], p_o, p_c, ignore_prev=is_session_start):
+                         print(f"[{now.strftime('%H:%M:%S')}] 🎯 SIGNAL {symbol}: Green Hammer detected. Watching for Breakout > {bar['h']}")
+                         self.triggers[symbol] = {
+                             "low": bar["l"],
+                             "high": bar["h"],
+                             "active_start": next_cstart,
+                             "triggered": False
+                         }
+
+        # 4. Check Trigger (Breakout)
+        trigger = self.triggers.get(symbol)
+        if trigger:
+            # Expiry
+            if now >= trigger["active_start"] + timedelta(minutes=self.config.TIMEFRAME_MIN):
+                self.triggers.pop(symbol, None)
+            elif now >= trigger["active_start"] and not trigger["triggered"]:
+                # Cutoff Time
+                cutoff = self.config.ENTRY_CUTOFF_MCX if symbol.startswith("MCX") else self.config.ENTRY_CUTOFF
+                if now.time() < cutoff:
+                    breakout_level = self.round_to_tick(trigger["high"] + self.config.ENTRY_BUFFER)
+
+                    if ltp > breakout_level:
+                        # ENTRY!
+                        lot_size = self.get_lot_size(symbol)
+
+                        # Qty Logic
+                        if symbol.startswith("MCX"):
+                            qty = self.config.MCX_LOT_MULTIPLIER * lot_size # Total units
+                        else:
+                            # Alloc logic
+                            shares = int(self.config.ALLOCATION_AMOUNT / ltp) if ltp > 0 else 0
+                            qty = max(lot_size, (shares // lot_size) * lot_size)
+
+                        sl = trigger["low"]
+                        risk = ltp - sl
+                        tgt = ltp + (self.config.R_MULTIPLIER * risk)
+
+                        self.triggers.pop(symbol, None) # Remove trigger
+
+                        return {
+                            "action": "BUY",
+                            "quantity": qty,
+                            "sl_price": sl,
+                            "tp_price": tgt
+                        }
+
+        # 5. Check Time-Based Exits (Exit All)
+        # Note: This is checked every tick, but framework only closes open positions if requested
+        # We can implement a check in PaperExchange or here.
+        # Here we can return a SELL signal for ALL positions if time matches?
+        # Actually, framework calls update() which manages SL/TP. Time exit needs explicit handling.
+        exit_time = self.config.EXIT_ALL_TIME_MCX if symbol.startswith("MCX") else self.config.EXIT_ALL_TIME
+        if now.time() >= exit_time:
+             # Find if we have position
+             pos = next((p for p in active_positions if p.symbol == symbol), None)
+             if pos:
+                 return {"action": "EXIT_TIME", "quantity": 0, "sl_price":0, "tp_price":0} # Signal to close
 
         return None
 
@@ -390,52 +581,60 @@ class CustomStrategy:
 # ============================================================================
 
 def run_bot():
-    print("🚀 STARTING GLOBAL PAPER TRADING BOT...")
+    print("🚀 STARTING GLOBAL PAPER TRADING BOT (Green Hammer Strategy)...")
 
     # 1. Auth
     fyers, client_id, token = get_fyers_instance()
 
     # 2. Init Components
-    market_data = MarketDataService(client_id, token, BotConfig.SYMBOL)
+    market_data = MarketDataService(client_id, token, BotConfig.SYMBOLS)
     paper_exchange = PaperExchange(BotConfig.PAPER_BALANCE)
-    strategy = CustomStrategy(BotConfig)
+    strategy = CustomStrategy(BotConfig, fyers)
 
-    # 3. Connect Data
+    # 3. Strategy Init
+    strategy.fetch_initial_data()
+
+    # 4. Connect Data
     market_data.connect()
 
-    # 4. Main Loop
-    print(f"👀 Monitoring {BotConfig.SYMBOL} for signals...")
+    # 5. Main Loop
+    print(f"👀 Monitoring {len(BotConfig.SYMBOLS)} symbols...")
     print("Press Ctrl+C to stop.")
 
     try:
         while True:
-            time.sleep(1) # Check every 1 second
+            time.sleep(1) # Loop interval
 
-            current_price = market_data.get_ltp()
-            if current_price == 0:
-                print("Waiting for data...", end="\r")
-                continue
+            # Get Snapshot
+            current_prices = market_data.get_all_ltp()
 
-            # Update active positions (Check SL/TP)
-            paper_exchange.update(current_price)
+            # Update Exchange (SL/TP)
+            paper_exchange.update(current_prices)
 
-            # Consult Strategy
-            history = market_data.get_history()
-            positions = paper_exchange.active_positions
+            # Strategy Logic for each symbol
+            active_positions = paper_exchange.active_positions
 
-            decision = strategy.on_tick(current_price, history, positions)
+            for symbol in BotConfig.SYMBOLS:
+                ltp = current_prices.get(symbol, 0)
+                if ltp == 0: continue
 
-            if decision:
-                action = decision['action']
-                qty = decision['quantity']
-                sl = decision['sl_price']
-                tp = decision['tp_price']
+                decision = strategy.on_tick(symbol, ltp, active_positions)
 
-                # Execute Trade
-                paper_exchange.open_position(BotConfig.SYMBOL, current_price, qty, action, sl, tp)
+                if decision:
+                    action = decision['action']
 
-            # Periodic Status Log (Every ~10s or based on conditions)
-            # print(f"LTP: {current_price} | Positions: {len(positions)}", end="\r")
+                    if action == "BUY":
+                         # Check if already open to prevent dups (Strategy logic might already check, but safety)
+                         if not any(p.symbol == symbol for p in active_positions):
+                             paper_exchange.open_position(
+                                 symbol, ltp, decision['quantity'], "BUY",
+                                 decision['sl_price'], decision['tp_price']
+                             )
+
+                    elif action == "EXIT_TIME":
+                         pos = next((p for p in active_positions if p.symbol == symbol), None)
+                         if pos:
+                             paper_exchange.close_position(pos, ltp, "TIME_EXIT")
 
     except KeyboardInterrupt:
         print("\n🛑 Bot Stopped by User.")
@@ -444,16 +643,35 @@ def run_bot():
 
 def main():
     parser = argparse.ArgumentParser(description="Global Paper Trading Bot")
-    parser.add_argument("mode", choices=["setup", "run"], help="Mode: setup or run")
+    parser.add_argument("mode", nargs='?', choices=["setup", "run"], help="Mode: setup or run")
     parser.add_argument("--client_id", help="Fyers App ID")
     parser.add_argument("--secret_key", help="Fyers Secret Key")
     parser.add_argument("--redirect_url", help="Redirect URL")
 
     args = parser.parse_args()
 
-    if args.mode == "setup":
-        setup_credentials(args.client_id, args.secret_key, args.redirect_url)
-    elif args.mode == "run":
+    mode = args.mode
+
+    if not mode:
+        print("\n--- Global Paper Trading Bot ---")
+        print("1. Setup Credentials")
+        print("2. Run Bot")
+        choice = input("Enter choice (1 or 2): ").strip()
+
+        if choice == '1':
+            mode = 'setup'
+        elif choice == '2':
+            mode = 'run'
+        else:
+            print("Invalid choice. Exiting.")
+            sys.exit(1)
+
+    if mode == "setup":
+        app_id = args.client_id or input("Enter Fyers App ID: ").strip()
+        secret_key = args.secret_key or input("Enter Secret Key: ").strip()
+        redirect_url = args.redirect_url or input("Enter Redirect URL: ").strip()
+        setup_credentials(app_id, secret_key, redirect_url)
+    elif mode == "run":
         run_bot()
 
 if __name__ == "__main__":
