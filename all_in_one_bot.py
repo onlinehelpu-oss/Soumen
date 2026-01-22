@@ -334,6 +334,7 @@ def run_backtester():
 
     for symbol in BotConfig.SYMBOLS:
         print(f"\nProcessing {symbol}...")
+        time.sleep(0.2) # Rate limit
         try:
             # Download Data
             data = {
@@ -522,6 +523,7 @@ class LivePaperBot:
         start_date = now_date - dt.timedelta(days=10)
 
         for sym in BotConfig.SYMBOLS:
+            time.sleep(0.2) # Rate limit
             try:
                 # History
                 resp = self.fyers.history({
@@ -623,11 +625,14 @@ class LivePaperBot:
             c["c"] = ltp
 
         # Check Candle Completion
-        # If current time > c_start + timeframe
-        now = dt.datetime.now()
+        # Logic: If we are in the last second of the candle window (or past it), mark as complete.
+        # Note: This relies on receiving a tick near the end.
+        tick_dt = dt.datetime.fromtimestamp(ts)
         candle_end_time = c_start + dt.timedelta(minutes=BotConfig.TIMEFRAME_MIN)
 
-        if now >= candle_end_time:
+        # Completion Condition: Tick time is >= (End - 1s)
+        # This matches Code-2 logic which checks every tick if it completes the bar.
+        if tick_dt >= (candle_end_time - dt.timedelta(seconds=1)):
             if key not in self.processed_candles:
                 self.processed_candles.add(key)
                 self.analyze_completed_candle(sym, self.candles_build[key], c_start)
