@@ -391,7 +391,7 @@ class RealTimeOptionManager:
                     if not parsed_temp:
                         continue
 
-                    expiry_dt = self._parse_expiry_date(parsed_temp['expiry_code'])
+                    expiry_dt = self._parse_expiry_date(parsed_temp['expiry_code'], parsed_temp['index_name'])
                     if not expiry_dt:
                         continue
 
@@ -478,7 +478,7 @@ class RealTimeOptionManager:
             lot_size = self.get_lot_size(parsed['full_symbol'], parsed['exchange'])
 
             # Get expiry
-            expiry_date = self._parse_expiry_date(parsed['expiry_code'])
+            expiry_date = self._parse_expiry_date(parsed['expiry_code'], parsed['index_name'])
             expiry_str = expiry_date.strftime('%d-%b-%Y') if expiry_date else 'UNKNOWN'
 
             # Get index short name
@@ -600,10 +600,13 @@ class RealTimeOptionManager:
             elif base_without_strike.startswith('SENSEX'):
                 index_name = 'SENSEX'
                 expiry_part = base_without_strike[6:]
-                if len(expiry_part) == 5 and expiry_part.isdigit():
+                # SENSEX uses YYMDD (5 chars) where M is 1-9, O, N, D
+                # e.g. 26122 (2026 Jan 22) or 26O22 (2026 Oct 22)
+                if len(expiry_part) == 5:
                     expiry_code = expiry_part
                 else:
-                    expiry_match = re.search(r'\d{5}', expiry_part)
+                    # Fallback regex for YYMDD format (alphanumeric supported)
+                    expiry_match = re.search(r'\d{2}[A-Z0-9]\d{2}', expiry_part)
                     if expiry_match:
                         expiry_code = expiry_match.group(0)
 
@@ -627,9 +630,27 @@ class RealTimeOptionManager:
             traceback.print_exc()
             return None
 
-    def _parse_expiry_date(self, expiry_code: str) -> Optional[dt.datetime]:
+    def _parse_expiry_date(self, expiry_code: str, index_name: str = None) -> Optional[dt.datetime]:
         """Parse expiry code to datetime."""
         try:
+            # Special handling for SENSEX/MCX (YYMDD format)
+            if index_name == 'SENSEX' and len(expiry_code) == 5:
+                # YYMDD format
+                yy = int(expiry_code[:2])
+                m_char = expiry_code[2].upper()
+                dd = int(expiry_code[3:])
+
+                year = 2000 + yy
+
+                if m_char.isdigit():
+                    month = int(m_char)
+                else:
+                    month_map = {'O': 10, 'N': 11, 'D': 12}
+                    month = month_map.get(m_char)
+
+                if month:
+                    return dt.datetime(year, month, dd)
+
             # Format 1: 26106 (NIFTY) - DDMMY format
             if expiry_code.isdigit() and len(expiry_code) == 5:
                 day = int(expiry_code[:2])
