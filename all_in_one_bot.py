@@ -115,9 +115,9 @@ class BotConfig:
         'NSE:TECHM-EQ', 'NSE:TITAN-EQ', 'NSE:UPL-EQ',
         # MCX Futures (Make sure to update expiry if needed, or use generic logic if available)
         # Note: Users should update these monthly
-        'MCX:SILVERMIC25FEB3000PE', # Placeholder - User should update these in practice
-        'MCX:CRUDEOILM25JANFUT',
-        'MCX:NATGASMINI25JANFUT'
+        'MCX:SILVERMIC26FEBFUT',
+        'MCX:CRUDEOILM26FEBFUT',
+        'MCX:NATGASMINI26JANFUT'
     ]
     # Filter out invalid MCX placeholders for safety in default config, keep valid structure
     # Using generic placeholders that user must update, or just the Stocks for now
