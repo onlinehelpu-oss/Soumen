@@ -578,11 +578,19 @@ class LivePaperBot:
 
         # Main Monitor Loop
         print(f"🚀 Live Paper Bot Running | Balance: {self.paper_balance}")
+        print("Waiting for data... (Heartbeat every 15s)")
+
+        last_print = dt.datetime.now()
         try:
             while True:
                 time.sleep(1)
                 self.monitor_positions()
                 self.check_session_times()
+
+                if (dt.datetime.now() - last_print).seconds >= 15:
+                    print(f"[{dt.datetime.now().strftime('%H:%M:%S')}] Monitoring {len(BotConfig.SYMBOLS)} symbols... Active Positions: {len(self.active_positions)} | Balance: {self.paper_balance:.2f}")
+                    last_print = dt.datetime.now()
+
         except KeyboardInterrupt:
             print("\n🛑 Bot Stopped by User.")
 
