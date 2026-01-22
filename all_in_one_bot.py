@@ -568,8 +568,16 @@ class LivePaperBot:
         access_token = f"{self.fyers.client_id}:{self.fyers.token}"
 
         def on_message(msg):
-            if msg.get("type") == "sf":
+            # Handle List of ticks (common) or single Dict
+            if isinstance(msg, list):
+                for m in msg:
+                    self.process_tick(m)
+            elif isinstance(msg, dict) and msg.get("type") == "sf":
                 self.process_tick(msg)
+            else:
+                # Debug unhandled messages (e.g., connection acknowledgements)
+                # print(f"[DEBUG] Unhandled Msg: {msg}")
+                pass
 
         def on_error(msg): print(f"WS Error: {msg}")
         def on_open():
@@ -619,6 +627,10 @@ class LivePaperBot:
         sym = msg.get("symbol")
         ltp = float(msg.get("ltp"))
         ts = msg.get("timestamp", time.time())
+
+        # Debug: Print first tick for a symbol to confirm data flow
+        if sym not in self.ltp_cache:
+            print(f"[DEBUG] First tick received for {sym}: {ltp}")
 
         self.ltp_cache[sym] = ltp
 
