@@ -470,14 +470,26 @@ class CandleManager:
         self.partial: Dict[str, dict] = {}
         self.history: Dict[str, pd.DataFrame] = {}
 
-    def _floor_ts(self, ts: dt) -> dt:
+    def _floor_ts(self, ts: dt, symbol: str) -> dt:
         if ts.tzinfo is None:
             ts = self.tz.localize(ts)
         else:
             ts = ts.astimezone(self.tz)
         ts = ts.replace(tzinfo=None)
-        minute = (ts.minute // self.tf) * self.tf
-        return ts.replace(second=0, microsecond=0, minute=minute)
+
+        # Determine market start in minutes
+        if is_mcx(symbol):
+            start_min = 9 * 60  # 09:00
+        else:
+            start_min = 9 * 60 + 15  # 09:15
+
+        current_min = ts.hour * 60 + ts.minute
+        diff = current_min - start_min
+        floored_diff = (diff // self.tf) * self.tf
+        candle_start_min = start_min + floored_diff
+
+        day_start = ts.replace(hour=0, minute=0, second=0, microsecond=0)
+        return day_start + timedelta(minutes=candle_start_min)
 
     def _parse_ts(self, ts_val) -> dt:
         if ts_val is None:
@@ -513,7 +525,7 @@ class CandleManager:
             vtt = int(tick.get("vtt", 0))
 
             ts = self._parse_ts(tick.get("timestamp"))
-            candle_start = self._floor_ts(ts)
+            candle_start = self._floor_ts(ts, symbol)
 
             with self.lock:
                 p = self.partial.get(symbol)
@@ -794,7 +806,7 @@ def handle_tick(symbol: str, ltp: float, ts: dt):
             next_allowed_start = sig_start + pd.Timedelta(minutes=TIMEFRAME_MIN)
 
             current_ts = pd.to_datetime(ts)
-            candle_start = CANDLE_MANAGER._floor_ts(current_ts.to_pydatetime())
+            candle_start = CANDLE_MANAGER._floor_ts(current_ts.to_pydatetime(), symbol)
 
             if pd.to_datetime(candle_start) == next_allowed_start:
                 # Check for breakout above signal high
