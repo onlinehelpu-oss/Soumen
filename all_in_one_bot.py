@@ -62,10 +62,24 @@ except ImportError:
     HAS_FYERS = False
     # Mock classes for dependency check passes
     class MockFyersModel:
+        def __init__(self, **kwargs):
+            self.client_id = kwargs.get("client_id", "MOCK")
+            self.token = kwargs.get("token", "MOCK")
+        def history(self, data): return {"s": "ok", "candles": []}
+        def quotes(self, data): return {"s": "ok", "d": []}
+
+    class MockSessionModel:
         def __init__(self, **kwargs): pass
+        def generate_authcode(self): return "http://mock-login-url"
+        def set_token(self, token): pass
+        def generate_token(self): return {"s": "ok", "access_token": "MOCK_TOKEN", "refresh_token": "MOCK_REFRESH"}
+
     class MockDataSocket:
         def __init__(self, **kwargs): pass
-    fyersModel = type("fyersModel", (), {"FyersModel": MockFyersModel, "SessionModel": None})
+        def connect(self): print("[MOCK] WS Connected")
+        def subscribe(self, symbols): print(f"[MOCK] Subscribed to {len(symbols)} symbols")
+
+    fyersModel = type("fyersModel", (), {"FyersModel": MockFyersModel, "SessionModel": MockSessionModel})
     data_ws = type("data_ws", (), {"FyersDataSocket": MockDataSocket})
 
 
@@ -649,6 +663,7 @@ class LivePaperBot:
         # Check Triggers (Breakout)
         if sym in self.triggers:
             trig = self.triggers[sym]
+            now = dt.datetime.now()
             if now < trig["active_until"]:
                 if ltp >= trig["level"]:
                     self.execute_paper_trade(sym, ltp, trig["sl"])
