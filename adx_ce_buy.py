@@ -634,7 +634,9 @@ class RealTimeOptionManager:
         """Parse expiry code to datetime."""
         try:
             # Special handling for SENSEX/MCX (YYMDD format)
-            if index_name == 'SENSEX' and len(expiry_code) == 5:
+            # Ensure it is NOT the DDMMM format (e.g. 26JAN) which also has length 5
+            # YYMDD check: last 2 chars must be digits (DD)
+            if index_name == 'SENSEX' and len(expiry_code) == 5 and expiry_code[3:].isdigit():
                 # YYMDD format
                 yy = int(expiry_code[:2])
                 m_char = expiry_code[2].upper()
