@@ -118,6 +118,7 @@ ADX_THRESHOLD = 25
 FAST_EMA_PERIOD = 9
 SLOW_EMA_PERIOD = 21
 ATR_PERIOD = 14
+ATR_MULTIPLIER = 2.0
 
 # ===================== POSITION MANAGEMENT & RISK =====================
 # "signal_low" or "swing_low"
@@ -1363,7 +1364,7 @@ def make_onmsg(fy, option_manager: RealTimeOptionManager, options_data: Dict, dr
             # 2. ATR Target
             atr_val = t.get('atr', 0.0)
             if atr_val > 0:
-                tgt_atr = round_to_tick(entry_price + (2.0 * atr_val))
+                tgt_atr = round_to_tick(entry_price + (ATR_MULTIPLIER * atr_val))
             else:
                 tgt_atr = tgt_rr # Fallback if ATR invalid
 
@@ -1545,7 +1546,7 @@ def monitor_loop(fy, option_manager: RealTimeOptionManager, options_data: Dict, 
 
 def main():
     global TIMEFRAME_MIN, R_MULTIPLIER, STRIKE_DISTANCE, LOT_MULTIPLIER
-    global ADX_PERIOD, ADX_THRESHOLD, FAST_EMA_PERIOD, SLOW_EMA_PERIOD, ATR_PERIOD
+    global ADX_PERIOD, ADX_THRESHOLD, FAST_EMA_PERIOD, SLOW_EMA_PERIOD, ATR_PERIOD, ATR_MULTIPLIER
     global SL_MODE, SWING_LOOKBACK, MAX_CONCURRENT_POS, DAILY_MAX_LOSS, TRADING_ENABLED
     global MAX_EXIT_RETRIES, EXIT_RETRY_COOLDOWN_SECONDS, PRODUCT_TYPE, MIN_RANGE_PCT, EMA_BUFFER
 
@@ -1564,6 +1565,7 @@ def main():
     parser.add_argument("--fast-ema", type=int, default=FAST_EMA_PERIOD, help=f"Fast EMA Period (default {FAST_EMA_PERIOD})")
     parser.add_argument("--slow-ema", type=int, default=SLOW_EMA_PERIOD, help=f"Slow EMA Period (default {SLOW_EMA_PERIOD})")
     parser.add_argument("--atr-period", type=int, default=ATR_PERIOD, help=f"ATR Period (default {ATR_PERIOD})")
+    parser.add_argument("--atr-mult", type=float, default=2.0, help=f"ATR Multiplier for Target (default 2.0)")
 
     # Customizable Global Args
     parser.add_argument("--sl-mode", type=str, default=SL_MODE, choices=["signal_low", "swing_low"], help=f"SL Mode (default {SL_MODE})")
@@ -1585,6 +1587,7 @@ def main():
     FAST_EMA_PERIOD = int(args.fast_ema)
     SLOW_EMA_PERIOD = int(args.slow_ema)
     ATR_PERIOD = int(args.atr_period)
+    ATR_MULTIPLIER = float(args.atr_mult)
 
     SL_MODE = args.sl_mode
     SWING_LOOKBACK = int(args.swing_lookback)
