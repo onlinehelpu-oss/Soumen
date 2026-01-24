@@ -691,7 +691,8 @@ class RealTimeOptionManager:
                     # Try current year
                     try:
                         expiry_date = dt.datetime(current_year, month, day)
-                        if expiry_date < current_date:
+                        # Fix: Use .date() comparison to ensure we don't skip today's expiry
+                        if expiry_date.date() < current_date.date():
                             expiry_date = dt.datetime(current_year + 1, month, day)
                         return expiry_date
                     except ValueError:
