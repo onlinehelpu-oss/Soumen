@@ -1255,6 +1255,7 @@ def make_onmsg(fy, option_manager: RealTimeOptionManager, options_data: Dict, dr
 
                 # Get latest values (from the just completed candle)
                 curr = df_hist.iloc[-1]
+                prev = df_hist.iloc[-2]
 
                 # --- STRATEGY CONDITIONS ---
 
@@ -1265,18 +1266,21 @@ def make_onmsg(fy, option_manager: RealTimeOptionManager, options_data: Dict, dr
                      return
 
                 # 1. ADX > Threshold (Trend Strength)
-                # 2. +DI > -DI (Bullish Bias)
+                # 2. +DI CROSSES ABOVE -DI (Bullish Crossover)
                 # 3. Fast EMA > Slow EMA + Buffer (Bullish Trend)
 
                 cond_adx = curr['adx'] > ADX_THRESHOLD
-                cond_di = curr['plus_di'] > curr['minus_di']
+
+                # Check Crossover: Current +DI > -DI AND Previous +DI <= -DI
+                cond_di_crossover = (curr['plus_di'] > curr['minus_di']) and (prev['plus_di'] <= prev['minus_di'])
+
                 # Fast > Slow + Buffer
                 cond_ema = curr['ema_fast'] > (curr['ema_slow'] + EMA_BUFFER)
 
-                is_signal = cond_adx and cond_di and cond_ema
+                is_signal = cond_adx and cond_di_crossover and cond_ema
 
                 if is_signal:
-                    print(f"[{tick_time:%H:%M:%S}] 📈 SIGNAL {sym}: ADX={curr['adx']:.2f}, +DI={curr['plus_di']:.2f}, -DI={curr['minus_di']:.2f}, FastEMA={curr['ema_fast']:.2f}, SlowEMA={curr['ema_slow']:.2f} (Buf={EMA_BUFFER})")
+                    print(f"[{tick_time:%H:%M:%S}] 📈 SIGNAL {sym}: ADX={curr['adx']:.2f}, +DI={curr['plus_di']:.2f} > -DI={curr['minus_di']:.2f} (Crossed), FastEMA={curr['ema_fast']:.2f}, SlowEMA={curr['ema_slow']:.2f} (Buf={EMA_BUFFER})")
 
                     next_cstart = cstart + dt.timedelta(minutes=TIMEFRAME_MIN)
                     # CRITICAL FIX: Get FRESH lot size for THIS symbol
