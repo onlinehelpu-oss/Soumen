@@ -280,17 +280,20 @@ class RealTimeOptionManager:
                 options = resp['data']['optionsChain']
 
                 # 4. Filter CE & Expiry
-                ce_opts = [o for o in options if o['option_type'] == 'CE' and o['strike_price'] == target_strike]
+                ce_opts = [o for o in options if o.get('option_type') == 'CE' and abs(float(o.get('strike_price', 0)) - target_strike) < 1.0]
 
                 # Find nearest expiry
                 if ce_opts:
-                    # Sort by expiry ts
-                    ce_opts.sort(key=lambda x: x['expiry_date']) # Timestamp usually
+                    # Sort by expiry ts (handle missing keys safely)
+                    ce_opts.sort(key=lambda x: x.get('expiry_date', x.get('expiry', 9999999999))) # Timestamp usually
                     best_opt = ce_opts[0]
 
-                    sym = best_opt['symbol']
-                    print(f"✅ Found {sym} (Strike: {best_opt['strike_price']}) for {idx}")
-                    selected[sym] = best_opt
+                    sym = best_opt.get('symbol')
+                    if sym:
+                        print(f"✅ Found {sym} (Strike: {best_opt.get('strike_price')}) for {idx}")
+                        selected[sym] = best_opt
+                    else:
+                        print(f"⚠️ Found option but symbol is missing: {best_opt}")
             except Exception as e:
                 print(f"❌ Error refreshing {idx}: {e}")
 
@@ -525,7 +528,7 @@ class LivePaperBot:
         tgt = price + (risk * BotConfig.R_MULTIPLIER)
         qty = lot_size * BotConfig.LOT_MULTIPLIER
 
-        self.positions[sym] = PaperPosition(sym, price, sl, tgt, qty, "MARGIN")
+        self.positions[sym] = PaperPosition(sym, price, sl, tgt, qty)
         print(f"✅ ENTER BUY: {sym} @ {price} | Qty: {qty} | SL: {sl} | TGT: {tgt}")
 
     def monitor_trade(self, sym, ltp):
