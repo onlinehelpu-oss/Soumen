@@ -1258,18 +1258,19 @@ def make_onmsg(fy, option_manager: RealTimeOptionManager, options_data: Dict, dr
                      # Candle too small, ignore
                      return
 
-                # 1. ADX > Threshold (Trend Strength)
+                # 1. ADX Level: ADX Value < Threshold (Early Trend Entry)
                 # 2. +DI CROSSES ABOVE -DI (Bullish Crossover)
 
-                cond_adx = curr['adx'] > ADX_THRESHOLD
+                # Replaced > with < as per request: "signal valid when ... crossover happend below ADX_THRESHOLD"
+                cond_adx_level = curr['adx'] < ADX_THRESHOLD
 
                 # Check Crossover: Current +DI > -DI AND Previous +DI <= -DI
                 cond_di_crossover = (curr['plus_di'] > curr['minus_di']) and (prev['plus_di'] <= prev['minus_di'])
 
-                is_signal = cond_adx and cond_di_crossover
+                is_signal = cond_adx_level and cond_di_crossover
 
                 if is_signal:
-                    print(f"[{tick_time:%H:%M:%S}] 📈 SIGNAL {sym}: ADX={curr['adx']:.2f}, +DI={curr['plus_di']:.2f} > -DI={curr['minus_di']:.2f} (Crossed)")
+                    print(f"[{tick_time:%H:%M:%S}] 📈 SIGNAL {sym}: ADX={curr['adx']:.2f} < {ADX_THRESHOLD}, +DI={curr['plus_di']:.2f} > -DI={curr['minus_di']:.2f} (Crossed)")
 
                     next_cstart = cstart + dt.timedelta(minutes=TIMEFRAME_MIN)
                     # CRITICAL FIX: Get FRESH lot size for THIS symbol
