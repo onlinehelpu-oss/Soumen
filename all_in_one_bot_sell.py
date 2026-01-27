@@ -612,7 +612,7 @@ class LivePaperBot:
 
         # Main Monitor Loop
         print(f"🚀 Live Paper Bot Running | Balance: {self.paper_balance}")
-        print("Waiting for data... (Heartbeat every 15s)")
+        print("Waiting for data... (Heartbeat every 300s)")
 
         last_print = dt.datetime.now()
         try:
@@ -621,7 +621,7 @@ class LivePaperBot:
                 self.monitor_positions()
                 self.check_session_times()
 
-                if (dt.datetime.now() - last_print).seconds >= 15:
+                if (dt.datetime.now() - last_print).seconds >= 300:
                     print(
                         f"[{dt.datetime.now().strftime('%H:%M:%S')}] Monitoring {len(BotConfig.SYMBOLS)} symbols... Active Positions: {len(self.active_positions)} | Balance: {self.paper_balance:.2f}")
                     last_print = dt.datetime.now()
