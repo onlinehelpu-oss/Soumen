@@ -395,6 +395,7 @@ class LivePaperBot:
         self.triggers = {} # Sym -> {level, sl, active_until, lot_size}
         self.ema_cache = {}
         self.positions = {}
+        self.seen_symbols = set()
 
         self.balance = BotConfig.PAPER_BALANCE
 
@@ -454,8 +455,9 @@ class LivePaperBot:
         ts = msg.get("timestamp", time.time())
 
         # Debug First Tick
-        if sym not in self.candles_build:
+        if sym not in self.seen_symbols:
             print(f"[DEBUG] First tick: {sym} @ {ltp}")
+            self.seen_symbols.add(sym)
 
         # Monitor Positions
         if sym in self.positions:
