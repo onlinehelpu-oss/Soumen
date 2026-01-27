@@ -112,11 +112,9 @@ EPS = 1e-6
 # +1 = 1 strike OTM etc.
 STRIKE_DISTANCE = 0
 
-# ===================== ADX / EMA STRATEGY SETTINGS =====================
+# ===================== ADX STRATEGY SETTINGS =====================
 ADX_PERIOD = 7
 ADX_THRESHOLD = 25
-FAST_EMA_PERIOD = 9
-SLOW_EMA_PERIOD = 21
 ATR_PERIOD = 14
 ATR_MULTIPLIER = 2.0
 
@@ -135,7 +133,6 @@ EXIT_RETRY_COOLDOWN_SECONDS = 10
 PRODUCT_TYPE = "MARGIN"
 
 MIN_RANGE_PCT = 0.0  # tiny-candle filter (0.001 = 0.1%), 0.0 = off
-EMA_BUFFER = 0.0  # optional extra buffer above/below EMAs
 
 # Tick setup (NSE equities typically 0.05)
 TICK_SIZE = 0.05
@@ -902,13 +899,9 @@ def ensure_access_token():
 # ===================== INDICATORS (ADX, DI, EMA, ATR) =====================
 def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Calculates technical indicators: Fast/Slow EMA, ATR, ADX, DI.
+    Calculates technical indicators: ATR, ADX, DI.
     """
     df = df.copy()
-
-    # --- EMA ---
-    df['ema_fast'] = df['c'].ewm(span=FAST_EMA_PERIOD, adjust=False).mean()
-    df['ema_slow'] = df['c'].ewm(span=SLOW_EMA_PERIOD, adjust=False).mean()
 
     # --- ATR ---
     # TR = max(H-L, |H-PrevClose|, |L-PrevClose|)
@@ -1245,8 +1238,8 @@ def make_onmsg(fy, option_manager: RealTimeOptionManager, options_data: Dict, dr
                     return
 
                 # --- CALCULATE INDICATORS ---
-                # Need enough history for ADX/EMA
-                if len(history_store[sym]) < max(SLOW_EMA_PERIOD, ADX_PERIOD + 5):
+                # Need enough history for ADX
+                if len(history_store[sym]) < (ADX_PERIOD + 5):
                      # Not enough data yet
                      return
 
@@ -1267,15 +1260,11 @@ def make_onmsg(fy, option_manager: RealTimeOptionManager, options_data: Dict, dr
 
                 # 1. ADX > Threshold (Trend Strength)
                 # 2. +DI CROSSES ABOVE -DI (Bullish Crossover)
-                # 3. Fast EMA > Slow EMA + Buffer (Bullish Trend)
 
                 cond_adx = curr['adx'] > ADX_THRESHOLD
 
                 # Check Crossover: Current +DI > -DI AND Previous +DI <= -DI
                 cond_di_crossover = (curr['plus_di'] > curr['minus_di']) and (prev['plus_di'] <= prev['minus_di'])
-
-                # EMA Condition removed as requested
-                # cond_ema = curr['ema_fast'] > (curr['ema_slow'] + EMA_BUFFER)
 
                 is_signal = cond_adx and cond_di_crossover
 
@@ -1552,9 +1541,9 @@ def monitor_loop(fy, option_manager: RealTimeOptionManager, options_data: Dict, 
 
 def main():
     global TIMEFRAME_MIN, R_MULTIPLIER, STRIKE_DISTANCE, LOT_MULTIPLIER
-    global ADX_PERIOD, ADX_THRESHOLD, FAST_EMA_PERIOD, SLOW_EMA_PERIOD, ATR_PERIOD, ATR_MULTIPLIER
+    global ADX_PERIOD, ADX_THRESHOLD, ATR_PERIOD, ATR_MULTIPLIER
     global SL_MODE, SWING_LOOKBACK, MAX_CONCURRENT_POS, DAILY_MAX_LOSS, TRADING_ENABLED
-    global MAX_EXIT_RETRIES, EXIT_RETRY_COOLDOWN_SECONDS, PRODUCT_TYPE, MIN_RANGE_PCT, EMA_BUFFER
+    global MAX_EXIT_RETRIES, EXIT_RETRY_COOLDOWN_SECONDS, PRODUCT_TYPE, MIN_RANGE_PCT
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--tf", type=int, default=TIMEFRAME_MIN, help="Timeframe in minutes (e.g., 5, 15, 60)")
@@ -1568,8 +1557,6 @@ def main():
     # New Arguments
     parser.add_argument("--adx-period", type=int, default=ADX_PERIOD, help=f"ADX Period (default {ADX_PERIOD})")
     parser.add_argument("--adx-thresh", type=int, default=ADX_THRESHOLD, help=f"ADX Threshold (default {ADX_THRESHOLD})")
-    parser.add_argument("--fast-ema", type=int, default=FAST_EMA_PERIOD, help=f"Fast EMA Period (default {FAST_EMA_PERIOD})")
-    parser.add_argument("--slow-ema", type=int, default=SLOW_EMA_PERIOD, help=f"Slow EMA Period (default {SLOW_EMA_PERIOD})")
     parser.add_argument("--atr-period", type=int, default=ATR_PERIOD, help=f"ATR Period (default {ATR_PERIOD})")
     parser.add_argument("--atr-mult", type=float, default=2.0, help=f"ATR Multiplier for Target (default 2.0)")
 
@@ -1581,7 +1568,6 @@ def main():
     parser.add_argument("--lot-mult", type=int, default=LOT_MULTIPLIER, help=f"Lot Multiplier (default {LOT_MULTIPLIER})")
     parser.add_argument("--product", type=str, default=PRODUCT_TYPE, help=f"Product Type (default {PRODUCT_TYPE})")
     parser.add_argument("--min-range", type=float, default=MIN_RANGE_PCT, help=f"Min Range Pct (default {MIN_RANGE_PCT})")
-    parser.add_argument("--ema-buffer", type=float, default=EMA_BUFFER, help=f"EMA Buffer (default {EMA_BUFFER})")
 
     args, _ = parser.parse_known_args()
     TIMEFRAME_MIN = max(1, int(args.tf))
@@ -1590,8 +1576,6 @@ def main():
 
     ADX_PERIOD = int(args.adx_period)
     ADX_THRESHOLD = int(args.adx_thresh)
-    FAST_EMA_PERIOD = int(args.fast_ema)
-    SLOW_EMA_PERIOD = int(args.slow_ema)
     ATR_PERIOD = int(args.atr_period)
     ATR_MULTIPLIER = float(args.atr_mult)
 
@@ -1602,7 +1586,6 @@ def main():
     LOT_MULTIPLIER = int(args.lot_mult)
     PRODUCT_TYPE = args.product
     MIN_RANGE_PCT = float(args.min_range)
-    EMA_BUFFER = float(args.ema_buffer)
 
     dry_run = args.dry_run or (not HAS_FYERS)
 
@@ -1674,11 +1657,10 @@ def main():
                      daemon=True).start()
 
     print("\\n" + "=" * 70)
-    print("🎯 ADX/EMA CE BUY STRATEGY - REAL-TIME")
+    print("🎯 ADX CE BUY STRATEGY - REAL-TIME")
     print("=" * 70)
     print(f"📊 STRATEGY CONFIG:")
     print(f"   ADX Period: {ADX_PERIOD}, Threshold: {ADX_THRESHOLD}")
-    print(f"   Fast EMA: {FAST_EMA_PERIOD}, Slow EMA: {SLOW_EMA_PERIOD}, Buffer: {EMA_BUFFER}")
     print(f"   ATR Period: {ATR_PERIOD}")
     print(f"   Min Range %: {MIN_RANGE_PCT}")
     print(f"📊 RISK CONFIG:")
