@@ -1274,13 +1274,13 @@ def make_onmsg(fy, option_manager: RealTimeOptionManager, options_data: Dict, dr
                 # Check Crossover: Current +DI > -DI AND Previous +DI <= -DI
                 cond_di_crossover = (curr['plus_di'] > curr['minus_di']) and (prev['plus_di'] <= prev['minus_di'])
 
-                # Fast > Slow + Buffer
-                cond_ema = curr['ema_fast'] > (curr['ema_slow'] + EMA_BUFFER)
+                # EMA Condition removed as requested
+                # cond_ema = curr['ema_fast'] > (curr['ema_slow'] + EMA_BUFFER)
 
-                is_signal = cond_adx and cond_di_crossover and cond_ema
+                is_signal = cond_adx and cond_di_crossover
 
                 if is_signal:
-                    print(f"[{tick_time:%H:%M:%S}] 📈 SIGNAL {sym}: ADX={curr['adx']:.2f}, +DI={curr['plus_di']:.2f} > -DI={curr['minus_di']:.2f} (Crossed), FastEMA={curr['ema_fast']:.2f}, SlowEMA={curr['ema_slow']:.2f} (Buf={EMA_BUFFER})")
+                    print(f"[{tick_time:%H:%M:%S}] 📈 SIGNAL {sym}: ADX={curr['adx']:.2f}, +DI={curr['plus_di']:.2f} > -DI={curr['minus_di']:.2f} (Crossed)")
 
                     next_cstart = cstart + dt.timedelta(minutes=TIMEFRAME_MIN)
                     # CRITICAL FIX: Get FRESH lot size for THIS symbol
