@@ -1259,15 +1259,19 @@ def evaluate_on_new_candle(st: SymbolState):
         lowest_ema = min(ema_fast, ema_slow)
         highest_ema = max(ema_fast, ema_slow)
 
-        open_below_both = curr_open < lowest_ema
+        # MODIFIED ENTRY RULE:
+        # 1. EMA_fast > EMA_slow (Uptrend)
+        # 2. Candle Low <= EMA_slow (Touched or crossed below Slow EMA)
+        # 3. Candle Close > Both EMAs (Strong close)
+        touched_slow_ema = curr_low <= ema_slow
         closed_above_both = curr_close > (highest_ema + EMA_BUFFER)
         green_ok = (not REQUIRE_GREEN_SIGNAL) or (curr_close > curr_open)
         ok_signal = bool(curr.get("ok_signal", True))
 
         if (
                 ema_sequence_ok
-                and rising_slow_ema  # Check for confirmed uptrend
-                and open_below_both
+                and rising_slow_ema
+                and touched_slow_ema
                 and closed_above_both
                 and green_ok
                 and ok_signal
