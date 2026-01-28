@@ -80,6 +80,7 @@ STRIKE_DISTANCE = 0
 SL_MODE = "signal_low"  # "signal_low" or "swing_low"
 SWING_LOOKBACK = 5  # used for swing-low
 LOT_MULTIPLIER = 1  # Lot multiplier
+TRAIL_ATR_MULT = None  # None = disabled, float = multiplier
 
 MAX_CONCURRENT_POS = 3
 DAILY_MAX_LOSS = 50000.0
@@ -357,6 +358,7 @@ class SymbolState:
         self.signal_candle = None
         self.signal_close_ts = None
         self.spot_entry_price = 0.0
+        self.entry_atr = 0.0
         self.spot_stop_price = 0.0
         self.option_stop_price = 0.0
         self.option_high_price = 0.0
@@ -379,6 +381,7 @@ class SymbolState:
         self.option_ltp = 0.0
         self.option_entry_price = 0.0
         self.spot_entry_price = 0.0
+        self.entry_atr = 0.0
         self.spot_stop_price = 0.0
         self.option_stop_price = 0.0
         self.option_high_price = 0.0
@@ -435,6 +438,7 @@ def load_state():
                 state.option_symbol = state_dict.get('option_symbol')
                 state.option_entry_price = state_dict.get('option_entry_price', 0.0)
                 state.spot_entry_price = state_dict.get('spot_entry_price', 0.0)
+                state.entry_atr = state_dict.get('entry_atr', 0.0)
                 state.spot_stop_price = state_dict.get('spot_stop_price', 0.0)
                 state.qty = state_dict.get('qty', 0)
                 state.strike_price = state_dict.get('strike_price', 0.0)
@@ -753,12 +757,28 @@ def rsi(series: pd.Series, length: int) -> pd.Series:
     return rsi_val
 
 
+def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Calculate ATR"""
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    prev_close = close.shift(1)
+
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.ewm(span=period, adjust=False).mean()
+
+
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty or "volume" not in df.columns:
         return df
     df = df.copy()
     df["ema_fast_entry"] = ema(df["close"], ENTRY_FAST_EMA)
     df["rsi"] = rsi(df["close"], RSI_PERIOD)
+    df["atr"] = atr(df, period=14)
 
     # Daily resetting VWAP
     df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
@@ -876,6 +896,7 @@ def handle_spot_tick(symbol: str, ltp: float, ts: dt):
 
                         if isinstance(resp, dict) and resp.get("s") == "ok":
                             state.spot_entry_price = ltp
+                            state.entry_atr = float(state.signal_candle.get("atr", 0.0))
                             state.qty = qty
                             state.status = "position"
                             state.just_entered = True
@@ -901,6 +922,8 @@ def handle_spot_tick(symbol: str, ltp: float, ts: dt):
                             print(f"  Spot Price: {ltp:.2f}")
                             print(f"  Option Entry: ₹{state.option_entry_price:.2f}")
                             print(f"  Spot SL: {state.spot_stop_price:.2f}")
+                            if state.entry_atr > 0 and TRAIL_ATR_MULT:
+                                print(f"  Entry ATR: {state.entry_atr:.2f} (Trailing Active: {TRAIL_ATR_MULT}x)")
                             print(f"  Qty: {state.qty} shares ({LOT_MULTIPLIER} lots)")
                             print(f"  Strike: {strike}, Expiry: {expiry}")
 
@@ -926,6 +949,14 @@ def handle_spot_tick(symbol: str, ltp: float, ts: dt):
 
     # EXIT LOGIC - Stop-Loss Only
     if state.status == "position":
+        # Trailing Stop Loss Logic
+        if TRAIL_ATR_MULT and state.entry_atr > 0 and state.spot_stop_price < state.spot_entry_price:
+            target_price = state.spot_entry_price + (state.entry_atr * TRAIL_ATR_MULT)
+            if ltp >= target_price:
+                print(f"[{symbol}] Trailing SL Trigger: Price {ltp:.2f} >= Target {target_price:.2f} (Entry + {TRAIL_ATR_MULT}x ATR)")
+                print(f"[{symbol}] Moving SL to Cost: {state.spot_entry_price:.2f}")
+                state.spot_stop_price = state.spot_entry_price
+
         exit_reason = None
 
         # Stop Loss Check
@@ -1008,6 +1039,7 @@ def evaluate_on_new_candle(st: SymbolState):
     ema_fast = float(curr.get("ema_fast_entry", float("nan")))
     vwap = float(curr.get("vwap", float("nan")))
     rsi_val = float(curr.get("rsi", float("nan")))
+    atr_val = float(curr.get("atr", 0.0))
 
     # ENTRY SIGNAL (BULLISH - VWAP BODY CROSS)
     if st.status == "watch" and is_market_hours():
@@ -1025,6 +1057,7 @@ def evaluate_on_new_candle(st: SymbolState):
                 "high": curr_high,
                 "low": curr_low,
                 "close": curr_close,
+                "atr": atr_val,
             }
 
             st.status = "entry_pending"
@@ -1161,7 +1194,7 @@ def main():
     global FYERS, FYERS_SOCKET, ACCESS_TOKEN, CANDLE_MANAGER
     global TIMEFRAME_MIN, ENTRY_FAST_EMA, LOT_MULTIPLIER
     global RSI_PERIOD, RSI_ENTRY_MIN, RSI_ENTRY_MAX, RSI_EXIT_MIN, RSI_EXIT_MAX
-    global TRADING_ENABLED
+    global TRADING_ENABLED, TRAIL_ATR_MULT
 
     # Parse arguments
     parser = argparse.ArgumentParser(description="VWAP-EMA-RSI Strategy - Options Execution")
@@ -1173,6 +1206,7 @@ def main():
     parser.add_argument("--rsi-exit", type=str, default=f"{RSI_EXIT_MIN}-{RSI_EXIT_MAX}",
                         help="RSI exit range (e.g., 70-75)")
     parser.add_argument("--lot-multiplier", type=int, default=LOT_MULTIPLIER, help="Number of lots per trade")
+    parser.add_argument("--trail-atr-mult", type=float, default=None, help="Move SL to Cost if Price > Entry + (ATR * Mult)")
     parser.add_argument("--test", action="store_true", help="Test mode without live connection")
     parser.add_argument("--no-trade", action="store_true", help="Disable trading")
 
@@ -1182,6 +1216,7 @@ def main():
     TIMEFRAME_MIN = args.timeframe
     ENTRY_FAST_EMA = args.entry_fast_ema
     RSI_PERIOD = args.rsi_period
+    TRAIL_ATR_MULT = args.trail_atr_mult
     try:
         RSI_ENTRY_MIN, RSI_ENTRY_MAX = map(int, args.rsi_entry.split('-'))
         RSI_EXIT_MIN, RSI_EXIT_MAX = map(int, args.rsi_exit.split('-'))
@@ -1203,6 +1238,7 @@ def main():
     print(f"RSI Entry Range: {RSI_ENTRY_MIN}-{RSI_ENTRY_MAX}")
     print(f"RSI Exit Range: {RSI_EXIT_MIN}-{RSI_EXIT_MAX}")
     print(f"Lot Size per trade: {LOT_MULTIPLIER}")
+    print(f"ATR Trailing Multiplier: {TRAIL_ATR_MULT if TRAIL_ATR_MULT else 'Disabled'}")
     print(f"Product Type: {PRODUCT_TYPE}")
     print(f"Spot Indices: {SPOT_INDICES}")
     print(f"Fyers Lot Sizes: NIFTY=65, BANKNIFTY=30, FINNIFTY=60")
