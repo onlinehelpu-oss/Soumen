@@ -80,7 +80,7 @@ STRIKE_DISTANCE = 0
 SL_MODE = "signal_low"  # "signal_low" or "swing_low"
 SWING_LOOKBACK = 5  # used for swing-low
 LOT_MULTIPLIER = 1  # Lot multiplier
-TRAIL_ATR_MULT = None  # None = disabled, float = multiplier
+TRAIL_ATR_MULT = 1.0  # None = disabled, float = multiplier (e.g., 1.0)
 
 MAX_CONCURRENT_POS = 3
 DAILY_MAX_LOSS = 50000.0
@@ -1206,7 +1206,7 @@ def main():
     parser.add_argument("--rsi-exit", type=str, default=f"{RSI_EXIT_MIN}-{RSI_EXIT_MAX}",
                         help="RSI exit range (e.g., 70-75)")
     parser.add_argument("--lot-multiplier", type=int, default=LOT_MULTIPLIER, help="Number of lots per trade")
-    parser.add_argument("--trail-atr-mult", type=float, default=None, help="Move SL to Cost if Price > Entry + (ATR * Mult)")
+    parser.add_argument("--trail-atr-mult", type=float, default=TRAIL_ATR_MULT, help="Move SL to Cost if Price > Entry + (ATR * Mult)")
     parser.add_argument("--test", action="store_true", help="Test mode without live connection")
     parser.add_argument("--no-trade", action="store_true", help="Disable trading")
 
