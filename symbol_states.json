@@ -5,9 +5,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.019865",
+    "last_candle_ts": "2026-01-29T07:55:46.384763",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:ADANIPORTS-EQ": {
     "status": "watch",
@@ -15,9 +17,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.043205",
+    "last_candle_ts": "2026-01-29T07:55:46.401826",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:APOLLOHOSP-EQ": {
     "status": "watch",
@@ -25,9 +29,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.051133",
+    "last_candle_ts": "2026-01-29T07:55:46.409445",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:ASIANPAINT-EQ": {
     "status": "watch",
@@ -35,9 +41,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.058278",
+    "last_candle_ts": "2026-01-29T07:55:46.416514",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:AXISBANK-EQ": {
     "status": "watch",
@@ -45,9 +53,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.067953",
+    "last_candle_ts": "2026-01-29T07:55:46.426768",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:BAJAJ-AUTO-EQ": {
     "status": "watch",
@@ -55,9 +65,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.075303",
+    "last_candle_ts": "2026-01-29T07:55:46.434012",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:BAJFINANCE-EQ": {
     "status": "watch",
@@ -65,9 +77,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.083704",
+    "last_candle_ts": "2026-01-29T07:55:46.441131",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:BAJAJFINSV-EQ": {
     "status": "watch",
@@ -75,9 +89,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.090853",
+    "last_candle_ts": "2026-01-29T07:55:46.447911",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:BPCL-EQ": {
     "status": "watch",
@@ -85,9 +101,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.098051",
+    "last_candle_ts": "2026-01-29T07:55:46.454948",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:BHARTIARTL-EQ": {
     "status": "watch",
@@ -95,9 +113,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.105321",
+    "last_candle_ts": "2026-01-29T07:55:46.466135",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:BRITANNIA-EQ": {
     "status": "watch",
@@ -105,9 +125,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.112973",
+    "last_candle_ts": "2026-01-29T07:55:46.477549",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:CIPLA-EQ": {
     "status": "watch",
@@ -115,9 +137,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.119831",
+    "last_candle_ts": "2026-01-29T07:55:46.484615",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:COALINDIA-EQ": {
     "status": "watch",
@@ -125,9 +149,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.126915",
+    "last_candle_ts": "2026-01-29T07:55:46.491484",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:DIVISLAB-EQ": {
     "status": "watch",
@@ -135,9 +161,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.133980",
+    "last_candle_ts": "2026-01-29T07:55:46.498418",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:DRREDDY-EQ": {
     "status": "watch",
@@ -145,9 +173,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.141552",
+    "last_candle_ts": "2026-01-29T07:55:46.505484",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:EICHERMOT-EQ": {
     "status": "watch",
@@ -155,9 +185,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.148592",
+    "last_candle_ts": "2026-01-29T07:55:46.512482",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:GRASIM-EQ": {
     "status": "watch",
@@ -165,9 +197,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.155593",
+    "last_candle_ts": "2026-01-29T07:55:46.519714",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:HCLTECH-EQ": {
     "status": "watch",
@@ -175,9 +209,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.162584",
+    "last_candle_ts": "2026-01-29T07:55:46.527038",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:HDFCBANK-EQ": {
     "status": "watch",
@@ -185,9 +221,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.169767",
+    "last_candle_ts": "2026-01-29T07:55:46.539930",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:HDFCLIFE-EQ": {
     "status": "watch",
@@ -195,9 +233,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.176956",
+    "last_candle_ts": "2026-01-29T07:55:46.547292",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:HEROMOTOCO-EQ": {
     "status": "watch",
@@ -205,9 +245,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.184276",
+    "last_candle_ts": "2026-01-29T07:55:46.555462",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:HINDALCO-EQ": {
     "status": "watch",
@@ -215,9 +257,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.191941",
+    "last_candle_ts": "2026-01-29T07:55:46.562963",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:HINDUNILVR-EQ": {
     "status": "watch",
@@ -225,9 +269,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.199920",
+    "last_candle_ts": "2026-01-29T07:55:46.570441",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:ICICIBANK-EQ": {
     "status": "watch",
@@ -235,9 +281,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.207211",
+    "last_candle_ts": "2026-01-29T07:55:46.577613",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:ITC-EQ": {
     "status": "watch",
@@ -245,9 +293,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.214310",
+    "last_candle_ts": "2026-01-29T07:55:46.584654",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:INFY-EQ": {
     "status": "watch",
@@ -255,9 +305,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.221429",
+    "last_candle_ts": "2026-01-29T07:55:46.591840",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:JSWSTEEL-EQ": {
     "status": "watch",
@@ -265,9 +317,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.228229",
+    "last_candle_ts": "2026-01-29T07:55:46.599239",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:KOTAKBANK-EQ": {
     "status": "watch",
@@ -275,9 +329,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.235557",
+    "last_candle_ts": "2026-01-29T07:55:46.612213",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:LTIM-EQ": {
     "status": "watch",
@@ -285,9 +341,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.242720",
+    "last_candle_ts": "2026-01-29T07:55:46.619409",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:LT-EQ": {
     "status": "watch",
@@ -295,9 +353,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.249757",
+    "last_candle_ts": "2026-01-29T07:55:46.626574",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:M&M-EQ": {
     "status": "watch",
@@ -305,9 +365,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.256660",
+    "last_candle_ts": "2026-01-29T07:55:46.633723",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:MARUTI-EQ": {
     "status": "watch",
@@ -315,9 +377,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.263739",
+    "last_candle_ts": "2026-01-29T07:55:46.641082",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:NTPC-EQ": {
     "status": "watch",
@@ -325,9 +389,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.270861",
+    "last_candle_ts": "2026-01-29T07:55:46.648135",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:NESTLEIND-EQ": {
     "status": "watch",
@@ -335,9 +401,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.277979",
+    "last_candle_ts": "2026-01-29T07:55:46.655118",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:ONGC-EQ": {
     "status": "watch",
@@ -345,9 +413,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.285118",
+    "last_candle_ts": "2026-01-29T07:55:46.662350",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:POWERGRID-EQ": {
     "status": "watch",
@@ -355,9 +425,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.294353",
+    "last_candle_ts": "2026-01-29T07:55:46.669506",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:RELIANCE-EQ": {
     "status": "watch",
@@ -365,9 +437,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.301673",
+    "last_candle_ts": "2026-01-29T07:55:46.676644",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:SBILIFE-EQ": {
     "status": "watch",
@@ -375,9 +449,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.308935",
+    "last_candle_ts": "2026-01-29T07:55:46.683767",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:SBIN-EQ": {
     "status": "watch",
@@ -385,9 +461,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.316007",
+    "last_candle_ts": "2026-01-29T07:55:46.690833",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:SIEMENS-EQ": {
     "status": "watch",
@@ -395,9 +473,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.323001",
+    "last_candle_ts": "2026-01-29T07:55:46.698004",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:SUNPHARMA-EQ": {
     "status": "watch",
@@ -405,9 +485,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.330307",
+    "last_candle_ts": "2026-01-29T07:55:46.705361",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:TCS-EQ": {
     "status": "watch",
@@ -415,9 +497,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.337458",
+    "last_candle_ts": "2026-01-29T07:55:46.712454",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:TATACONSUM-EQ": {
     "status": "watch",
@@ -425,9 +509,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.344281",
+    "last_candle_ts": "2026-01-29T07:55:46.719330",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:TATASTEEL-EQ": {
     "status": "watch",
@@ -435,9 +521,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.351275",
+    "last_candle_ts": "2026-01-29T07:55:46.726476",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:TECHM-EQ": {
     "status": "watch",
@@ -445,9 +533,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.358439",
+    "last_candle_ts": "2026-01-29T07:55:46.733735",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:TITAN-EQ": {
     "status": "watch",
@@ -455,9 +545,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.365306",
+    "last_candle_ts": "2026-01-29T07:55:46.740949",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "NSE:UPL-EQ": {
     "status": "watch",
@@ -465,9 +557,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.372515",
+    "last_candle_ts": "2026-01-29T07:55:46.752810",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "MCX:SILVERMIC26FEBFUT": {
     "status": "watch",
@@ -475,9 +569,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.379953",
+    "last_candle_ts": "2026-01-29T07:55:46.759538",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "MCX:CRUDEOILM26JANFUT": {
     "status": "watch",
@@ -485,9 +581,11 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.387276",
+    "last_candle_ts": "2026-01-29T07:55:46.766636",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   },
   "MCX:NATGASMINI26JANFUT": {
     "status": "watch",
@@ -495,8 +593,10 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:38:51.394455",
+    "last_candle_ts": "2026-01-29T07:55:46.773716",
     "signal_notified": false,
-    "target_price": null
+    "target_price": null,
+    "atr_at_entry": 0.0,
+    "sl_trailed": false
   }
 }

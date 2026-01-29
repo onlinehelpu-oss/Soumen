@@ -1338,6 +1338,11 @@ def evaluate_on_new_candle(st: SymbolState):
         ok_signal = bool(curr.get("ok_signal", True))
         higher_high = curr_high > prev_high
 
+        # Debug Log for Higher High (only if other conditions met, to reduce spam)
+        if ema_sequence_ok and rising_slow_ema and touched_slow_ema and closed_above_both:
+             pass  # Placeholder if detailed logging needed
+             # _real_print(f"[signal-check] {st.symbol} HigherHigh={higher_high} (CurrHigh:{curr_high} > PrevHigh:{prev_high})")
+
         if (
                 ema_sequence_ok
                 and rising_slow_ema
@@ -1347,6 +1352,7 @@ def evaluate_on_new_candle(st: SymbolState):
                 and ok_signal
                 and higher_high
         ):
+            _real_print(f"[signal-confirm] {st.symbol} Higher High Condition MET: {curr_high:.2f} > {prev_high:.2f}")
             st.signal_candle = {
                 "ts": curr.name,
                 "open": curr_open,
@@ -1778,6 +1784,8 @@ def _serialize_state():
             ),
             "signal_notified": getattr(st, "signal_notified", False),
             "target_price": getattr(st, "target_price", None),
+            "atr_at_entry": getattr(st, "atr_at_entry", 0.0),
+            "sl_trailed": getattr(st, "sl_trailed", False),
         }
     return out
 
@@ -1807,6 +1815,8 @@ def load_state_from_disk():
             st.gtt_order_id = info.get("gtt_order_id", st.gtt_order_id)
             st.signal_notified = info.get("signal_notified", False)
             st.target_price = info.get("target_price", None)
+            st.atr_at_entry = info.get("atr_at_entry", 0.0)
+            st.sl_trailed = info.get("sl_trailed", False)
     except Exception as e:
         _real_print("[state] Failed to load state:", e)
 
