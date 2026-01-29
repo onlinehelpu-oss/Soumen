@@ -112,6 +112,8 @@ TRADING_ENABLED = True
 MAX_EXIT_RETRIES = 3
 EXIT_RETRY_COOLDOWN_SECONDS = 10
 
+TRAIL_ATR_MULT = 1.0  # None = disabled, float = multiplier (e.g., 1.0)
+
 # Timezone (IST)
 TIMEZONE = "Asia/Kolkata"
 IST = pytz.timezone(TIMEZONE)
@@ -362,6 +364,9 @@ class SymbolState:
         # target
         self.target_price = None
         self.potential_target_price = None
+        # trailing
+        self.atr_at_entry = 0.0
+        self.sl_trailed = False
 
     def __repr__(self):
         return f"<State {self.symbol} {self.status} qty={self.qty} sl={self.stop_price} tp={self.target_price}>"
@@ -390,6 +395,18 @@ def ema(series: pd.Series, length: int) -> pd.Series:
     return series.ewm(span=length, adjust=False).mean()
 
 
+def atr(df: pd.DataFrame, length: int = 14) -> pd.Series:
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    prev_close = close.shift(1)
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.ewm(alpha=1/length, adjust=False).mean()
+
+
 def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
@@ -397,6 +414,7 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["ema_exit"] = ema(df["close"], EXIT_EMA)
     df["ema_fast_entry"] = ema(df["close"], ENTRY_FAST_EMA)
     df["ema_slow_entry"] = ema(df["close"], ENTRY_SLOW_EMA)
+    df["atr"] = atr(df, 14)
     rng = (df["high"] - df["low"]) / df["close"].replace(0, pd.NA)
     df["ok_signal"] = rng >= MIN_RANGE_PCT if MIN_RANGE_PCT > 0 else True
     return df
@@ -1012,6 +1030,17 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                                 state.exit_try_count = 0
                                 state.last_failed_exit_ts = None
 
+                                # Capture ATR for trailing
+                                try:
+                                    if not state.data.empty and "atr" in state.data.columns:
+                                        last_atr = float(state.data["atr"].iloc[-1])
+                                        state.atr_at_entry = last_atr
+                                        _real_print(f"[entry-debug] ATR at entry: {last_atr:.2f}")
+                                    else:
+                                        state.atr_at_entry = 0.0
+                                except Exception:
+                                    state.atr_at_entry = 0.0
+
                                 if SL_MODE == "signal_low":
                                     state.stop_price = float(state.signal_candle["low"])
                                 else:
@@ -1201,6 +1230,43 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
             and state.stop_price > 0
             and not skip_exit_checks
     ):
+        # TRAILING STOP LOGIC (ATR-based cost-to-cost)
+        if (
+            TRAIL_ATR_MULT is not None
+            and TRAIL_ATR_MULT > 0
+            and state.atr_at_entry > 0
+            and not state.sl_trailed
+        ):
+            try:
+                dist = state.atr_at_entry * TRAIL_ATR_MULT
+                trigger_val = state.entry_price + dist
+                if ltp >= trigger_val:
+                    _real_print(
+                        f"[{symbol}] Trailing SL Triggered: LTP {ltp:.2f} >= Entry {state.entry_price:.2f} + {TRAIL_ATR_MULT}xATR ({dist:.2f})"
+                    )
+                    # Move SL to Entry Price (Cost-to-Cost)
+                    new_sl = state.entry_price
+                    state.stop_price = new_sl
+                    state.sl_trailed = True
+                    _real_print(f"[{symbol}] Moving Stop Loss to {new_sl:.2f}")
+
+                    # Update GTT if it exists
+                    if state.gtt_order_id:
+                        _real_print(f"[{symbol}] Cancelling old GTT {state.gtt_order_id} to place new trailed GTT.")
+                        cancel_gtt_order(state.gtt_order_id)
+                        state.gtt_order_id = None
+
+                    # Place new GTT at new SL
+                    gtt_resp = place_gtt_stoploss(symbol, state.qty, trigger_price=new_sl)
+                    if isinstance(gtt_resp, dict) and gtt_resp.get("s") == "ok":
+                        state.gtt_order_id = gtt_resp.get("id") or gtt_resp.get("gtt_id")
+                        _real_print(f"[{symbol}] New Trailed GTT placed id={state.gtt_order_id}")
+                    else:
+                        _real_print(f"[{symbol}] Failed to place new trailed GTT: {gtt_resp}")
+
+            except Exception as e:
+                _real_print(f"[{symbol}] Trailing SL logic error: {e}")
+
         try:
             if ltp <= state.stop_price:
                 _real_print(
@@ -1770,6 +1836,7 @@ def parse_args():
     p.add_argument("--product-type", type=str, default=PRODUCT_TYPE, help="Order product type: 'CNC' or 'Intraday'.")
     p.add_argument("--sl-mode", type=str, default=SL_MODE, help="Stop-loss mode: 'signal_low' or 'swing_low'.")
     p.add_argument("--qty-map-file", type=str, default="", help="Optional file path to JSON with per-symbol qty map.")
+    p.add_argument("--trail-atr-mult", type=float, default=TRAIL_ATR_MULT, help="Multiplier for ATR Trailing Stop (move to cost). Set negative to disable.")
     p.set_defaults(require_green=True)
     return p.parse_args()
 
@@ -1784,12 +1851,14 @@ def print_startup(args):
     _real_print("[mode] Order mode set to", PRODUCT_TYPE)
     _real_print("[mode] SL_MODE =", SL_MODE, " POSITION_MODE =", POSITION_MODE)
     _real_print("[mode] FIXED_QTY =", FIXED_QTY)
+    _real_print("[mode] TRAIL_ATR_MULT =", TRAIL_ATR_MULT)
 
 
 def main():
     global TIMEFRAME_MIN, EXIT_EMA, ENTRY_FAST_EMA, ENTRY_SLOW_EMA, EMA_BUFFER, MIN_RANGE_PCT, REQUIRE_GREEN_SIGNAL
     global CANDLE_MANAGER, FYERS, FYERS_SOCKET, ACCESS_TOKEN
     global POSITION_MODE, FIXED_QTY, QTY_MAP, ALLOC_DEFAULT, PRODUCT_TYPE, SL_MODE
+    global TRAIL_ATR_MULT
 
     args = parse_args()
     file_settings = load_settings_file()
@@ -1850,6 +1919,11 @@ def main():
     if POSITION_MODE not in ALLOWED_POS:
         _real_print(f"[warn] Invalid POSITION_MODE '{POSITION_MODE}'. Falling back to 'alloc'.")
         POSITION_MODE = "alloc"
+
+    cli_trail = getattr(args, "trail_atr_mult", None)
+    TRAIL_ATR_MULT = float(pick("trail_atr_mult", cli_trail, TRAIL_ATR_MULT))
+    if TRAIL_ATR_MULT < 0:
+        TRAIL_ATR_MULT = None  # Disabled
 
     TIMEFRAME_MIN = max(1, int(TIMEFRAME_MIN))
     EXIT_EMA = max(1, int(EXIT_EMA))

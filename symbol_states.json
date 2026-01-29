@@ -5,7 +5,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.549592",
+    "last_candle_ts": "2026-01-29T07:38:51.019865",
     "signal_notified": false,
     "target_price": null
   },
@@ -15,7 +15,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.565579",
+    "last_candle_ts": "2026-01-29T07:38:51.043205",
     "signal_notified": false,
     "target_price": null
   },
@@ -25,7 +25,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.570937",
+    "last_candle_ts": "2026-01-29T07:38:51.051133",
     "signal_notified": false,
     "target_price": null
   },
@@ -35,7 +35,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.576528",
+    "last_candle_ts": "2026-01-29T07:38:51.058278",
     "signal_notified": false,
     "target_price": null
   },
@@ -45,7 +45,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.580694",
+    "last_candle_ts": "2026-01-29T07:38:51.067953",
     "signal_notified": false,
     "target_price": null
   },
@@ -55,7 +55,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.584886",
+    "last_candle_ts": "2026-01-29T07:38:51.075303",
     "signal_notified": false,
     "target_price": null
   },
@@ -65,7 +65,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.589135",
+    "last_candle_ts": "2026-01-29T07:38:51.083704",
     "signal_notified": false,
     "target_price": null
   },
@@ -75,7 +75,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.593157",
+    "last_candle_ts": "2026-01-29T07:38:51.090853",
     "signal_notified": false,
     "target_price": null
   },
@@ -85,7 +85,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.599284",
+    "last_candle_ts": "2026-01-29T07:38:51.098051",
     "signal_notified": false,
     "target_price": null
   },
@@ -95,7 +95,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.603719",
+    "last_candle_ts": "2026-01-29T07:38:51.105321",
     "signal_notified": false,
     "target_price": null
   },
@@ -105,7 +105,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.607781",
+    "last_candle_ts": "2026-01-29T07:38:51.112973",
     "signal_notified": false,
     "target_price": null
   },
@@ -115,7 +115,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.611585",
+    "last_candle_ts": "2026-01-29T07:38:51.119831",
     "signal_notified": false,
     "target_price": null
   },
@@ -125,7 +125,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.615915",
+    "last_candle_ts": "2026-01-29T07:38:51.126915",
     "signal_notified": false,
     "target_price": null
   },
@@ -135,7 +135,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.619936",
+    "last_candle_ts": "2026-01-29T07:38:51.133980",
     "signal_notified": false,
     "target_price": null
   },
@@ -145,7 +145,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.624139",
+    "last_candle_ts": "2026-01-29T07:38:51.141552",
     "signal_notified": false,
     "target_price": null
   },
@@ -155,7 +155,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.628068",
+    "last_candle_ts": "2026-01-29T07:38:51.148592",
     "signal_notified": false,
     "target_price": null
   },
@@ -165,7 +165,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.632926",
+    "last_candle_ts": "2026-01-29T07:38:51.155593",
     "signal_notified": false,
     "target_price": null
   },
@@ -175,7 +175,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.637423",
+    "last_candle_ts": "2026-01-29T07:38:51.162584",
     "signal_notified": false,
     "target_price": null
   },
@@ -185,7 +185,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.642728",
+    "last_candle_ts": "2026-01-29T07:38:51.169767",
     "signal_notified": false,
     "target_price": null
   },
@@ -195,7 +195,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.647068",
+    "last_candle_ts": "2026-01-29T07:38:51.176956",
     "signal_notified": false,
     "target_price": null
   },
@@ -205,7 +205,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.651898",
+    "last_candle_ts": "2026-01-29T07:38:51.184276",
     "signal_notified": false,
     "target_price": null
   },
@@ -215,7 +215,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.656543",
+    "last_candle_ts": "2026-01-29T07:38:51.191941",
     "signal_notified": false,
     "target_price": null
   },
@@ -225,7 +225,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.660912",
+    "last_candle_ts": "2026-01-29T07:38:51.199920",
     "signal_notified": false,
     "target_price": null
   },
@@ -235,7 +235,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.665410",
+    "last_candle_ts": "2026-01-29T07:38:51.207211",
     "signal_notified": false,
     "target_price": null
   },
@@ -245,7 +245,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.669835",
+    "last_candle_ts": "2026-01-29T07:38:51.214310",
     "signal_notified": false,
     "target_price": null
   },
@@ -255,7 +255,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.673933",
+    "last_candle_ts": "2026-01-29T07:38:51.221429",
     "signal_notified": false,
     "target_price": null
   },
@@ -265,7 +265,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.678165",
+    "last_candle_ts": "2026-01-29T07:38:51.228229",
     "signal_notified": false,
     "target_price": null
   },
@@ -275,7 +275,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.682295",
+    "last_candle_ts": "2026-01-29T07:38:51.235557",
     "signal_notified": false,
     "target_price": null
   },
@@ -285,7 +285,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.686202",
+    "last_candle_ts": "2026-01-29T07:38:51.242720",
     "signal_notified": false,
     "target_price": null
   },
@@ -295,7 +295,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.690267",
+    "last_candle_ts": "2026-01-29T07:38:51.249757",
     "signal_notified": false,
     "target_price": null
   },
@@ -305,7 +305,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.694316",
+    "last_candle_ts": "2026-01-29T07:38:51.256660",
     "signal_notified": false,
     "target_price": null
   },
@@ -315,7 +315,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.698407",
+    "last_candle_ts": "2026-01-29T07:38:51.263739",
     "signal_notified": false,
     "target_price": null
   },
@@ -325,7 +325,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.702950",
+    "last_candle_ts": "2026-01-29T07:38:51.270861",
     "signal_notified": false,
     "target_price": null
   },
@@ -335,7 +335,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.707163",
+    "last_candle_ts": "2026-01-29T07:38:51.277979",
     "signal_notified": false,
     "target_price": null
   },
@@ -345,7 +345,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.711790",
+    "last_candle_ts": "2026-01-29T07:38:51.285118",
     "signal_notified": false,
     "target_price": null
   },
@@ -355,7 +355,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.716848",
+    "last_candle_ts": "2026-01-29T07:38:51.294353",
     "signal_notified": false,
     "target_price": null
   },
@@ -365,7 +365,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.722275",
+    "last_candle_ts": "2026-01-29T07:38:51.301673",
     "signal_notified": false,
     "target_price": null
   },
@@ -375,7 +375,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.726435",
+    "last_candle_ts": "2026-01-29T07:38:51.308935",
     "signal_notified": false,
     "target_price": null
   },
@@ -385,7 +385,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.730732",
+    "last_candle_ts": "2026-01-29T07:38:51.316007",
     "signal_notified": false,
     "target_price": null
   },
@@ -395,7 +395,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.734805",
+    "last_candle_ts": "2026-01-29T07:38:51.323001",
     "signal_notified": false,
     "target_price": null
   },
@@ -405,7 +405,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.738868",
+    "last_candle_ts": "2026-01-29T07:38:51.330307",
     "signal_notified": false,
     "target_price": null
   },
@@ -415,7 +415,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.743013",
+    "last_candle_ts": "2026-01-29T07:38:51.337458",
     "signal_notified": false,
     "target_price": null
   },
@@ -425,7 +425,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.747037",
+    "last_candle_ts": "2026-01-29T07:38:51.344281",
     "signal_notified": false,
     "target_price": null
   },
@@ -435,7 +435,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.750860",
+    "last_candle_ts": "2026-01-29T07:38:51.351275",
     "signal_notified": false,
     "target_price": null
   },
@@ -445,7 +445,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.755260",
+    "last_candle_ts": "2026-01-29T07:38:51.358439",
     "signal_notified": false,
     "target_price": null
   },
@@ -455,7 +455,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.759160",
+    "last_candle_ts": "2026-01-29T07:38:51.365306",
     "signal_notified": false,
     "target_price": null
   },
@@ -465,7 +465,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.763110",
+    "last_candle_ts": "2026-01-29T07:38:51.372515",
     "signal_notified": false,
     "target_price": null
   },
@@ -475,7 +475,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.767477",
+    "last_candle_ts": "2026-01-29T07:38:51.379953",
     "signal_notified": false,
     "target_price": null
   },
@@ -485,7 +485,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.771458",
+    "last_candle_ts": "2026-01-29T07:38:51.387276",
     "signal_notified": false,
     "target_price": null
   },
@@ -495,7 +495,7 @@
     "entry_price": 0.0,
     "stop_price": 0.0,
     "gtt_order_id": null,
-    "last_candle_ts": "2026-01-29T07:22:40.775451",
+    "last_candle_ts": "2026-01-29T07:38:51.394455",
     "signal_notified": false,
     "target_price": null
   }
