@@ -1246,6 +1246,8 @@ def evaluate_on_new_candle(st: SymbolState):
     curr_high = float(curr["high"])
     curr_close = float(curr["close"])
 
+    prev_high = float(prev["high"])
+
     ema_fast = float(curr.get("ema_fast_entry", float("nan")))
     ema_slow = float(curr.get("ema_slow_entry", float("nan")))
     ema_slow_prev = float(prev.get("ema_slow_entry", float("nan")))
@@ -1263,10 +1265,12 @@ def evaluate_on_new_candle(st: SymbolState):
         # 1. EMA_fast > EMA_slow (Uptrend)
         # 2. Candle Low <= EMA_slow (Touched or crossed below Slow EMA)
         # 3. Candle Close > Both EMAs (Strong close)
+        # 4. Higher High: Current High > Previous High
         touched_slow_ema = curr_low <= ema_slow
         closed_above_both = curr_close > (highest_ema + EMA_BUFFER)
         green_ok = (not REQUIRE_GREEN_SIGNAL) or (curr_close > curr_open)
         ok_signal = bool(curr.get("ok_signal", True))
+        higher_high = curr_high > prev_high
 
         if (
                 ema_sequence_ok
@@ -1275,6 +1279,7 @@ def evaluate_on_new_candle(st: SymbolState):
                 and closed_above_both
                 and green_ok
                 and ok_signal
+                and higher_high
         ):
             st.signal_candle = {
                 "ts": curr.name,
