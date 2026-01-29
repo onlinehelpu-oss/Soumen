@@ -830,9 +830,19 @@ def compute_prev_swing_high_for_entry(state: SymbolState, lookback: int) -> floa
             df_up_to = df.loc[:sig_ts]
         else:
             df_up_to = df
-        if df_up_to.shape[0] <= 1:
+
+        # Reduce lookback if insufficient history
+        available_len = df_up_to.shape[0]
+        if available_len <= 1:
             return float("nan")
-        prior = df_up_to.iloc[:-1].tail(lookback)
+
+        # Implicitly handled by tail, but explicitly reduced for logic clarity
+        effective_lookback = min(lookback, available_len - 1)
+        if effective_lookback < lookback:
+             pass
+             # _real_print(f"[target] Insufficient history ({available_len}). Reduced lookback to {effective_lookback}.")
+
+        prior = df_up_to.iloc[:-1].tail(effective_lookback)
         if prior.empty:
             return float("nan")
         return float(prior["high"].max())
