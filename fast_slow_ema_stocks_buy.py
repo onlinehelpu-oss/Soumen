@@ -360,6 +360,7 @@ class SymbolState:
         self.last_eval_candle = None
         # guards
         self.just_entered = False
+        self.entry_time = 0.0
         # target
         self.target_price = None
         self.potential_target_price = None
@@ -1023,6 +1024,7 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                                 state.entry_price = ltp
                                 state.qty = qty
                                 state.just_entered = True
+                                state.entry_time = time.time()
                                 state.exit_pending = False
                                 state.exit_signal_candle = None
                                 state.exit_signal_expiry = None
@@ -1716,6 +1718,10 @@ def sync_with_broker_positions():
 
                 # Case 1: Bot has position, Broker doesn't (Manual Close)
                 if not fyers_pos:
+                    # Grace period check: if entry was very recent, allow time for broker to update
+                    if (time.time() - getattr(state, "entry_time", 0)) < 30:
+                        continue
+
                     _real_print(f"[sync] Position for {sym} missing in broker. Assuming MANUAL CLOSE.")
                     state.status = "watch"
                     state.qty = 0
@@ -1786,6 +1792,7 @@ def _serialize_state():
             "target_price": getattr(st, "target_price", None),
             "atr_at_entry": getattr(st, "atr_at_entry", 0.0),
             "sl_trailed": getattr(st, "sl_trailed", False),
+            "entry_time": getattr(st, "entry_time", 0.0),
         }
     return out
 
@@ -1817,6 +1824,7 @@ def load_state_from_disk():
             st.target_price = info.get("target_price", None)
             st.atr_at_entry = info.get("atr_at_entry", 0.0)
             st.sl_trailed = info.get("sl_trailed", False)
+            st.entry_time = info.get("entry_time", 0.0)
     except Exception as e:
         _real_print("[state] Failed to load state:", e)
 
