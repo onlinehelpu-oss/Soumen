@@ -118,11 +118,20 @@ class BotConfig:
     EMA_FAST = 9
     EMA_SLOW = 21
 
+    # Filter Settings
+    ADX_PERIOD = 14
+    ADX_THRESHOLD = 20
+    RSI_PERIOD = 14
+    RSI_MIN = 50
+    RSI_MAX = 70
+
     # Pullback Logic
     PULLBACK_TOLERANCE = 0.0015 # 0.15% distance from VWAP/EMA considered "touch"
 
     # Risk Management
     R_MULTIPLIER = 2.0
+    ATR_PERIOD = 14
+    ATR_SL_MULT = 1.0 # SL = Low - 1*ATR
     OPTION_SL_PCT = 0.20  # 20% Stop Loss on Option Premium
 
     # --- Position Sizing ---
@@ -295,6 +304,33 @@ class Strategy:
         df['ema_fast'] = df['close'].ewm(span=BotConfig.EMA_FAST, adjust=False).mean()
         df['ema_slow'] = df['close'].ewm(span=BotConfig.EMA_SLOW, adjust=False).mean()
 
+        # RSI
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=BotConfig.RSI_PERIOD).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=BotConfig.RSI_PERIOD).mean()
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
+
+        # ATR
+        df['tr0'] = abs(df['high'] - df['low'])
+        df['tr1'] = abs(df['high'] - df['close'].shift())
+        df['tr2'] = abs(df['low'] - df['close'].shift())
+        df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
+        df['atr'] = df['tr'].rolling(window=BotConfig.ATR_PERIOD).mean()
+
+        # ADX
+        # Simplified ADX (Wilder's requires smoothing, using rolling mean approx for speed here or fuller impl)
+        # For simplicity in this script, we'll use a basic directional movement calc
+        up = df['high'].diff()
+        down = -df['low'].diff()
+        plus_dm = np.where((up > down) & (up > 0), up, 0.0)
+        minus_dm = np.where((down > up) & (down > 0), down, 0.0)
+
+        df['plus_di'] = 100 * pd.Series(plus_dm).ewm(alpha=1/BotConfig.ADX_PERIOD).mean() / df['atr']
+        df['minus_di'] = 100 * pd.Series(minus_dm).ewm(alpha=1/BotConfig.ADX_PERIOD).mean() / df['atr']
+        dx = 100 * abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])
+        df['adx'] = dx.rolling(window=BotConfig.ADX_PERIOD).mean()
+
         # VWAP (Approximation: CumSum(Price*Vol) / CumSum(Vol) reset daily)
         if 'timestamp' in df.columns:
             df['date'] = df['timestamp'].dt.date
@@ -329,19 +365,27 @@ class Strategy:
         ema9 = curr_candle['ema_fast']
         ema21 = curr_candle['ema_slow']
         vwap = curr_candle['vwap']
+        adx = curr_candle.get('adx', 0)
+        rsi = curr_candle.get('rsi', 50)
+        atr = curr_candle.get('atr', 0)
 
         # 1. Trend Filter
+        # Strong Trend: ADX > 20
+        if adx < BotConfig.ADX_THRESHOLD: return False, 0
+        # Bullish Alignment
         if not (ema9 > ema21): return False, 0
+        # Price Regime
         if not (curr_candle['close'] > vwap): return False, 0
 
         # 2. Pullback Condition (Dip)
-        # Check if current or prev candle touched support (EMA21 or VWAP)
-        # Tolerance: Price within 0.15% of Support
+        # Must have touched Support recently (EMA21 or VWAP)
+        # Stricter: Low must have dipped below (or very close) to EMA21/VWAP
+        # but Body (Close) held above or reclaimed it.
         def touched_support(c):
-            dist_ema = abs(c['low'] - ema21) / ema21
-            dist_vwap = abs(c['low'] - vwap) / vwap
-            return (c['low'] <= ema21 * (1+BotConfig.PULLBACK_TOLERANCE)) or \
-                   (c['low'] <= vwap * (1+BotConfig.PULLBACK_TOLERANCE))
+            # Did Low touch Support?
+            touched = (c['low'] <= ema21 * (1+BotConfig.PULLBACK_TOLERANCE)) or \
+                      (c['low'] <= vwap * (1+BotConfig.PULLBACK_TOLERANCE))
+            return touched
 
         is_pullback = touched_support(curr_candle) or touched_support(prev_candle)
 
@@ -350,10 +394,14 @@ class Strategy:
         is_bullish = curr_candle['close'] > curr_candle['open']
         breakout_ema9 = curr_candle['close'] > ema9
 
-        if is_pullback and is_bullish and breakout_ema9:
+        # RSI Momentum Check (Not Overbought)
+        rsi_ok = (rsi > BotConfig.RSI_MIN) and (rsi < BotConfig.RSI_MAX)
+
+        if is_pullback and is_bullish and breakout_ema9 and rsi_ok:
             # Valid Signal
-            stop_loss = min(curr_candle['low'], prev_candle['low'])
-            return True, stop_loss
+            # Robust SL: Low - ATR
+            sl_price = min(curr_candle['low'], prev_candle['low']) - (atr * BotConfig.ATR_SL_MULT)
+            return True, sl_price
 
         return False, 0
 
