@@ -1,6 +1,6 @@
 """
-ALL-IN-ONE ABSORPTION-COMPRESSION-DISPLACEMENT TRADING BOT
-==========================================================
+ALL-IN-ONE VWAP TREND PULLBACK TRADING BOT
+==========================================
 
 **Disclaimer:**
 This bot is intended for educational and paper trading purposes.
@@ -12,12 +12,12 @@ This single-file script consolidates three key functionalities:
 2. Backtester: Downloads historical data and tests the strategy.
 3. Live Bot: Runs the strategy in a live (paper trading) environment.
 
-**Strategy (Absorption -> Compression -> Displacement):**
-- **Phase 1 (Flush):** Bearish candle, breaks 20-period Low, High Range, High Volume.
-- **Phase 2 (Compression):** 4-8 candles, tight consolidation (High-Low < 0.8x Avg Range), no new significant low.
-- **Phase 3 (Displacement):** Bullish breakout above Compression High, High Range, Close near High, Volume Increase.
-- **Entry:** ATM/ITM Call Option (Delta 0.45-0.65).
-- **Exits:** Target (Trailing), Stop Loss (Compression Low or Option Premium -30%), or Time-based exit.
+**Strategy (VWAP Trend Pullback):**
+- **Trend Filter:** Price > VWAP (Session) AND EMA(9) > EMA(21).
+- **Setup (Pullback):** Price pulls back to touch/near VWAP or EMA(21) but holds structure.
+- **Entry Trigger:** A bullish candle closes back above EMA(9) confirming the resumption.
+- **Entry:** ATM/ITM Call Option (Delta 0.5-0.6).
+- **Exits:** Target (1:2 RR), Stop Loss (Swing Low), or Time-based exit.
 - **Assets:** NSE Indices (NIFTY, BANKNIFTY) -> Options.
 
 **Usage:**
@@ -114,23 +114,16 @@ class BotConfig:
     # --- Strategy Settings ---
     TIMEFRAME_MIN = 3
 
-    # Phase 1: Flush
-    FLUSH_LOOKBACK = 15           # Relaxed from 20 to catch local structures
-    FLUSH_RANGE_MULT = 1.5
-    FLUSH_VOL_MULT = 1.5
+    # EMAs
+    EMA_FAST = 9
+    EMA_SLOW = 21
 
-    # Phase 2: Compression
-    COMPRESSION_MIN_CANDLES = 3   # Relaxed from 4
-    COMPRESSION_MAX_CANDLES = 12  # Extended from 8
-    COMPRESSION_RANGE_THRESHOLD = 1.5  # Relaxed from 0.8 to 1.5 * Avg Range
-
-    # Phase 3: Displacement
-    DISPLACEMENT_RANGE_MULT = 1.5
-    DISPLACEMENT_CLOSE_PCT = 0.25  # Close in top 25% (i.e. > 75% of range, wait. 25% means upper wick < 25%)
+    # Pullback Logic
+    PULLBACK_TOLERANCE = 0.0015 # 0.15% distance from VWAP/EMA considered "touch"
 
     # Risk Management
-    OPTION_SL_PCT = 0.30  # 30% Stop Loss on Option Premium
-    TRAILING_SL_Start = 0.10 # Start trailing after 10% profit
+    R_MULTIPLIER = 2.0
+    OPTION_SL_PCT = 0.20  # 20% Stop Loss on Option Premium
 
     # --- Position Sizing ---
     PAPER_BALANCE = 100000
@@ -295,117 +288,74 @@ def get_fyers_instance():
 class Strategy:
     @staticmethod
     def calculate_indicators(df: pd.DataFrame):
-        """Calculates rolling averages and indicators."""
+        """Calculates VWAP and EMAs."""
         if df.empty: return df
 
-        # Candle Range (High - Low)
-        df['range'] = df['high'] - df['low']
-
-        # Rolling Average Range (20)
-        df['avg_range'] = df['range'].rolling(window=BotConfig.FLUSH_LOOKBACK).mean()
-
-        # Rolling Average Volume (20)
-        df['avg_vol'] = df['volume'].rolling(window=BotConfig.FLUSH_LOOKBACK).mean()
-
-        # Lowest Low of last 20 candles (excluding current)
-        df['lowest_low_20'] = df['low'].rolling(window=BotConfig.FLUSH_LOOKBACK).min().shift(1)
+        # EMAs
+        df['ema_fast'] = df['close'].ewm(span=BotConfig.EMA_FAST, adjust=False).mean()
+        df['ema_slow'] = df['close'].ewm(span=BotConfig.EMA_SLOW, adjust=False).mean()
 
         # VWAP (Approximation: CumSum(Price*Vol) / CumSum(Vol) reset daily)
         if 'timestamp' in df.columns:
             df['date'] = df['timestamp'].dt.date
-            # Simple Intraday VWAP Calculation
-            # We need to handle potential index misalignment if grouped
+
             def calc_vwap(group):
                 cum_vol = group['volume'].cumsum()
                 cum_pv = (group['close'] * group['volume']).cumsum()
                 return cum_pv / cum_vol
 
-            # Use transform to keep original index
-            # Explicitly select columns to silence FutureWarning (Fixed in latest update)
+            # Explicitly select columns to silence FutureWarning
             df['vwap'] = df.groupby('date')[['close', 'volume']].apply(lambda x: calc_vwap(x)).reset_index(level=0, drop=True)
 
         return df
 
     @staticmethod
-    def detect_flush(curr_candle, prev_candles_df):
+    def detect_trend_pullback(curr_candle, prev_candle):
         """
-        Phase 1: Liquidity Flush
-        - Bearish Candle (Close < Open)
-        - Low < Lowest Low (last 20)
-        - Range > 1.5 * Avg Range
-        - Volume > 1.5 * Avg Volume
+        Strategy Logic:
+        1. Trend: Close > VWAP and EMA(9) > EMA(21)
+        2. Signal: Close > EMA(9) (Resumption)
+        3. Pullback context: Previous candles tested VWAP or EMA(21) recently? (Implied by crossover or hold)
+           - Simple trigger: Crossover EMA(9) from below?
+           - Or: Just Green Candle closing above EMA(9) while Trend is Up, and Price is close to Support.
+
+        Robust Simple Logic:
+        - Trend: EMA9 > EMA21
+        - Dip: Low <= EMA21 OR Low <= VWAP (Tested support)
+        - Trigger: Close > EMA9 (Bounced back)
         """
-        if curr_candle.empty: return False
+        if curr_candle.empty: return False, 0
 
-        # Basic Bearish Check
-        if curr_candle['close'] >= curr_candle['open']: return False
+        ema9 = curr_candle['ema_fast']
+        ema21 = curr_candle['ema_slow']
+        vwap = curr_candle['vwap']
 
-        # Context
-        avg_range = curr_candle['avg_range']
-        avg_vol = curr_candle['avg_vol']
-        lowest_low = curr_candle['lowest_low_20']
+        # 1. Trend Filter
+        if not (ema9 > ema21): return False, 0
+        if not (curr_candle['close'] > vwap): return False, 0
 
-        if pd.isna(avg_range) or pd.isna(avg_vol) or pd.isna(lowest_low): return False
+        # 2. Pullback Condition (Dip)
+        # Check if current or prev candle touched support (EMA21 or VWAP)
+        # Tolerance: Price within 0.15% of Support
+        def touched_support(c):
+            dist_ema = abs(c['low'] - ema21) / ema21
+            dist_vwap = abs(c['low'] - vwap) / vwap
+            return (c['low'] <= ema21 * (1+BotConfig.PULLBACK_TOLERANCE)) or \
+                   (c['low'] <= vwap * (1+BotConfig.PULLBACK_TOLERANCE))
 
-        # Conditions
-        is_break_low = curr_candle['low'] < lowest_low
-        is_high_range = curr_candle['range'] > (avg_range * BotConfig.FLUSH_RANGE_MULT)
-        is_high_vol = curr_candle['volume'] > (avg_vol * BotConfig.FLUSH_VOL_MULT)
+        is_pullback = touched_support(curr_candle) or touched_support(prev_candle)
 
-        return is_break_low and is_high_range and is_high_vol
+        # 3. Trigger (Resumption)
+        # Green Candle, Close > EMA9
+        is_bullish = curr_candle['close'] > curr_candle['open']
+        breakout_ema9 = curr_candle['close'] > ema9
 
-    @staticmethod
-    def detect_compression(recent_candles_df, avg_range):
-        """
-        Phase 2: Micro Compression (Absorption)
-        - 4 to 8 candles
-        - Total High-Low Range of the Zone < 0.8 * Avg Range
-        - No significant new low
-        - Volume does NOT collapse completely (Absorption) -> Check Avg Volume in zone vs History?
+        if is_pullback and is_bullish and breakout_ema9:
+            # Valid Signal
+            stop_loss = min(curr_candle['low'], prev_candle['low'])
+            return True, stop_loss
 
-        Returns: (is_compression, compression_high, compression_low)
-        """
-        if len(recent_candles_df) < BotConfig.COMPRESSION_MIN_CANDLES:
-            return False, 0, 0
-
-        max_h = recent_candles_df['high'].max()
-        min_l = recent_candles_df['low'].min()
-
-        zone_range = max_h - min_l
-
-        # Check tightness
-        if zone_range < (avg_range * BotConfig.COMPRESSION_RANGE_THRESHOLD):
-            # Check Volume Absorption (Optional but requested)
-            # "Volume does NOT collapse completely"
-            # We can check if average volume in compression zone is at least 50% of recent avg volume
-            # But this might be too strict if volume naturally drops in consolidation.
-            # We'll skip strict volume check here to avoid missing valid setups unless critical.
-            return True, max_h, min_l
-
-        return False, 0, 0
-
-    @staticmethod
-    def detect_displacement(curr_candle, compression_high, avg_range):
-        """
-        Phase 3: Displacement Breakout
-        - Bullish Candle (Close > Open)
-        - Close > Compression High
-        - Range > 1.5 * Avg Range
-        - Close near High (Top 25%)
-        - (Optional) Volume Increase
-        """
-        if curr_candle['close'] <= curr_candle['open']: return False
-        if curr_candle['close'] <= compression_high: return False
-
-        # Range Check
-        if curr_candle['range'] <= (avg_range * BotConfig.DISPLACEMENT_RANGE_MULT): return False
-
-        # Close near High Check (Top 25% -> Upper Wick < 25% of Range)
-        upper_wick_len = curr_candle['high'] - curr_candle['close']
-        if upper_wick_len > (curr_candle['range'] * BotConfig.DISPLACEMENT_CLOSE_PCT):
-            return False
-
-        return True
+        return False, 0
 
 # ============================================================================
 # --- SECTION 4: BACKTESTER LOGIC ---
@@ -417,7 +367,7 @@ def run_backtester():
     """
     fyers = get_fyers_instance()
 
-    print(f"\n🚀 STARTING BACKTEST (Strategy: Absorption-Compression-Displacement, TF: {BotConfig.TIMEFRAME_MIN}m)")
+    print(f"\n🚀 STARTING BACKTEST (Strategy: VWAP Trend Pullback, TF: {BotConfig.TIMEFRAME_MIN}m)")
 
     to_date = dt.date.today()
     from_date = to_date - dt.timedelta(days=60)
@@ -449,123 +399,75 @@ def run_backtester():
             df = Strategy.calculate_indicators(df)
 
             trades = []
+            active_trade = None # {entry, sl, tgt}
 
-            # State Machine Variables
-            state = "WAITING" # WAITING, FLUSH_DETECTED, COMPRESSION
-            flush_idx = -1
-            compression_start_idx = -1
-            compression_high = 0
-            compression_low = 0
-
-            # Funnel Stats
-            flushes_count = 0
-            compressions_count = 0
             signals_count = 0
 
             for i in range(21, len(df)):
                 curr = df.iloc[i]
+                prev = df.iloc[i-1]
 
-                # Update State Machine
-                if state == "WAITING":
-                    # Check for Flush
-                    if Strategy.detect_flush(curr, df.iloc[i-20:i]):
-                        state = "FLUSH_DETECTED"
-                        flush_idx = i
-                        flushes_count += 1
-                        # print(f"  [Flush] {curr['timestamp']} Price: {curr['close']}")
+                # Check for Signal if no active trade
+                if active_trade is None:
+                    is_signal, sl = Strategy.detect_trend_pullback(curr, prev)
 
-                elif state == "FLUSH_DETECTED":
-                    # We need 4-8 candles of compression immediately after flush
-                    candles_since_flush = i - flush_idx
+                    if is_signal:
+                        signals_count += 1
+                        entry_price = curr['close']
+                        risk = entry_price - sl
+                        if risk <= 0: continue # Invalid SL
 
-                    if candles_since_flush >= BotConfig.COMPRESSION_MIN_CANDLES:
-                        # Check Compression
-                        # Zone: candles from flush_idx+1 to i (inclusive)
-                        zone_df = df.iloc[flush_idx+1 : i+1]
-                        is_comp, c_h, c_l = Strategy.detect_compression(zone_df, df.iloc[flush_idx]['avg_range'])
+                        target = entry_price + (risk * BotConfig.R_MULTIPLIER)
 
-                        if is_comp:
-                            state = "COMPRESSION"
-                            compression_high = c_h
-                            compression_low = c_l
-                            compression_start_idx = flush_idx + 1
-                            compressions_count += 1
-                            # print(f"  [Compression] {curr['timestamp']} High: {c_h} Low: {c_l}")
+                        active_trade = {
+                            "time": curr['timestamp'],
+                            "type": "BUY",
+                            "entry": entry_price,
+                            "sl": sl,
+                            "tgt": target,
+                            "pnl": 0,
+                            "outcome": "OPEN"
+                        }
+                else:
+                    # Manage Active Trade
+                    t = active_trade
 
-                    if candles_since_flush > BotConfig.COMPRESSION_MAX_CANDLES:
-                        # Too long without compression confirmation or breakout, reset
-                        state = "WAITING"
+                    # Check SL
+                    if curr['low'] <= t['sl']:
+                        t['outcome'] = "LOSS"
+                        t['pnl'] = t['sl'] - t['entry']
+                        trades.append(t)
+                        active_trade = None
+                        continue
 
-                elif state == "COMPRESSION":
-                    candles_in_comp = i - compression_start_idx
+                    # Check Target
+                    if curr['high'] >= t['tgt']:
+                        t['outcome'] = "WIN"
+                        t['pnl'] = t['tgt'] - t['entry']
+                        trades.append(t)
+                        active_trade = None
+                        continue
 
-                    # Check Displacement Breakout
-                    # + Confirm Price > VWAP
-                    vwap = curr.get('vwap', 0)
-                    is_above_vwap = (curr['close'] > vwap) if vwap > 0 else True
+                    # EOD Exit (approx 15:15)
+                    if curr['timestamp'].time() >= BotConfig.EXIT_ALL_NSE:
+                         t['outcome'] = "EOD"
+                         t['pnl'] = curr['close'] - t['entry']
+                         trades.append(t)
+                         active_trade = None
 
-                    displacement_valid = Strategy.detect_displacement(curr, compression_high, df.iloc[flush_idx]['avg_range'])
-
-                    if is_above_vwap and displacement_valid:
-                         # CONFIRMED SIGNAL
-                         entry_price = curr['close']
-                         stop_loss = compression_low # Spot SL
-                         target = entry_price + (entry_price - stop_loss) * 2 # 1:2 RR on Spot
-                         signals_count += 1
-
-                         # Simulate Trade Result (Spot)
-                         outcome = "OPEN"
-                         pnl = 0
-
-                         for j in range(i+1, min(i+100, len(df))):
-                             fut = df.iloc[j]
-                             if fut['low'] <= stop_loss:
-                                 outcome = "LOSS"
-                                 pnl = stop_loss - entry_price
-                                 break
-                             if fut['high'] >= target:
-                                 outcome = "WIN"
-                                 pnl = target - entry_price
-                                 break
-
-                         # Mark to Market Close if still OPEN at end of data
-                         if outcome == "OPEN":
-                             last_close = df.iloc[-1]['close']
-                             pnl = last_close - entry_price
-                             outcome = "OPEN (MTM)"
-
-                         trades.append({
-                             "time": curr['timestamp'],
-                             "type": "BUY",
-                             "entry": entry_price,
-                             "sl": stop_loss,
-                             "tgt": target,
-                             "outcome": outcome,
-                             "pnl": pnl
-                         })
-
-                         state = "WAITING" # Reset
-
-                    # If price breaks below compression low, invalid pattern
-                    elif curr['close'] < compression_low:
-                        state = "WAITING"
-                        # print(f"    [Fail] Compression Broken @ {curr['timestamp']}")
-
-                    # If too many candles pass (e.g. > 15 since flush), reset
-                    elif (i - flush_idx) > 15:
-                        state = "WAITING"
-                        # print(f"    [Fail] Timeout (No Breakout) @ {curr['timestamp']}")
-
-                    # Log rejection reason (Optional debug)
-                    # elif displacement_valid and not is_above_vwap:
-                    #     print(f"    [Reject] VWAP Block @ {curr['timestamp']} Close:{curr['close']} VWAP:{vwap:.2f}")
+            # Close last active
+            if active_trade:
+                t = active_trade
+                t['outcome'] = "OPEN (MTM)"
+                t['pnl'] = df.iloc[-1]['close'] - t['entry']
+                trades.append(t)
 
             # Summary
             wins = len([t for t in trades if t['outcome'] == "WIN"])
             losses = len([t for t in trades if t['outcome'] == "LOSS"])
             mtm_pnls = sum([t['pnl'] for t in trades])
 
-            print(f"  Stats: Flushes:{flushes_count} | Compressions:{compressions_count} | Signals:{signals_count}")
+            print(f"  Signals: {signals_count}")
             print(f"  Results: Wins:{wins} | Losses:{losses} | Net PnL (Spot Points): {mtm_pnls:.2f}")
 
             if trades:
@@ -608,10 +510,6 @@ class LivePaperBot:
         self.processed_candles = set()
         self.ltp_cache = {} # Cache for latest price
 
-        # Strategy State per Symbol
-        # { symbol: { state: 'WAITING'|'FLUSH'|'COMPRESSION', flush_data: {...}, comp_data: {...} } }
-        self.strategy_state = {}
-
         self.history_df = {} # Store recent history for lookbacks
 
         self.paper_balance = BotConfig.PAPER_BALANCE
@@ -625,8 +523,6 @@ class LivePaperBot:
 
         for sym in BotConfig.SYMBOLS:
             time.sleep(0.2)
-            self.strategy_state[sym] = {"state": "WAITING", "flush_data": None, "comp_data": None}
-
             try:
                 resp = self.fyers.history({
                     "symbol": sym, "resolution": str(BotConfig.TIMEFRAME_MIN),
@@ -741,63 +637,14 @@ class LivePaperBot:
         df = Strategy.calculate_indicators(df)
         self.history_df[sym] = df
 
-        # Analyze Pattern with Updated DF
-        self.update_strategy_state(sym, df)
-
-    def update_strategy_state(self, sym, df):
-        if len(df) < 50: return
-
+        # Check Signal
         curr = df.iloc[-1]
-        state_obj = self.strategy_state[sym]
-        current_state = state_obj["state"]
+        prev = df.iloc[-2]
+        is_signal, sl = Strategy.detect_trend_pullback(curr, prev)
 
-        # --- STATE: WAITING ---
-        if current_state == "WAITING":
-            if Strategy.detect_flush(curr, df.iloc[-21:-1]):
-                state_obj["state"] = "FLUSH_DETECTED"
-                state_obj["flush_data"] = {"idx": len(df)-1, "avg_range": curr["avg_range"]}
-                print(f"⚠️ FLUSH Detected on {sym} @ {curr['close']}")
-
-        # --- STATE: FLUSH_DETECTED ---
-        elif current_state == "FLUSH_DETECTED":
-            flush_idx = state_obj["flush_data"]["idx"]
-            curr_idx = len(df)-1
-            candles_since = curr_idx - flush_idx
-
-            if candles_since >= BotConfig.COMPRESSION_MIN_CANDLES:
-                zone_df = df.iloc[flush_idx+1 : curr_idx+1]
-                avg_range = state_obj["flush_data"]["avg_range"]
-
-                is_comp, c_h, c_l = Strategy.detect_compression(zone_df, avg_range)
-                if is_comp:
-                    state_obj["state"] = "COMPRESSION"
-                    state_obj["comp_data"] = {"high": c_h, "low": c_l, "start_idx": flush_idx+1}
-                    print(f"⚠️ COMPRESSION Detected on {sym} High:{c_h} Low:{c_l}")
-
-            if candles_since > BotConfig.COMPRESSION_MAX_CANDLES:
-                state_obj["state"] = "WAITING"
-
-        # --- STATE: COMPRESSION ---
-        elif current_state == "COMPRESSION":
-            flush_idx = state_obj["flush_data"]["idx"]
-            comp_high = state_obj["comp_data"]["high"]
-            comp_low = state_obj["comp_data"]["low"]
-            avg_range = state_obj["flush_data"]["avg_range"]
-
-            # Check Breakout & VWAP
-            vwap = curr.get('vwap', 0)
-            is_above_vwap = (curr['close'] > vwap) if vwap > 0 else True
-
-            if is_above_vwap and Strategy.detect_displacement(curr, comp_high, avg_range):
-                print(f"🚀 DISPLACEMENT (BUY SIGNAL) on {sym} @ {curr['close']}")
-                self.execute_trade_signal(sym, curr['close'], comp_low)
-                state_obj["state"] = "WAITING" # Reset
-
-            # Check Fail
-            elif curr['close'] < comp_low:
-                state_obj["state"] = "WAITING"
-            elif (len(df)-1 - flush_idx) > 15:
-                state_obj["state"] = "WAITING"
+        if is_signal:
+             print(f"🚀 SIGNAL (Buy Pullback) on {sym} @ {curr['close']}")
+             self.execute_trade_signal(sym, curr['close'], sl)
 
     def execute_trade_signal(self, sym, spot_price, stop_loss_level):
         if sym in self.active_positions: return
@@ -830,7 +677,7 @@ class LivePaperBot:
             curr_spot = self.ltp_cache.get(sym)
             if not curr_spot: continue
 
-            # 1. Check Spot SL (Compression Low)
+            # 1. Check Spot SL
             if curr_spot <= pos.sl_spot:
                 print(f"❌ STOP LOSS HIT (Spot Level): {sym} @ {curr_spot}")
                 del self.active_positions[sym]
@@ -844,18 +691,12 @@ class LivePaperBot:
             pnl = (curr_opt_price - pos.entry) * pos.qty
             pos.pnl = pnl
 
-            # 3. Check Option Premium SL (30%)
+            # 3. Check Option Premium SL (20%)
             sl_price = pos.entry * (1 - BotConfig.OPTION_SL_PCT)
             if curr_opt_price <= sl_price:
-                 print(f"❌ STOP LOSS HIT (Option Premium -30%): {sym} Spot:{curr_spot} Opt:{curr_opt_price:.2f}")
+                 print(f"❌ STOP LOSS HIT (Option Premium -20%): {sym} Spot:{curr_spot} Opt:{curr_opt_price:.2f}")
                  del self.active_positions[sym]
                  continue
-
-            # 4. Trailing Profit (Simple)
-            # If profit > 10%, trail SL to Cost.
-            # (Simplified logic for paper trading)
-            if curr_opt_price > pos.highest_price:
-                pos.highest_price = curr_opt_price
 
             # Log periodic status
             # print(f"  [Pos] {sym} Spot:{curr_spot} Opt:{curr_opt_price:.2f} PnL:{pnl:.2f}")
@@ -873,24 +714,20 @@ def main():
     parser.add_argument("--redirect_url", help="Fyers Redirect URL")
 
     # Strategy Customization
-    parser.add_argument("--flush_mult", type=float, default=BotConfig.FLUSH_RANGE_MULT, help="Flush Range Multiplier (Default: 1.5)")
-    parser.add_argument("--vol_mult", type=float, default=BotConfig.FLUSH_VOL_MULT, help="Flush Volume Multiplier (Default: 1.5)")
-    parser.add_argument("--comp_range", type=float, default=BotConfig.COMPRESSION_RANGE_THRESHOLD, help="Compression Range Threshold (Default: 0.8)")
-    parser.add_argument("--disp_mult", type=float, default=BotConfig.DISPLACEMENT_RANGE_MULT, help="Displacement Range Multiplier (Default: 1.5)")
+    parser.add_argument("--fast_ema", type=int, default=BotConfig.EMA_FAST, help="Fast EMA Period")
+    parser.add_argument("--slow_ema", type=int, default=BotConfig.EMA_SLOW, help="Slow EMA Period")
 
     parser.add_argument("--retrain", action="store_true", help="Ignored")
 
     args = parser.parse_args()
 
     # Update Config with CLI args
-    BotConfig.FLUSH_RANGE_MULT = args.flush_mult
-    BotConfig.FLUSH_VOL_MULT = args.vol_mult
-    BotConfig.COMPRESSION_RANGE_THRESHOLD = args.comp_range
-    BotConfig.DISPLACEMENT_RANGE_MULT = args.disp_mult
+    BotConfig.EMA_FAST = args.fast_ema
+    BotConfig.EMA_SLOW = args.slow_ema
 
     mode = args.mode
     if not mode:
-        print("\n--- All-In-One Absorption Bot ---")
+        print("\n--- All-In-One VWAP Trend Bot ---")
         print("1. Setup Credentials")
         print("2. Run Backtester")
         print("3. Run Live Paper Trading Bot")
