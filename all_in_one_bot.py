@@ -120,6 +120,12 @@ class BotConfig:
     ADX_PERIOD = 14
     ADX_THRESHOLD = 20
 
+    # Gamma Blast (Short-Term ROC + Option Chain)
+    ROC_PERIOD = 2  # Short term momentum
+    ROC_THRESHOLD = 0.15  # % Move required
+    OI_CHANGE_THRESHOLD = 500000  # Significant OI Chg
+    GAMMA_STOP_LOSS = 15  # Points
+
     # Risk Management
     R_MULTIPLIER = 2.0
     ATR_PERIOD = 14
@@ -463,6 +469,10 @@ class Strategy:
         if 'timestamp' in df.columns:
             df['dte_days'] = df['timestamp'].apply(lambda x: get_dte(x))
 
+        # --- Gamma Blast Indicators (Short-term ROC) ---
+        df['roc_price'] = df['close'].pct_change(periods=BotConfig.ROC_PERIOD) * 100
+        df['vol_avg'] = df['volume'].rolling(window=20).mean()
+
         return df
 
     @staticmethod
@@ -480,6 +490,9 @@ class Strategy:
         adx = curr_candle.get('adx', 0)
         hv = curr_candle.get('hv', 0)
         dte = curr_candle.get('dte_days', 4)
+        roc = curr_candle.get('roc_price', 0)
+        vol_curr = curr_candle.get('volume', 0)
+        vol_avg = curr_candle.get('vol_avg', 1)
 
         # Greeks Calculation (ATM)
         spot = curr_candle['close']
@@ -501,28 +514,46 @@ class Strategy:
         if dte < 1: # Expiry Day
             if adx < 30: valid_expiry = False
 
+        # --- GAMMA BLAST LOGIC (Proxy) ---
+        # Live: OptionChainManager.check_gamma_blast(...)
+        # Backtest Proxy: Price ROC > Threshold AND Volume > 2x Avg
+        gamma_long = (roc > BotConfig.ROC_THRESHOLD) and (vol_curr > 1.5 * vol_avg)
+        gamma_short = (roc < -BotConfig.ROC_THRESHOLD) and (vol_curr > 1.5 * vol_avg)
+
         # --- LONG SIGNAL ---
-        is_long = (st_trend == 1) and (curr_candle['close'] > vwap) and \
-                  (rsi > BotConfig.RSI_LONG_MIN) and (adx > BotConfig.ADX_THRESHOLD) and \
-                  valid_vol and valid_expiry
+        # Strategy: SuperTrend + VWAP + (Filters) OR Gamma Blast
+        # We allow Gamma Blast to override standard filters if momentum is huge
+
+        is_long_std = (st_trend == 1) and (curr_candle['close'] > vwap) and \
+                      (rsi > BotConfig.RSI_LONG_MIN) and (adx > BotConfig.ADX_THRESHOLD) and \
+                      valid_vol and valid_expiry
+
+        is_long = is_long_std or gamma_long
 
         trigger_long = (prev_st_trend == -1 and st_trend == 1) or \
-                       (st_trend == 1 and prev_candle['close'] <= prev_candle['vwap'] and curr_candle['close'] > vwap)
+                       (st_trend == 1 and prev_candle['close'] <= prev_candle['vwap'] and curr_candle['close'] > vwap) or \
+                       gamma_long # Immediate trigger
 
         if is_long and trigger_long:
-            sl = curr_candle['close'] - (atr * BotConfig.ATR_SL_MULT)
+            # For Gamma Blast, use tighter SL
+            sl_mult = BotConfig.ATR_SL_MULT if not gamma_long else 0.8
+            sl = curr_candle['close'] - (atr * sl_mult)
             return "BUY", {"sl": sl, "delta": delta_call, "theta": theta_call}
 
         # --- SHORT SIGNAL ---
-        is_short = (st_trend == -1) and (curr_candle['close'] < vwap) and \
-                   (rsi < BotConfig.RSI_SHORT_MAX) and (adx > BotConfig.ADX_THRESHOLD) and \
-                   valid_vol and valid_expiry
+        is_short_std = (st_trend == -1) and (curr_candle['close'] < vwap) and \
+                       (rsi < BotConfig.RSI_SHORT_MAX) and (adx > BotConfig.ADX_THRESHOLD) and \
+                       valid_vol and valid_expiry
+
+        is_short = is_short_std or gamma_short
 
         trigger_short = (prev_st_trend == 1 and st_trend == -1) or \
-                        (st_trend == -1 and prev_candle['close'] >= prev_candle['vwap'] and curr_candle['close'] < vwap)
+                        (st_trend == -1 and prev_candle['close'] >= prev_candle['vwap'] and curr_candle['close'] < vwap) or \
+                        gamma_short
 
         if is_short and trigger_short:
-            sl = curr_candle['close'] + (atr * BotConfig.ATR_SL_MULT)
+            sl_mult = BotConfig.ATR_SL_MULT if not gamma_short else 0.8
+            sl = curr_candle['close'] + (atr * sl_mult)
             return "SELL", {"sl": sl, "delta": abs(delta_put), "theta": theta_put}
 
         return None, 0
@@ -531,6 +562,74 @@ class Strategy:
 # ============================================================================
 # --- SECTION 4: BACKTESTER LOGIC ---
 # ============================================================================
+
+class OptionChainManager:
+    """Handles Expiry Selection and Option Chain Analysis for Gamma Blast."""
+
+    @staticmethod
+    def get_fallback_symbol(symbol):
+        """Symbol-variant fallback (e.g. NSE:NIFTY50-INDEX -> NIFTY)."""
+        base = BotConfig.INDEX_MAP.get(symbol)
+        if base: return base
+        # Fallback parsing
+        if "NIFTY" in symbol: return "NIFTY"
+        if "BANK" in symbol: return "BANKNIFTY"
+        return symbol
+
+    @staticmethod
+    def fetch_expiry(fyers, symbol):
+        """
+        Fetches option chain to find nearest expiry.
+        Real-time expiry selection: Skip same-day if time > 15:25 IST.
+        """
+        try:
+            # Note: This requires the 'fyers' instance to be passed or accessible.
+            # Using a simplified mockable logic if fyers not available
+            if not HAS_FYERS: return dt.date.today()
+
+            sym_base = OptionChainManager.get_fallback_symbol(symbol)
+            # In a real scenario, we'd use fyers.option_chain(symbol=...)
+            # or calculate standard expiries (Thu/Wed).
+            # For this script's scope, we simulate the logic:
+
+            today = dt.date.today()
+            now = dt.datetime.now().time()
+
+            # Simple Logic: If today is Thursday (3) or Wednesday (2 for BANKNIFTY/Monthly?)
+            # Let's assume Thursday expiry for NIFTY
+            days_ahead = 3 - today.weekday()
+            if days_ahead < 0: days_ahead += 7
+
+            expiry = today + dt.timedelta(days=days_ahead)
+
+            # Skip same-day logic
+            if expiry == today and now > dt.time(15, 25):
+                expiry += dt.timedelta(days=7)
+
+            return expiry
+        except Exception as e:
+            print(f"Expiry Fetch Error: {e}")
+            return dt.date.today()
+
+    @staticmethod
+    def check_gamma_blast(fyers, symbol, spot_price, expiry):
+        """
+        Checks for Gamma Blast conditions:
+        1. Delta OI Window (Change in OI for ATM strike)
+        2. Dynamic Threshold
+        """
+        # In Backtest/Mock, we can't fetch live OI change.
+        # We rely on the 'Proxy' implemented in Strategy.detect_signal (ROC + Volume).
+        # This function is a placeholder for the LIVE implementation.
+        if not HAS_FYERS: return 0  # 0 = No Signal
+
+        # Real Implementation would:
+        # 1. Get Option Chain for 'expiry'
+        # 2. Find ATM Strike
+        # 3. Check OI Change (IOI or similar field if available in depth)
+        # 4. Return 1 (Call Blast) or -1 (Put Blast) if Threshold met
+
+        return 0
 
 def run_backtester():
     fyers = get_fyers_instance()
