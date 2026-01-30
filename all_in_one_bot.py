@@ -113,12 +113,15 @@ class BotConfig:
 
     # RSI
     RSI_PERIOD = 14
-    RSI_LONG_MIN = 55
-    RSI_SHORT_MAX = 45
+    RSI_LONG_MIN = 60
+    RSI_SHORT_MAX = 40
 
     # ADX (Advanced Model)
     ADX_PERIOD = 14
-    ADX_THRESHOLD = 20
+    ADX_THRESHOLD = 25
+
+    # Trend Filter
+    EMA_TREND_PERIOD = 200
 
     # Risk Management
     R_MULTIPLIER = 2.0
@@ -398,6 +401,9 @@ class Strategy:
         df['dx'] = 100 * abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])
         df['adx'] = df['dx'].ewm(alpha=alpha, adjust=False).mean()
 
+        # --- EMA Trend Filter ---
+        df['ema_trend'] = df['close'].ewm(span=BotConfig.EMA_TREND_PERIOD, adjust=False).mean()
+
         return df
 
     @staticmethod
@@ -413,6 +419,7 @@ class Strategy:
         rsi = curr_candle.get('rsi', 50)
         atr = curr_candle.get('atr', 0)
         adx = curr_candle.get('adx', 0)
+        ema_trend = curr_candle.get('ema_trend', 0)
 
         prev_st_trend = prev_candle.get('st_trend', 0)
 
@@ -424,12 +431,15 @@ class Strategy:
         # For strict backtest, let's use:
         # - Current Close > SuperTrend (Trend=1)
         # - Current Close > VWAP
-        # - RSI > 55
-        # - ADX > Threshold (Trend Strength)
+        # - RSI > 60
+        # - ADX > 25 (Trend Strength)
+        # - Close > EMA 200 (Trend Filter)
         # - TRIGGER: Price wasn't already in this state? Or just signal valid state.
         # To avoid spamming, we trigger when Trend turns 1 OR (Trend is 1 and Price crosses above VWAP)
 
-        is_long = (st_trend == 1) and (curr_candle['close'] > vwap) and (rsi > BotConfig.RSI_LONG_MIN) and (adx > BotConfig.ADX_THRESHOLD)
+        is_long = (st_trend == 1) and (curr_candle['close'] > vwap) and \
+                  (rsi > BotConfig.RSI_LONG_MIN) and (adx > BotConfig.ADX_THRESHOLD) and \
+                  (curr_candle['close'] > ema_trend)
 
         # Trigger Condition:
         # Either ST turned Green this candle
@@ -442,7 +452,9 @@ class Strategy:
             return "BUY", sl
 
         # --- SHORT SIGNAL ---
-        is_short = (st_trend == -1) and (curr_candle['close'] < vwap) and (rsi < BotConfig.RSI_SHORT_MAX) and (adx > BotConfig.ADX_THRESHOLD)
+        is_short = (st_trend == -1) and (curr_candle['close'] < vwap) and \
+                   (rsi < BotConfig.RSI_SHORT_MAX) and (adx > BotConfig.ADX_THRESHOLD) and \
+                   (curr_candle['close'] < ema_trend)
 
         trigger_short = (prev_st_trend == 1 and st_trend == -1) or \
                         (st_trend == -1 and prev_candle['close'] >= prev_candle['vwap'] and curr_candle['close'] < vwap)
