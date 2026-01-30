@@ -115,7 +115,7 @@ class BotConfig:
     TIMEFRAME_MIN = 3
 
     # Phase 1: Flush
-    FLUSH_LOOKBACK = 20
+    FLUSH_LOOKBACK = 15           # Relaxed from 20 to catch local structures
     FLUSH_RANGE_MULT = 1.5
     FLUSH_VOL_MULT = 1.5
 
@@ -504,7 +504,9 @@ def run_backtester():
                     vwap = curr.get('vwap', 0)
                     is_above_vwap = (curr['close'] > vwap) if vwap > 0 else True
 
-                    if is_above_vwap and Strategy.detect_displacement(curr, compression_high, df.iloc[flush_idx]['avg_range']):
+                    displacement_valid = Strategy.detect_displacement(curr, compression_high, df.iloc[flush_idx]['avg_range'])
+
+                    if is_above_vwap and displacement_valid:
                          # CONFIRMED SIGNAL
                          entry_price = curr['close']
                          stop_loss = compression_low # Spot SL
@@ -547,10 +549,16 @@ def run_backtester():
                     # If price breaks below compression low, invalid pattern
                     elif curr['close'] < compression_low:
                         state = "WAITING"
+                        # print(f"    [Fail] Compression Broken @ {curr['timestamp']}")
 
                     # If too many candles pass (e.g. > 15 since flush), reset
                     elif (i - flush_idx) > 15:
                         state = "WAITING"
+                        # print(f"    [Fail] Timeout (No Breakout) @ {curr['timestamp']}")
+
+                    # Log rejection reason (Optional debug)
+                    # elif displacement_valid and not is_above_vwap:
+                    #     print(f"    [Reject] VWAP Block @ {curr['timestamp']} Close:{curr['close']} VWAP:{vwap:.2f}")
 
             # Summary
             wins = len([t for t in trades if t['outcome'] == "WIN"])
