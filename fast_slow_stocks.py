@@ -1288,24 +1288,24 @@ def evaluate_on_new_candle(st: SymbolState):
 
         # MODIFIED ENTRY RULE:
         # 1. EMA_fast > EMA_slow (Uptrend)
-        # 2. Candle Low <= EMA_slow (Touched or crossed below Slow EMA)
+        # 2. Candle Low <= EMA_fast (Touched or crossed below Fast EMA)
         # 3. Candle Close > Both EMAs (Strong close)
         # 4. Higher High: Current High > Previous High
-        touched_slow_ema = curr_low <= ema_slow
+        touched_fast_ema = curr_low <= ema_fast
         closed_above_both = curr_close > (highest_ema + EMA_BUFFER)
         green_ok = (not REQUIRE_GREEN_SIGNAL) or (curr_close > curr_open)
         ok_signal = bool(curr.get("ok_signal", True))
         higher_high = curr_high > prev_high
 
         # Debug Log for Higher High (only if other conditions met, to reduce spam)
-        if ema_sequence_ok and rising_slow_ema and touched_slow_ema and closed_above_both:
+        if ema_sequence_ok and rising_slow_ema and touched_fast_ema and closed_above_both:
             pass  # Placeholder if detailed logging needed
             # _real_print(f"[signal-check] {st.symbol} HigherHigh={higher_high} (CurrHigh:{curr_high} > PrevHigh:{prev_high})")
 
         if (
                 ema_sequence_ok
                 and rising_slow_ema
-                and touched_slow_ema
+                and touched_fast_ema
                 and closed_above_both
                 and green_ok
                 and ok_signal
@@ -1344,7 +1344,7 @@ def evaluate_on_new_candle(st: SymbolState):
             st.signal_notified = False
             st.qty = decide_qty(st.symbol, curr_high)
             _real_print(
-                f"****** [{st.symbol}] ENTRY SIGNAL (BODY crossed from below both EMAs to above both EMAs, EMA_fast>EMA_slow) ******")
+                f"****** [{st.symbol}] ENTRY SIGNAL (Low touched FastEMA, Closed above both EMAs, EMA_fast>EMA_slow) ******")
 
             target_info = (
                 f"potential_target={st.potential_target_price:.2f}"
