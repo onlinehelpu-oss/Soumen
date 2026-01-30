@@ -1,25 +1,28 @@
 """
-ALL-IN-ONE SUPER-TREND + VWAP TRADING BOT
-=========================================
+ALL-IN-ONE VOLATILITY BREAKOUT (VBO) TRADING BOT
+================================================
 
 **Disclaimer:**
 This bot is intended for educational and paper trading purposes.
 Live trading involves significant financial risk. Use at your own discretion.
 
-**Strategy (SuperTrend + VWAP Confluence):**
+**Strategy (Volatility Breakout - VBO):**
+- **Concept:** Capture explosive moves when price breaks Bollinger Bands with high volume and momentum.
 - **Timeframe:** 5 Minutes.
 - **Long Signal (Buy CE):**
-  - Price closes ABOVE SuperTrend(10, 3).
-  - Price is ABOVE VWAP.
-  - RSI > 55 (Momentum).
+  - Price closes ABOVE Upper Bollinger Band.
+  - RSI > 60 (Strong Bullish Momentum).
+  - Volume > 1.2x Average Volume (20).
+  - ADX > 20 (Trend Presence).
 - **Short Signal (Buy PE):**
-  - Price closes BELOW SuperTrend(10, 3).
-  - Price is BELOW VWAP.
-  - RSI < 45 (Momentum).
+  - Price closes BELOW Lower Bollinger Band.
+  - RSI < 40 (Strong Bearish Momentum).
+  - Volume > 1.2x Average Volume (20).
+  - ADX > 20.
 - **Exits:**
-  - SuperTrend Reversal.
-  - Stop Loss (ATR based).
-  - Target (1:2 Risk:Reward).
+  - Stop Loss: 1.5x ATR from Entry.
+  - Target: 2.0x Risk.
+  - Trailing: Standard ATR Trail.
 
 **Assets:** NSE Indices (NIFTY, BANKNIFTY) -> Options.
 """
@@ -107,24 +110,30 @@ class BotConfig:
     # --- Strategy Settings ---
     TIMEFRAME_MIN = 5
 
-    # SuperTrend
-    ST_PERIOD = 10
-    ST_MULTIPLIER = 3
+    # Bollinger Bands
+    BB_PERIOD = 20
+    BB_STD_DEV = 2
 
-    # RSI
+    # Filters
     RSI_PERIOD = 14
-    RSI_LONG_MIN = 55
-    RSI_SHORT_MAX = 45
+    RSI_LONG_MIN = 60
+    RSI_SHORT_MAX = 40
+
+    ADX_PERIOD = 14
+    ADX_THRESHOLD = 20
+
+    VOL_MA_PERIOD = 20
+    VOL_MULT = 1.2
 
     # Risk Management
     R_MULTIPLIER = 2.0
     ATR_PERIOD = 14
     ATR_SL_MULT = 1.5
-    OPTION_SL_PCT = 0.20  # 20% Stop Loss on Option Premium
+    OPTION_SL_PCT = 0.20
 
     # --- Position Sizing ---
     PAPER_BALANCE = 100000
-    ALLOCATION_AMOUNT = 20000  # Capital per trade
+    ALLOCATION_AMOUNT = 20000
 
     # --- Session Timing ---
     ENTRY_CUTOFF_NSE = dt.time(15, 0)
@@ -280,8 +289,14 @@ def get_fyers_instance():
 class Strategy:
     @staticmethod
     def calculate_indicators(df: pd.DataFrame):
-        """Calculates SuperTrend, VWAP, RSI, ATR."""
+        """Calculates Bollinger Bands, RSI, ATR, ADX, Volume MA."""
         if df.empty: return df
+
+        # --- Bollinger Bands ---
+        df['bb_mid'] = df['close'].rolling(window=BotConfig.BB_PERIOD).mean()
+        df['bb_std'] = df['close'].rolling(window=BotConfig.BB_PERIOD).std()
+        df['bb_upper'] = df['bb_mid'] + (BotConfig.BB_STD_DEV * df['bb_std'])
+        df['bb_lower'] = df['bb_mid'] - (BotConfig.BB_STD_DEV * df['bb_std'])
 
         # --- ATR ---
         df['tr0'] = abs(df['high'] - df['low'])
@@ -290,67 +305,6 @@ class Strategy:
         df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
         df['atr'] = df['tr'].rolling(window=BotConfig.ATR_PERIOD).mean()
 
-        # --- SuperTrend ---
-        # Basic calculation
-        hl2 = (df['high'] + df['low']) / 2
-        df['st_upper'] = hl2 + (BotConfig.ST_MULTIPLIER * df['atr'])
-        df['st_lower'] = hl2 - (BotConfig.ST_MULTIPLIER * df['atr'])
-
-        # Initialize columns
-        df['supertrend'] = np.nan
-        df['st_dir'] = 1 # 1=Green/Up, -1=Red/Down
-
-        # Iterative calculation for ST (Vectorization is hard due to recursive logic)
-        # Using a simple loop for clarity and correctness
-        st = df['supertrend'].copy()
-        st_dir = df['st_dir'].copy()
-
-        # Need prev values
-        upper_band = df['st_upper'].values
-        lower_band = df['st_lower'].values
-        close = df['close'].values
-
-        final_upper = np.zeros(len(df))
-        final_lower = np.zeros(len(df))
-        trend = np.zeros(len(df)) # 1 Up, -1 Down
-
-        for i in range(1, len(df)):
-            if np.isnan(upper_band[i]): continue
-
-            # Upper Band Logic
-            if final_upper[i-1] == 0: final_upper[i] = upper_band[i]
-            else:
-                if (upper_band[i] < final_upper[i-1]) or (close[i-1] > final_upper[i-1]):
-                    final_upper[i] = upper_band[i]
-                else:
-                    final_upper[i] = final_upper[i-1]
-
-            # Lower Band Logic
-            if final_lower[i-1] == 0: final_lower[i] = lower_band[i]
-            else:
-                if (lower_band[i] > final_lower[i-1]) or (close[i-1] < final_lower[i-1]):
-                    final_lower[i] = lower_band[i]
-                else:
-                    final_lower[i] = final_lower[i-1]
-
-            # Trend Logic
-            prev_trend = trend[i-1] if trend[i-1] != 0 else 1
-
-            if prev_trend == 1:
-                if close[i] < final_lower[i]:
-                    trend[i] = -1
-                else:
-                    trend[i] = 1
-            else:
-                if close[i] > final_upper[i]:
-                    trend[i] = 1
-                else:
-                    trend[i] = -1
-
-        df['st_trend'] = trend
-        # SuperTrend Value is Lower Band when Up, Upper Band when Down
-        df['supertrend'] = np.where(df['st_trend']==1, final_lower, final_upper)
-
         # --- RSI ---
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=BotConfig.RSI_PERIOD).mean()
@@ -358,14 +312,20 @@ class Strategy:
         rs = gain / loss
         df['rsi'] = 100 - (100 / (1 + rs))
 
-        # --- VWAP ---
-        if 'timestamp' in df.columns:
-            df['date'] = df['timestamp'].dt.date
-            def calc_vwap(group):
-                cum_vol = group['volume'].cumsum()
-                cum_pv = (group['close'] * group['volume']).cumsum()
-                return cum_pv / cum_vol
-            df['vwap'] = df.groupby('date')[['close', 'volume']].apply(lambda x: calc_vwap(x)).reset_index(level=0, drop=True)
+        # --- ADX ---
+        up = df['high'].diff()
+        down = -df['low'].diff()
+        plus_dm = np.where((up > down) & (up > 0), up, 0.0)
+        minus_dm = np.where((down > up) & (down > 0), down, 0.0)
+
+        # Using rolling mean for simplicity/speed (Standard ADX uses smoothed MA)
+        df['plus_di'] = 100 * pd.Series(plus_dm).rolling(window=BotConfig.ADX_PERIOD).mean() / df['atr']
+        df['minus_di'] = 100 * pd.Series(minus_dm).rolling(window=BotConfig.ADX_PERIOD).mean() / df['atr']
+        dx = 100 * abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])
+        df['adx'] = dx.rolling(window=BotConfig.ADX_PERIOD).mean()
+
+        # --- Volume MA ---
+        df['vol_ma'] = df['volume'].rolling(window=BotConfig.VOL_MA_PERIOD).mean()
 
         return df
 
@@ -373,49 +333,40 @@ class Strategy:
     def detect_signal(curr_candle, prev_candle):
         """
         Returns: (SignalType, StopLoss)
-        SignalType: "BUY", "SELL", or None
         """
         if curr_candle.empty or prev_candle.empty: return None, 0
 
-        st_trend = curr_candle.get('st_trend', 0)
-        vwap = curr_candle.get('vwap', 0)
-        rsi = curr_candle.get('rsi', 50)
+        # Indicators
+        close = curr_candle['close']
+        bb_upper = curr_candle['bb_upper']
+        bb_lower = curr_candle['bb_lower']
+        rsi = curr_candle['rsi']
+        adx = curr_candle.get('adx', 0)
+        vol = curr_candle['volume']
+        vol_ma = curr_candle.get('vol_ma', 0)
         atr = curr_candle.get('atr', 0)
 
-        prev_st_trend = prev_candle.get('st_trend', 0)
+        # Common Checks
+        is_trend = adx > BotConfig.ADX_THRESHOLD
+        is_high_vol = vol > (vol_ma * BotConfig.VOL_MULT)
+
+        if not is_trend: return None, 0 # Filter Chop
 
         # --- LONG SIGNAL ---
-        # 1. SuperTrend Green (Transition or Continuation)
-        # We prefer transition for fresh entry, or continuation if price > VWAP and RSI healthy
-
-        # Logic: Fresh Crossover or recent crossover
-        # For strict backtest, let's use:
-        # - Current Close > SuperTrend (Trend=1)
-        # - Current Close > VWAP
-        # - RSI > 55
-        # - TRIGGER: Price wasn't already in this state? Or just signal valid state.
-        # To avoid spamming, we trigger when Trend turns 1 OR (Trend is 1 and Price crosses above VWAP)
-
-        is_long = (st_trend == 1) and (curr_candle['close'] > vwap) and (rsi > BotConfig.RSI_LONG_MIN)
-
-        # Trigger Condition:
-        # Either ST turned Green this candle
-        # OR ST was Green but we just crossed VWAP
-        trigger_long = (prev_st_trend == -1 and st_trend == 1) or \
-                       (st_trend == 1 and prev_candle['close'] <= prev_candle['vwap'] and curr_candle['close'] > vwap)
-
-        if is_long and trigger_long:
-            sl = curr_candle['close'] - (atr * BotConfig.ATR_SL_MULT)
+        # Close > Upper Band
+        # RSI > 60
+        if (close > bb_upper) and (rsi > BotConfig.RSI_LONG_MIN) and is_high_vol:
+            # Check if this is a fresh breakout?
+            # (Prev candle was below or at least this candle pushed out)
+            # Simple check: Just Breakout + Volume.
+            sl = close - (atr * BotConfig.ATR_SL_MULT)
             return "BUY", sl
 
         # --- SHORT SIGNAL ---
-        is_short = (st_trend == -1) and (curr_candle['close'] < vwap) and (rsi < BotConfig.RSI_SHORT_MAX)
-
-        trigger_short = (prev_st_trend == 1 and st_trend == -1) or \
-                        (st_trend == -1 and prev_candle['close'] >= prev_candle['vwap'] and curr_candle['close'] < vwap)
-
-        if is_short and trigger_short:
-            sl = curr_candle['close'] + (atr * BotConfig.ATR_SL_MULT)
+        # Close < Lower Band
+        # RSI < 40
+        if (close < bb_lower) and (rsi < BotConfig.RSI_SHORT_MAX) and is_high_vol:
+            sl = close + (atr * BotConfig.ATR_SL_MULT)
             return "SELL", sl
 
         return None, 0
@@ -426,7 +377,7 @@ class Strategy:
 
 def run_backtester():
     fyers = get_fyers_instance()
-    print(f"\n🚀 STARTING BACKTEST (Strategy: SuperTrend+VWAP, TF: {BotConfig.TIMEFRAME_MIN}m)")
+    print(f"\n🚀 STARTING BACKTEST (Strategy: Volatility Breakout, TF: {BotConfig.TIMEFRAME_MIN}m)")
 
     to_date = dt.date.today()
     from_date = to_date - dt.timedelta(days=60)
@@ -502,12 +453,7 @@ def run_backtester():
                             t['pnl'] = t['tgt'] - t['entry']
                             trades.append(t)
                             active_trade = None
-                        # Trend Reversal Exit (SuperTrend turns Red)
-                        elif curr['st_trend'] == -1:
-                            t['outcome'] = "REV"
-                            t['pnl'] = curr['close'] - t['entry']
-                            trades.append(t)
-                            active_trade = None
+                        # Exit on RSI weakness? (Optional)
 
                     elif t['type'] == "SELL":
                         # SL Hit
@@ -520,12 +466,6 @@ def run_backtester():
                         elif curr['low'] <= t['tgt']:
                             t['outcome'] = "WIN"
                             t['pnl'] = t['entry'] - t['tgt']
-                            trades.append(t)
-                            active_trade = None
-                        # Trend Reversal Exit (SuperTrend turns Green)
-                        elif curr['st_trend'] == 1:
-                            t['outcome'] = "REV"
-                            t['pnl'] = t['entry'] - curr['close']
                             trades.append(t)
                             active_trade = None
 
@@ -577,7 +517,7 @@ class PaperPosition:
         self.sl_spot = sl_spot # Spot Level SL
         self.qty = qty
         self.entry_spot = entry_spot
-        self.side = side # "BUY" (Long CE) or "SELL" (Long PE)
+        self.side = side
         self.status = "OPEN"
         self.pnl = 0.0
         self.entry_time = dt.datetime.now()
@@ -661,6 +601,7 @@ class LivePaperBot:
             c["h"] = max(c["h"], ltp)
             c["l"] = min(c["l"], ltp)
             c["c"] = ltp
+            if "v" in msg: c["v"] += msg.get("v") # Approx
 
         tick_dt = dt.datetime.fromtimestamp(ts)
         candle_end_time = c_start + dt.timedelta(minutes=BotConfig.TIMEFRAME_MIN)
@@ -672,7 +613,8 @@ class LivePaperBot:
     def analyze_completed_candle(self, sym, candle_dict, start_time):
         new_row = {
             "timestamp": pd.Timestamp(start_time).tz_localize(None).tz_localize('UTC').tz_convert('Asia/Kolkata'),
-            "open": candle_dict["o"], "high": candle_dict["h"], "low": candle_dict["l"], "close": candle_dict["c"], "volume": 0
+            "open": candle_dict["o"], "high": candle_dict["h"], "low": candle_dict["l"], "close": candle_dict["c"],
+            "volume": candle_dict.get("v", 1000)
         }
         df = self.history_df.get(sym)
         if df is None: return
@@ -694,11 +636,7 @@ class LivePaperBot:
         strike_step = 50 if "NIFTY50" in sym else 100
         if "BANK" in sym: strike_step = 100
 
-        # CE for BUY, PE for SELL
         opt_type = "CE" if sig_type == "BUY" else "PE"
-
-        # For PE, we want strike < Spot (OTM) or > Spot (ITM).
-        # Standard: ATM.
         atm_strike = round(spot_price / strike_step) * strike_step
 
         qty = BotConfig.LOT_SIZES.get(BotConfig.INDEX_MAP.get(sym, 'NIFTY'), 50)
@@ -712,23 +650,17 @@ class LivePaperBot:
             curr_spot = self.ltp_cache.get(sym)
             if not curr_spot: continue
 
-            # Check Exit
             exit_triggered = False
             pnl = 0
-
-            # Spot Change
             spot_change = curr_spot - pos.entry_spot
             if pos.side == "SELL": spot_change = -spot_change
 
-            # Simulated Option PnL
             pos.pnl = (spot_change * 0.5) * pos.qty
 
-            # 1. Stop Loss
             if pos.side == "BUY" and curr_spot <= pos.sl_spot: exit_triggered = True
             elif pos.side == "SELL" and curr_spot >= pos.sl_spot: exit_triggered = True
 
-            # 2. Option Premium SL (20%)
-            if pos.pnl <= -(pos.entry * 0.20 * pos.qty): exit_triggered = True
+            if pos.pnl <= -(pos.entry * BotConfig.OPTION_SL_PCT * pos.qty): exit_triggered = True
 
             if exit_triggered:
                 print(f"❌ CLOSING {sym} | PnL: {pos.pnl:.2f}")
@@ -740,7 +672,7 @@ class LivePaperBot:
 # ============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="All-In-One SuperTrend Bot")
+    parser = argparse.ArgumentParser(description="All-In-One VBO Bot")
     parser.add_argument("mode", nargs='?', choices=["setup", "backtest", "run"], help="Mode")
     parser.add_argument("--app_id", help="Fyers App ID")
     parser.add_argument("--secret_key", help="Fyers Secret Key")
@@ -751,7 +683,7 @@ def main():
     mode = args.mode
 
     if not mode:
-        print("\n--- All-In-One SuperTrend Bot ---")
+        print("\n--- All-In-One VBO Bot ---")
         print("1. Setup Credentials")
         print("2. Run Backtester")
         print("3. Run Live Paper Trading Bot")
