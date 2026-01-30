@@ -1553,6 +1553,11 @@ def on_ws_error(err):
 
 def on_ws_close(msg):
     _real_print("[ws:close]", msg)
+    # Trigger hard reconnect on unexpected close
+    if "Connection abandoned" not in str(msg):
+         _real_print("[ws:close] Unexpected close. Retrying in 5s...")
+         time.sleep(5)
+         _recreate_fyers_and_ws()
 
 
 # ---------------------------- History warmup ----------------------------
@@ -1663,7 +1668,7 @@ def _recreate_fyers_and_ws():
             log_path="",
             litemode=True,
             write_to_file=False,
-            reconnect=True,
+            reconnect=False,  # Disable library auto-reconnect to avoid conflicts
             on_connect=on_ws_open,
             on_close=on_ws_close,
             on_error=on_ws_error,
@@ -1989,7 +1994,7 @@ def main():
             log_path="",
             litemode=True,
             write_to_file=False,
-            reconnect=True,
+            reconnect=False,  # Disable library auto-reconnect
             on_connect=on_ws_open,
             on_close=on_ws_close,
             on_error=on_ws_error,
