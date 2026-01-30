@@ -113,15 +113,12 @@ class BotConfig:
 
     # RSI
     RSI_PERIOD = 14
-    RSI_LONG_MIN = 60
-    RSI_SHORT_MAX = 40
+    RSI_LONG_MIN = 55
+    RSI_SHORT_MAX = 45
 
     # ADX (Advanced Model)
     ADX_PERIOD = 14
-    ADX_THRESHOLD = 25
-
-    # Trend Filter
-    EMA_TREND_PERIOD = 200
+    ADX_THRESHOLD = 20
 
     # Risk Management
     R_MULTIPLIER = 2.0
@@ -285,6 +282,44 @@ def get_fyers_instance():
 # --- SECTION 3: STRATEGY LOGIC ---
 # ============================================================================
 
+class Greeks:
+    """Simplified Black-Scholes Model for Option Greeks."""
+
+    @staticmethod
+    def norm_cdf(x):
+        return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
+
+    @staticmethod
+    def norm_pdf(x):
+        return math.exp(-0.5 * x ** 2) / math.sqrt(2.0 * math.pi)
+
+    @staticmethod
+    def calculate(S, K, T, r, sigma, type="CE"):
+        """
+        S: Spot Price
+        K: Strike Price
+        T: Time to Expiry (in years)
+        r: Risk-free rate (decimal, e.g., 0.05)
+        sigma: Volatility (decimal, e.g., 0.20)
+        type: "CE" or "PE"
+
+        Returns: (Delta, Theta)
+        """
+        if T <= 0 or sigma <= 0: return 0.5, 0
+
+        d1 = (math.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+        d2 = d1 - sigma * math.sqrt(T)
+
+        if type == "CE":
+            delta = Greeks.norm_cdf(d1)
+            # Theta per day approximation
+            theta = (- (S * Greeks.norm_pdf(d1) * sigma) / (2 * math.sqrt(T)) - r * K * math.exp(-r * T) * Greeks.norm_cdf(d2)) / 365.0
+        else:
+            delta = -Greeks.norm_cdf(-d1)
+            theta = (- (S * Greeks.norm_pdf(d1) * sigma) / (2 * math.sqrt(T)) + r * K * math.exp(-r * T) * Greeks.norm_cdf(-d2)) / 365.0
+
+        return delta, theta
+
 class Strategy:
     @staticmethod
     def calculate_indicators(df: pd.DataFrame):
@@ -401,8 +436,32 @@ class Strategy:
         df['dx'] = 100 * abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])
         df['adx'] = df['dx'].ewm(alpha=alpha, adjust=False).mean()
 
-        # --- EMA Trend Filter ---
-        df['ema_trend'] = df['close'].ewm(span=BotConfig.EMA_TREND_PERIOD, adjust=False).mean()
+        # --- Historical Volatility (HV) ---
+        df['log_ret'] = np.log(df['close'] / df['close'].shift(1))
+        # Rolling standard deviation of log returns, annualized (Assuming 5min candles -> ~18000 periods/year?? No, sqrt(252*75) approx)
+        # Let's keep it simple: Annualized Volatility
+        # 5 mins = 75 candles per day. 252 days.
+        df['hv'] = df['log_ret'].rolling(window=20).std() * np.sqrt(252 * 75)
+
+        # --- Days to Expiry (Next Thursday) ---
+        def get_dte(ts):
+            # 0=Mon, 3=Thu, 6=Sun
+            # If Thu(3) and time > 15:30, next Thu.
+            # Else find next Thu.
+            current_date = ts.date()
+            days_ahead = 3 - current_date.weekday()
+            if days_ahead < 0: # Thu has passed
+                 days_ahead += 7
+            if days_ahead == 0 and ts.time() > dt.time(15, 30):
+                 days_ahead += 7
+
+            expiry_date = current_date + dt.timedelta(days=days_ahead)
+            # Time difference in years for BSM
+            # Simply return days for logic, BSM needs years
+            return (expiry_date - current_date).days
+
+        if 'timestamp' in df.columns:
+            df['dte_days'] = df['timestamp'].apply(lambda x: get_dte(x))
 
         return df
 
@@ -419,49 +478,52 @@ class Strategy:
         rsi = curr_candle.get('rsi', 50)
         atr = curr_candle.get('atr', 0)
         adx = curr_candle.get('adx', 0)
-        ema_trend = curr_candle.get('ema_trend', 0)
+        hv = curr_candle.get('hv', 0)
+        dte = curr_candle.get('dte_days', 4)
+
+        # Greeks Calculation (ATM)
+        spot = curr_candle['close']
+        time_years = max(dte / 365.0, 0.001) # Avoid div by zero
+        vol = max(hv, 0.10) # Min 10% Vol
+
+        # Calculate ATM Delta/Theta (Strike = Spot)
+        delta_call, theta_call = Greeks.calculate(spot, spot, time_years, 0.07, vol, "CE")
+        delta_put, theta_put = Greeks.calculate(spot, spot, time_years, 0.07, vol, "PE")
 
         prev_st_trend = prev_candle.get('st_trend', 0)
 
+        # --- FILTERS (Advance Model) ---
+        # 1. HV Filter: Avoid Low Volatility (Dead Markets)
+        # 2. Expiry Chop Filter: If DTE < 1, require Strong Trend (ADX > 30)
+
+        valid_vol = hv > 0.10
+        valid_expiry = True
+        if dte < 1: # Expiry Day
+            if adx < 30: valid_expiry = False
+
         # --- LONG SIGNAL ---
-        # 1. SuperTrend Green (Transition or Continuation)
-        # We prefer transition for fresh entry, or continuation if price > VWAP and RSI healthy
-
-        # Logic: Fresh Crossover or recent crossover
-        # For strict backtest, let's use:
-        # - Current Close > SuperTrend (Trend=1)
-        # - Current Close > VWAP
-        # - RSI > 60
-        # - ADX > 25 (Trend Strength)
-        # - Close > EMA 200 (Trend Filter)
-        # - TRIGGER: Price wasn't already in this state? Or just signal valid state.
-        # To avoid spamming, we trigger when Trend turns 1 OR (Trend is 1 and Price crosses above VWAP)
-
         is_long = (st_trend == 1) and (curr_candle['close'] > vwap) and \
                   (rsi > BotConfig.RSI_LONG_MIN) and (adx > BotConfig.ADX_THRESHOLD) and \
-                  (curr_candle['close'] > ema_trend)
+                  valid_vol and valid_expiry
 
-        # Trigger Condition:
-        # Either ST turned Green this candle
-        # OR ST was Green but we just crossed VWAP
         trigger_long = (prev_st_trend == -1 and st_trend == 1) or \
                        (st_trend == 1 and prev_candle['close'] <= prev_candle['vwap'] and curr_candle['close'] > vwap)
 
         if is_long and trigger_long:
             sl = curr_candle['close'] - (atr * BotConfig.ATR_SL_MULT)
-            return "BUY", sl
+            return "BUY", {"sl": sl, "delta": delta_call, "theta": theta_call}
 
         # --- SHORT SIGNAL ---
         is_short = (st_trend == -1) and (curr_candle['close'] < vwap) and \
                    (rsi < BotConfig.RSI_SHORT_MAX) and (adx > BotConfig.ADX_THRESHOLD) and \
-                   (curr_candle['close'] < ema_trend)
+                   valid_vol and valid_expiry
 
         trigger_short = (prev_st_trend == 1 and st_trend == -1) or \
                         (st_trend == -1 and prev_candle['close'] >= prev_candle['vwap'] and curr_candle['close'] < vwap)
 
         if is_short and trigger_short:
             sl = curr_candle['close'] + (atr * BotConfig.ATR_SL_MULT)
-            return "SELL", sl
+            return "SELL", {"sl": sl, "delta": abs(delta_put), "theta": theta_put}
 
         return None, 0
 
@@ -509,11 +571,15 @@ def run_backtester():
 
                 # Check for Signal
                 if active_trade is None:
-                    sig_type, sl = Strategy.detect_signal(curr, prev)
+                    sig_type, packet = Strategy.detect_signal(curr, prev)
 
                     if sig_type:
                         signals_count += 1
                         entry_price = curr['close']
+
+                        sl = packet['sl']
+                        delta = packet['delta']
+                        theta = packet['theta']
 
                         risk = abs(entry_price - sl)
                         if risk == 0: continue
@@ -530,29 +596,32 @@ def run_backtester():
                             "sl": sl,
                             "tgt": tgt,
                             "pnl": 0,
+                            "delta": delta,
+                            "theta": theta,
                             "outcome": "OPEN"
                         }
                 else:
                     # Manage Active Trade
                     t = active_trade
+                    delta = t.get('delta', 0.5)
 
                     if t['type'] == "BUY":
                         # SL Hit
                         if curr['low'] <= t['sl']:
                             t['outcome'] = "LOSS"
-                            t['pnl'] = t['sl'] - t['entry']
+                            t['pnl'] = (t['sl'] - t['entry']) * delta
                             trades.append(t)
                             active_trade = None
                         # TGT Hit
                         elif curr['high'] >= t['tgt']:
                             t['outcome'] = "WIN"
-                            t['pnl'] = t['tgt'] - t['entry']
+                            t['pnl'] = (t['tgt'] - t['entry']) * delta
                             trades.append(t)
                             active_trade = None
                         # Trend Reversal Exit (SuperTrend turns Red)
                         elif curr['st_trend'] == -1:
                             t['outcome'] = "REV"
-                            t['pnl'] = curr['close'] - t['entry']
+                            t['pnl'] = (curr['close'] - t['entry']) * delta
                             trades.append(t)
                             active_trade = None
 
@@ -560,19 +629,19 @@ def run_backtester():
                         # SL Hit
                         if curr['high'] >= t['sl']:
                             t['outcome'] = "LOSS"
-                            t['pnl'] = t['entry'] - t['sl']
+                            t['pnl'] = (t['entry'] - t['sl']) * delta
                             trades.append(t)
                             active_trade = None
                         # TGT Hit
                         elif curr['low'] <= t['tgt']:
                             t['outcome'] = "WIN"
-                            t['pnl'] = t['entry'] - t['tgt']
+                            t['pnl'] = (t['entry'] - t['tgt']) * delta
                             trades.append(t)
                             active_trade = None
                         # Trend Reversal Exit (SuperTrend turns Green)
                         elif curr['st_trend'] == 1:
                             t['outcome'] = "REV"
-                            t['pnl'] = t['entry'] - curr['close']
+                            t['pnl'] = (t['entry'] - curr['close']) * delta
                             trades.append(t)
                             active_trade = None
 
@@ -581,20 +650,21 @@ def run_backtester():
                         t = active_trade
                         t['outcome'] = "EOD"
                         if t['type'] == "BUY":
-                            t['pnl'] = curr['close'] - t['entry']
+                            t['pnl'] = (curr['close'] - t['entry']) * delta
                         else:
-                            t['pnl'] = t['entry'] - curr['close']
+                            t['pnl'] = (t['entry'] - curr['close']) * delta
                         trades.append(t)
                         active_trade = None
 
             # Close last
             if active_trade:
                 t = active_trade
+                delta = t.get('delta', 0.5)
                 t['outcome'] = "OPEN (MTM)"
                 if t['type'] == "BUY":
-                    t['pnl'] = df.iloc[-1]['close'] - t['entry']
+                    t['pnl'] = (df.iloc[-1]['close'] - t['entry']) * delta
                 else:
-                    t['pnl'] = t['entry'] - df.iloc[-1]['close']
+                    t['pnl'] = (t['entry'] - df.iloc[-1]['close']) * delta
                 trades.append(t)
 
             # Summary
@@ -631,6 +701,8 @@ class PaperPosition:
         self.side = side  # "BUY" (Long CE) or "SELL" (Long PE)
         self.status = "OPEN"
         self.pnl = 0.0
+        self.delta = 0.5
+        self.theta = 0
         self.entry_time = dt.datetime.now()
 
 
@@ -741,13 +813,13 @@ class LivePaperBot:
         self.history_df[sym] = df
 
         curr, prev = df.iloc[-1], df.iloc[-2]
-        sig_type, sl = Strategy.detect_signal(curr, prev)
+        sig_type, packet = Strategy.detect_signal(curr, prev)
 
         if sig_type:
             print(f"🚀 SIGNAL ({sig_type}) on {sym} @ {curr['close']}")
-            self.execute_trade_signal(sym, sig_type, curr['close'], sl)
+            self.execute_trade_signal(sym, sig_type, curr['close'], packet)
 
-    def execute_trade_signal(self, sym, sig_type, spot_price, stop_loss_level):
+    def execute_trade_signal(self, sym, sig_type, spot_price, packet):
         if sym in self.active_positions: return
 
         strike_step = 50 if "NIFTY50" in sym else 100
@@ -761,7 +833,13 @@ class LivePaperBot:
         atm_strike = round(spot_price / strike_step) * strike_step
 
         qty = BotConfig.LOT_SIZES.get(BotConfig.INDEX_MAP.get(sym, 'NIFTY'), 50)
+
+        stop_loss_level = packet['sl']
+
         pos = PaperPosition(sym, f"{opt_type}_{atm_strike}", 100.0, stop_loss_level, qty, spot_price, sig_type)
+        pos.delta = packet['delta']
+        pos.theta = packet['theta']
+
         self.active_positions[sym] = pos
         print(f"✅ PAPER {sig_type} OPEN: {sym} | Opt: {opt_type} {atm_strike} | SL: {stop_loss_level}")
 
@@ -780,7 +858,8 @@ class LivePaperBot:
             if pos.side == "SELL": spot_change = -spot_change
 
             # Simulated Option PnL
-            pos.pnl = (spot_change * 0.5) * pos.qty
+            # Use calculated Delta
+            pos.pnl = (spot_change * pos.delta) * pos.qty
 
             # 1. Stop Loss
             if pos.side == "BUY" and curr_spot <= pos.sl_spot:
