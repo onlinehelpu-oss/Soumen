@@ -1696,52 +1696,53 @@ def sync_with_broker_positions():
         return
 
     try:
-        response = FYERS.positions()
-        # Response format: {'code': 200, 'message': '', 's': 'ok', 'netPositions': [...], 'overall': {...}}
-        if not isinstance(response, dict) or response.get("s") != "ok":
-            _real_print(f"[sync] Error fetching positions: {response}")
+        # 1. Fetch POSITIONS (Net/Intraday)
+        pos_resp = FYERS.positions()
+        net_positions = []
+        if isinstance(pos_resp, dict) and pos_resp.get("s") == "ok":
+            net_positions = pos_resp.get("netPositions", [])
+        else:
+            _real_print(f"[sync] Error fetching positions: {pos_resp}")
             return
 
-        net_positions = response.get("netPositions", [])
-        # Create a map of symbol -> position dict for open positions
-        open_positions_map = {}
+        # 2. Fetch HOLDINGS (CNC delivery from previous days)
+        hold_resp = FYERS.holdings()
+        holdings_list = []
+        if isinstance(hold_resp, dict) and hold_resp.get("s") == "ok":
+            holdings_list = hold_resp.get("holdings", [])
+        else:
+            # If holdings fail, we shouldn't necessarily abort, but log it.
+            _real_print(f"[sync] Warning fetching holdings: {hold_resp}")
+
+        # Create map of symbol -> total open quantity
+        # Key: symbol, Value: quantity
+        broker_qty_map = {}
+
         for p in net_positions:
             sym = p.get("symbol")
             qty = int(p.get("netQty", 0))
             if qty != 0:
-                open_positions_map[sym] = p
+                broker_qty_map[sym] = broker_qty_map.get(sym, 0) + qty
 
-                # Iterate over monitored symbols that are in 'position' state
+        for h in holdings_list:
+            sym = h.get("symbol")
+            qty = int(h.get("quantity", 0))  # Holdings usually strictly long/positive
+            if qty != 0:
+                broker_qty_map[sym] = broker_qty_map.get(sym, 0) + qty
+
+        # Iterate over monitored symbols that are in 'position' state
         for sym, state in SYMBOL_STATES.items():
             if state.status == "position":
-                fyers_pos = open_positions_map.get(sym)
+                # Total quantity across Positions + Holdings
+                total_broker_qty = broker_qty_map.get(sym, 0)
 
-                # Case 1: Bot has position, Broker doesn't (Manual Close)
-                if not fyers_pos:
-                    # Grace period check: if entry was very recent, allow time for broker to update
+                # Case 1: Bot has position, Broker doesn't (Manual Full Close)
+                if total_broker_qty == 0:
+                    # Grace period check
                     if (time.time() - getattr(state, "entry_time", 0)) < 30:
                         continue
 
-                    _real_print(f"[sync] Position for {sym} missing in broker. Assuming MANUAL CLOSE.")
-                    state.status = "watch"
-                    state.qty = 0
-                    state.entry_price = 0.0
-                    state.stop_price = 0.0
-                    state.target_price = None
-                    state.exit_pending = False
-                    state.exit_signal_candle = None
-                    # Attempt to cancel GTT if we had one
-                    if state.gtt_order_id:
-                        cancel_gtt_order(state.gtt_order_id)
-                        state.gtt_order_id = None
-                    continue
-
-                    # Case 2: Bot has position, Broker has it too. Check for mismatch.
-                actual_net_qty = int(fyers_pos.get("netQty", 0))
-
-                # Assuming Long-only bot. If negative, user flipped to short. Treat as closed for this bot.
-                if actual_net_qty <= 0:
-                    _real_print(f"[sync] Position for {sym} is flat/short ({actual_net_qty}) in broker. Mark closed.")
+                    _real_print(f"[sync] Position for {sym} missing in broker (qty=0). Assuming MANUAL CLOSE.")
                     state.status = "watch"
                     state.qty = 0
                     state.entry_price = 0.0
@@ -1754,19 +1755,34 @@ def sync_with_broker_positions():
                         state.gtt_order_id = None
                     continue
 
-                if actual_net_qty != state.qty:
-                    _real_print(f"[sync] Qty mismatch for {sym}: Bot={state.qty}, Broker={actual_net_qty}. Updating.")
-                    state.qty = actual_net_qty
+                # Case 2: Broker has position. Check mismatch logic.
+                # Assuming Long-only bot. If negative, user flipped to short. Treat as closed.
+                if total_broker_qty < 0:
+                    _real_print(f"[sync] Position for {sym} is short ({total_broker_qty}) in broker. Mark closed.")
+                    state.status = "watch"
+                    state.qty = 0
+                    state.entry_price = 0.0
+                    state.stop_price = 0.0
+                    state.target_price = None
+                    state.exit_pending = False
+                    state.exit_signal_candle = None
+                    if state.gtt_order_id:
+                        cancel_gtt_order(state.gtt_order_id)
+                        state.gtt_order_id = None
+                    continue
 
-                    # Update avg price (optional, but good for PnL logging)
-                avg_price = float(fyers_pos.get("avgPrice", 0.0))
-                if avg_price <= 0:
-                    avg_price = float(fyers_pos.get("buyAvg", 0.0))
+                # Case 3: Partial or Excess logic
+                # Isolation Rule:
+                # - If broker qty < bot qty: User partially closed. We must reduce bot qty.
+                # - If broker qty >= bot qty: User added more (or existing holdings). We IGNORE excess and keep bot qty.
 
-                if avg_price > 0 and abs(avg_price - state.entry_price) > 0.05:
-                    # Only log if significant change
+                if total_broker_qty < state.qty:
+                    _real_print(f"[sync] Partial close detected for {sym}. Bot: {state.qty} -> Broker: {total_broker_qty}. Updating.")
+                    state.qty = total_broker_qty
+                elif total_broker_qty > state.qty:
+                    # Do not update. We stick to state.qty
+                    # _real_print(f"[sync] Excess qty for {sym} (Broker: {total_broker_qty} > Bot: {state.qty}). Ignoring excess.")
                     pass
-                    # state.entry_price = avg_price  # Uncomment if we want to sync price too
 
     except Exception as e:
         _real_print(f"[sync] Exception: {e}")
