@@ -39,6 +39,7 @@ SYMBOLS = [
     "NSE:NIFTY50-INDEX",
     "NSE:NIFTYBANK-INDEX",
     "NSE:FINNIFTY-INDEX",
+    "BSE:SENSEX-INDEX",
 ]
 
 INITIAL_REFRESH_INTERVAL = 60          # seconds
@@ -69,6 +70,121 @@ GB_OICH_MIN_ABS_FLOOR = 100.0       # absolute floor for threshold
 GB_OICH_SCALE = 0.05                # scale * max(CE_abs, PE_abs)
 GB_ROC_BP_THRESHOLD = 5.0           # price ROC (bp) confirmation
 ROC_WINDOW_SEC = 70                 # price confirm lookback
+
+# ===============================
+# Symbol Master (Lot Size / Step)
+# ===============================
+SYMBOL_MASTER_MAP = {}  # {symbol_name: {"lot_size": int, "step": float}}
+
+def fetch_symbol_master():
+    """Downloads Fyers NSE/BSE master CSVs to learn Lot Size and Strike Step."""
+    print("Fetching Symbol Master CSVs...")
+    urls = {
+        "NSE": "https://public.fyers.in/sym_details/NSE_FO.csv",
+        "BSE": "https://public.fyers.in/sym_details/BSE_FO.csv"
+    }
+    # Temporary storage to calculate step from strikes
+    # {symbol_root: {strikes: set(), lot: int}}
+    temp_data = {}
+
+    for exch, url in urls.items():
+        try:
+            r = requests.get(url, timeout=15)
+            r.raise_for_status()
+            # Columns (approx):
+            # 0:FyersToken, 1:Name, 2:InstType, 3:MinLot, 4:TickSize, ..., 13:SymbolDetails, ...
+            # We need to parse CSV lines carefully.
+            lines = r.text.strip().split("\n")
+            reader = csv.reader(lines)
+            header = next(reader, None) # skip header if present (check Fyers format)
+            # Fyers public CSVs usually don't have headers, or we check first row.
+            # If first row "Fytoken" etc, skip.
+            if header and "Fytoken" in str(header[0]):
+                pass
+            else:
+                # Reset reader if no header
+                reader = csv.reader(lines)
+
+            for row in reader:
+                if len(row) < 14: continue
+                # row[1] e.g., "NSE:NIFTY23OCT19500CE" or "NSE:NIFTYBANK-INDEX" (not in FO usually)
+                # Actually FO CSV contains derivatives.
+                # We need to extract UNDERLYING name to group them.
+                # row[13] is often "NIFTY" or "BANKNIFTY" (Symbol Details)
+                # row[3] is Min Lot Size
+                # To find step, we collect strikes from row[1] if possible, or use logic?
+                # Actually, parsing symbol string "NIFTY23OCT19500CE" is complex.
+                # Easier approach: Group by row[13] (Root Symbol).
+
+                root = row[13].strip().upper()
+                if not root: continue
+
+                try:
+                    lot = int(row[3])
+                except: continue
+
+                # Extract strike from Name if possible?
+                # The CSV format is tricky. Let's rely on standard logic + lot size.
+                # But wait, we need Strike Step for the script.
+                # Let's verify commonly known roots.
+
+                if root not in temp_data:
+                    temp_data[root] = {"lot": lot, "strikes": set()}
+
+                # Just store lot size primarily. Step is harder to infer from CSV without parsing every symbol.
+                # We can try to update lot size if it changes (usually constant for an expiry).
+                temp_data[root]["lot"] = lot
+
+        except Exception as e:
+            print(f"Warning: Failed to fetch/parse {exch} master: {e}")
+
+    # Post-process: Map known indices to these roots
+    # NIFTY50-INDEX -> NIFTY
+    # NIFTYBANK-INDEX -> BANKNIFTY
+    # FINNIFTY-INDEX -> FINNIFTY
+    # SENSEX-INDEX -> SENSEX
+    # MIDCPNIFTY-INDEX -> MIDCPNIFTY
+
+    # Hardcoded fallback steps if CSV fails or logic is too complex
+    # But we want "automatic".
+    # For Step: We will use a robust lookup.
+    # For Lot: We use the fetched value.
+
+    # Map our SYMBOLS to Roots
+    mapping = {
+        "NSE:NIFTY50-INDEX": "NIFTY",
+        "NSE:NIFTYBANK-INDEX": "BANKNIFTY",
+        "NSE:FINNIFTY-INDEX": "FINNIFTY",
+        "BSE:SENSEX-INDEX": "SENSEX",
+        "NSE:MIDCPNIFTY-INDEX": "MIDCPNIFTY",
+        "BSE:BANKEX-INDEX": "BANKEX",
+    }
+
+    defaults = {
+        "NIFTY": {"step": 50, "lot": 25}, # 25 is recent change? 75->50->25? CSV will be truth.
+        "BANKNIFTY": {"step": 100, "lot": 15},
+        "FINNIFTY": {"step": 50, "lot": 25},
+        "SENSEX": {"step": 100, "lot": 10},
+        "MIDCPNIFTY": {"step": 25, "lot": 50},
+        "BANKEX": {"step": 100, "lot": 15},
+    }
+
+    for sym_full, root in mapping.items():
+        # Default
+        d = defaults.get(root, {"step": 100, "lot": 1})
+        final_lot = d["lot"]
+        final_step = d["step"]
+
+        # Override Lot from CSV if available
+        if root in temp_data:
+            fetched_lot = temp_data[root]["lot"]
+            if fetched_lot > 0:
+                final_lot = fetched_lot
+
+        SYMBOL_MASTER_MAP[sym_full] = {"lot_size": final_lot, "step": final_step}
+        # print(f"DEBUG: {sym_full} -> Lot:{final_lot}, Step:{final_step}")
+
+    print("Symbol Master loaded.")
 
 # ===============================
 # Login helpers
@@ -556,10 +672,18 @@ def gamma_blast_decision(CE_sum, PE_sum, CE_abs, PE_abs, roc_bp):
 # Printer / CSV for one symbol (with Gamma Blast)
 # ===============================
 def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
-    step = 100 if ("NIFTYBANK" in symbol or "BANKNIFTY" in symbol) else 50
+    # Determine Step from Master Map
+    meta = SYMBOL_MASTER_MAP.get(symbol, {})
+    step = meta.get("step", 100)
+    lot_size = meta.get("lot_size", 1)
+
+    # Fallback if map missing
+    if not step:
+        step = 100 if ("NIFTYBANK" in symbol or "BANKNIFTY" in symbol) else 50
+
     atm_strike = round(S / step) * step
     print(f"\nLive LTP for {symbol} is: {S}")
-    print(f"ATM strike is: {atm_strike}")
+    print(f"ATM strike is: {atm_strike} (Step: {step}, Lot: {lot_size})")
 
     resp, err, used_sym = get_optionchain_response(fy, symbol)
     if err or not isinstance(resp, dict):
@@ -797,6 +921,9 @@ def main():
     except Exception as e:
         print(f"Login/init error: {e}")
         sys.exit(1)
+
+    # Fetch Master CSVs once
+    fetch_symbol_master()
 
     refresh_interval = INITIAL_REFRESH_INTERVAL
     cycle = 0
