@@ -76,7 +76,13 @@ ROC_WINDOW_SEC = 70                 # price confirm lookback
 def load_or_prompt_creds():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r") as f:
-            return json.load(f)
+            data = json.load(f)
+            # Robust strip for all string values
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    if isinstance(v, str):
+                        data[k] = v.strip()
+            return data
     print("---- Enter your Fyers Login Credentials (v3) ----")
     creds = {
         "api_key": input("Enter APP ID (e.g., ABCDE12345-100): ").strip(),
@@ -742,14 +748,41 @@ def ensure_valid_token_and_client():
         with open(TOKEN_PATH, "w") as f:
             json.dump(token_resp, f)
 
-        token_prefixed = new_token if str(new_token).startswith(f"{creds['api_key']}:") else f"{creds['api_key']}:{new_token}"
-        fy = fyersModel.FyersModel(client_id=creds["api_key"], token=token_prefixed, log_path=os.getcwd())
+        # ---- ROBUST TOKEN PREFIX LOGIC ----
+        app_id = creds["api_key"].strip()
+        raw_token = str(new_token).strip()
 
+        # 1. Standard: AppID:Token
+        token_v1 = raw_token if raw_token.startswith(f"{app_id}:") else f"{app_id}:{raw_token}"
+        print(f"DEBUG: Trying token format 1 (AppID:Token): {token_v1[:15]}...***")
+
+        fy = fyersModel.FyersModel(client_id=app_id, token=token_v1, log_path=os.getcwd())
         ok, err = _quotes_probe(fy)
-        if not ok:
-            raise RuntimeError(f"quotes() still failing after re-auth: {err}")
-        print("quotes() OK after re-auth.")
-        return fy, creds["api_key"], token_prefixed
+        if ok:
+            print("quotes() OK with Standard format.")
+            return fy, app_id, token_v1
+
+        # 2. Raw Token (some envs/versions)
+        print(f"DEBUG: Format 1 failed {err}. Trying format 2 (Raw Token)...")
+        token_v2 = raw_token
+        fy2 = fyersModel.FyersModel(client_id=app_id, token=token_v2, log_path=os.getcwd())
+        ok2, err2 = _quotes_probe(fy2)
+        if ok2:
+            print("quotes() OK with Raw Token format.")
+            return fy2, app_id, token_v2
+
+        # 3. Base ID (if hyphenated, e.g. XYZ-100 -> XYZ)
+        if "-" in app_id:
+            base_id = app_id.split("-")[0]
+            print(f"DEBUG: Format 2 failed {err2}. Trying format 3 (BaseID:Token) with {base_id}...")
+            token_v3 = raw_token if raw_token.startswith(f"{base_id}:") else f"{base_id}:{raw_token}"
+            fy3 = fyersModel.FyersModel(client_id=app_id, token=token_v3, log_path=os.getcwd())
+            ok3, err3 = _quotes_probe(fy3)
+            if ok3:
+                print("quotes() OK with BaseID format.")
+                return fy3, app_id, token_v3
+
+        raise RuntimeError(f"quotes() still failing after re-auth strategies. Last error: {err2}")
 
     # Other error codes
     raise RuntimeError(f"quotes() probe failed: code={code}, message={msg}")
