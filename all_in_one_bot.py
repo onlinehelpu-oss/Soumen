@@ -120,9 +120,9 @@ class BotConfig:
     FLUSH_VOL_MULT = 1.5
 
     # Phase 2: Compression
-    COMPRESSION_MIN_CANDLES = 4
-    COMPRESSION_MAX_CANDLES = 8
-    COMPRESSION_RANGE_THRESHOLD = 0.8  # Total Range < 0.8 * Avg Range
+    COMPRESSION_MIN_CANDLES = 3   # Relaxed from 4
+    COMPRESSION_MAX_CANDLES = 12  # Extended from 8
+    COMPRESSION_RANGE_THRESHOLD = 1.5  # Relaxed from 0.8 to 1.5 * Avg Range
 
     # Phase 3: Displacement
     DISPLACEMENT_RANGE_MULT = 1.5
