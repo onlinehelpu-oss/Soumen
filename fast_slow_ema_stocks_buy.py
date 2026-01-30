@@ -146,6 +146,9 @@ ALLOWED_SUBSTRINGS = (
 def print(*args, **kwargs):
     try:
         s = " ".join(str(x) for x in args)
+        # Prepend timestamp
+        ts = datetime.datetime.now().strftime("[%Y-%m-%d %H:%M:%S]")
+        s = f"{ts} {s}"
     except Exception:
         return
     for sub in ALLOWED_SUBSTRINGS:
