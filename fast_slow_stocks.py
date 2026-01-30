@@ -349,7 +349,6 @@ class SymbolState:
         self.entry_price = 0.0
         self.qty = 0
         self.stop_price = 0.0
-        self.gtt_order_id = None
         # exit
         self.exit_signal_candle = None
         self.exit_signal_expiry = None
@@ -659,44 +658,7 @@ def place_market_order(symbol: str, qty: int, side: int) -> dict:
     return err
 
 
-def place_gtt_stoploss(symbol: str, qty: int, trigger_price: float) -> dict:
-    sl_price = round(trigger_price * 0.99, 1)
-
-    # Dynamically set productType based on exchange
-    order_product_type = "INTRADAY" if symbol.startswith("MCX:") else PRODUCT_TYPE
-
-    data = {
-        "symbol": symbol,
-        "qty": qty,
-        "type": 4,
-        "side": -1,
-        "productType": order_product_type,
-        "limitPrice": sl_price,
-        "stopPrice": trigger_price,
-    }
-    if FYERS is None:
-        err = {"s": "error", "message": "no fyers client for gtt"}
-        log_trade_event(symbol, "GTT_FAIL", qty, trigger_price, err)
-        return err
-    for attempt in range(1, 3):
-        try:
-            resp = FYERS.place_gtt(data=data)
-            log_trade_event(symbol, "GTT_PLACE", qty, trigger_price, resp)
-            return resp
-        except Exception:
-            time.sleep(1)
-    err = {"s": "error", "message": "gtt failed after retries"}
-    log_trade_event(symbol, "GTT_FAIL", qty, trigger_price, err)
-    return err
-
-
-def cancel_gtt_order(gtt_id: str) -> dict:
-    if FYERS is None:
-        return {"s": "error", "message": "no fyers client"}
-    try:
-        return FYERS.cancel_gtt(id=gtt_id)
-    except Exception as e:
-        return {"s": "error", "message": str(e)}
+# GTT functions removed as per user request
 
         # ---------------------------- TOKEN UTILITIES ----------------------------
 
@@ -939,8 +901,7 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                 if isinstance(resp, dict) and resp.get("s") == "ok":
                     pnl = (ltp - state.entry_price) * state.qty
                     _real_print(f"[{symbol}] TARGET EXIT OK. PnL={pnl:.2f}")
-                    if state.gtt_order_id:
-                        cancel_gtt_order(state.gtt_order_id)
+                    # GTT cancel removed
                     state.status = "cooldown"
                     state.exit_pending = False
                     state.exit_signal_candle = None
@@ -1103,16 +1064,7 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                                     f"Stoploss={state.stop_price:.2f}"
                                 )
 
-                                gtt_resp = place_gtt_stoploss(
-                                    symbol, qty, trigger_price=state.stop_price
-                                )
-                                if isinstance(gtt_resp, dict) and gtt_resp.get("s") == "ok":
-                                    state.gtt_order_id = (
-                                            gtt_resp.get("id") or gtt_resp.get("gtt_id")
-                                    )
-                                    _real_print(
-                                        f"[order] GTT placed id={state.gtt_order_id}"
-                                    )
+                                # GTT logic removed
                                 state.status = "position"
                                 state.signal_candle = None
                                 state.signal_close_ts = None
@@ -1204,8 +1156,7 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                     if isinstance(resp, dict) and resp.get("s") == "ok":
                         pnl = (ltp - state.entry_price) * state.qty
                         _real_print(f"[{symbol}] EXIT OK. PnL={pnl:.2f}")
-                        if state.gtt_order_id:
-                            cancel_gtt_order(state.gtt_order_id)
+                        # GTT cancel removed
                         state.status = "cooldown"
                         state.exit_pending = False
                         state.exit_signal_candle = None
@@ -1229,8 +1180,7 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                     if isinstance(resp, dict) and resp.get("s") == "ok":
                         pnl = (ltp - state.entry_price) * state.qty
                         _real_print(f"[{symbol}] EXIT OK. PnL={pnl:.2f}")
-                        if state.gtt_order_id:
-                            cancel_gtt_order(state.gtt_order_id)
+                        # GTT cancel removed
                         state.status = "cooldown"
                         state.exit_pending = False
                         state.exit_signal_candle = None
@@ -1273,20 +1223,7 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                     state.stop_price = new_sl
                     state.sl_trailed = True
                     _real_print(f"[{symbol}] Moving Stop Loss to {new_sl:.2f}")
-
-                    # Update GTT if it exists
-                    if state.gtt_order_id:
-                        _real_print(f"[{symbol}] Cancelling old GTT {state.gtt_order_id} to place new trailed GTT.")
-                        cancel_gtt_order(state.gtt_order_id)
-                        state.gtt_order_id = None
-
-                        # Place new GTT at new SL
-                    gtt_resp = place_gtt_stoploss(symbol, state.qty, trigger_price=new_sl)
-                    if isinstance(gtt_resp, dict) and gtt_resp.get("s") == "ok":
-                        state.gtt_order_id = gtt_resp.get("id") or gtt_resp.get("gtt_id")
-                        _real_print(f"[{symbol}] New Trailed GTT placed id={state.gtt_order_id}")
-                    else:
-                        _real_print(f"[{symbol}] Failed to place new trailed GTT: {gtt_resp}")
+                    # GTT update logic removed
 
             except Exception as e:
                 _real_print(f"[{symbol}] Trailing SL logic error: {e}")
@@ -1303,10 +1240,8 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                 if isinstance(sell_resp, dict) and sell_resp.get("s") == "ok":
                     pnl = (ltp - state.entry_price) * state.qty
                     _real_print(f"[{symbol}] STOP-LOSS SELL OK. PnL={pnl:.2f}")
-                    if state.gtt_order_id:
-                        cancel_gtt_order(state.gtt_order_id)
+                    # GTT cancel removed
                     state.status = "cooldown"
-                    state.gtt_order_id = None
                     state.target_price = None
                 else:
                     _real_print(f"[{symbol}] STOP-LOSS SELL FAILED: {sell_resp}")
@@ -1757,10 +1692,7 @@ def sync_with_broker_positions():
                     state.target_price = None
                     state.exit_pending = False
                     state.exit_signal_candle = None
-                    # Attempt to cancel GTT if we had one
-                    if state.gtt_order_id:
-                        cancel_gtt_order(state.gtt_order_id)
-                        state.gtt_order_id = None
+                    # GTT cancel removed
                     continue
 
                     # Case 2: Bot has position, Broker has it too. Check for mismatch.
@@ -1776,9 +1708,7 @@ def sync_with_broker_positions():
                     state.target_price = None
                     state.exit_pending = False
                     state.exit_signal_candle = None
-                    if state.gtt_order_id:
-                        cancel_gtt_order(state.gtt_order_id)
-                        state.gtt_order_id = None
+                    # GTT cancel removed
                     continue
 
                 if actual_net_qty != state.qty:
@@ -1809,7 +1739,6 @@ def _serialize_state():
             "qty": getattr(st, "qty", 0),
             "entry_price": getattr(st, "entry_price", None),
             "stop_price": getattr(st, "stop_price", None),
-            "gtt_order_id": getattr(st, "gtt_order_id", None),
             "last_candle_ts": (
                 getattr(st, "last_candle_ts", None).isoformat()
                 if getattr(st, "last_candle_ts", None) is not None
@@ -1845,7 +1774,6 @@ def load_state_from_disk():
             st.qty = info.get("qty", st.qty)
             st.entry_price = info.get("entry_price", st.entry_price)
             st.stop_price = info.get("stop_price", st.stop_price)
-            st.gtt_order_id = info.get("gtt_order_id", st.gtt_order_id)
             st.signal_notified = info.get("signal_notified", False)
             st.target_price = info.get("target_price", None)
             st.atr_at_entry = info.get("atr_at_entry", 0.0)
