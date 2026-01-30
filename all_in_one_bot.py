@@ -844,9 +844,22 @@ def main():
     parser.add_argument("--app_id", help="Fyers App ID")
     parser.add_argument("--secret_key", help="Fyers Secret Key")
     parser.add_argument("--redirect_url", help="Fyers Redirect URL")
+
+    # Strategy Customization
+    parser.add_argument("--flush_mult", type=float, default=BotConfig.FLUSH_RANGE_MULT, help="Flush Range Multiplier (Default: 1.5)")
+    parser.add_argument("--vol_mult", type=float, default=BotConfig.FLUSH_VOL_MULT, help="Flush Volume Multiplier (Default: 1.5)")
+    parser.add_argument("--comp_range", type=float, default=BotConfig.COMPRESSION_RANGE_THRESHOLD, help="Compression Range Threshold (Default: 0.8)")
+    parser.add_argument("--disp_mult", type=float, default=BotConfig.DISPLACEMENT_RANGE_MULT, help="Displacement Range Multiplier (Default: 1.5)")
+
     parser.add_argument("--retrain", action="store_true", help="Ignored")
 
     args = parser.parse_args()
+
+    # Update Config with CLI args
+    BotConfig.FLUSH_RANGE_MULT = args.flush_mult
+    BotConfig.FLUSH_VOL_MULT = args.vol_mult
+    BotConfig.COMPRESSION_RANGE_THRESHOLD = args.comp_range
+    BotConfig.DISPLACEMENT_RANGE_MULT = args.disp_mult
 
     mode = args.mode
     if not mode:
