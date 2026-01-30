@@ -321,7 +321,7 @@ class Strategy:
                 return cum_pv / cum_vol
 
             # Use transform to keep original index
-            # Explicitly select columns to silence FutureWarning
+            # Explicitly select columns to silence FutureWarning (Fixed in latest update)
             df['vwap'] = df.groupby('date')[['close', 'volume']].apply(lambda x: calc_vwap(x)).reset_index(level=0, drop=True)
 
         return df
