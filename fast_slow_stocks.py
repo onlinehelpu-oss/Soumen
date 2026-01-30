@@ -1504,6 +1504,8 @@ def on_ws_error(err):
             msg = str(err.get("message") or err.get("msg") or "")
         else:
             msg = str(err)
+
+        # 1. Handle Token Expiry
         expired = False
         if code in (-99, 401, "expired"):
             expired = True
@@ -1513,6 +1515,7 @@ def on_ws_error(err):
                 or "invalid token" in msg.lower()
         ):
             expired = True
+
         if expired:
             if REAUTH_ATTEMPTS >= MAX_REAUTH_ATTEMPTS:
                 _real_print(
@@ -1531,6 +1534,19 @@ def on_ws_error(err):
                 _real_print(
                     "[ws:error] Re-auth failed. Please run interactive auth or place a new token in AccessToken/"
                 )
+            return
+
+        # 2. Handle Network/Timeout Errors (e.g., WinError 10060, 10054, etc.)
+        if "10060" in msg or "10054" in msg or "connection attempt failed" in msg.lower():
+            _real_print("[ws:error] Network connection issue detected. Retrying hard reconnect in 5s...")
+            time.sleep(5)
+            # We treat this as a non-auth failure, so we don't increment REAUTH_ATTEMPTS (or maybe we should reset it?)
+            ok = _recreate_fyers_and_ws()
+            if ok:
+                _real_print("[ws:error] Hard reconnect succeeded.")
+            else:
+                _real_print("[ws:error] Hard reconnect failed.")
+
     except Exception as e:
         _real_print("[ws:error] on_ws_error handler exception:", e)
 
@@ -1604,6 +1620,14 @@ def _remove_local_tokens(dir_path=TOKENS_DIR):
 
 def _recreate_fyers_and_ws():
     global FYERS, FYERS_SOCKET, ACCESS_TOKEN
+
+    # Attempt to close existing socket if any to free resources
+    if FYERS_SOCKET is not None:
+        try:
+            FYERS_SOCKET.close()
+        except Exception:
+            pass
+
     try:
         # Force refresh to ensure we don't pick up the same expired token
         auth = get_access_token(force_refresh=True)
