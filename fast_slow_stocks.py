@@ -1591,6 +1591,9 @@ def fetch_history(fyers_client, symbol: str, days: int = 2) -> pd.DataFrame:
 def warmup_all_full(fyers_client):
     if fyers_client is None:
         return
+
+    _real_print(f"[warmup] Starting detailed history fetch for {len(SYMBOLS)} symbols...")
+    count = 0
     for sym in SYMBOLS:
         try:
             df = fetch_history(fyers_client, sym, days=3)
@@ -1599,8 +1602,10 @@ def warmup_all_full(fyers_client):
             df = compute_indicators(df)
             SYMBOL_STATES[sym].data = df
             SYMBOL_STATES[sym].last_candle_ts = df.index[-1]
+            count += 1
         except Exception:
             continue
+    _real_print(f"[warmup] History fetch complete. Loaded data for {count}/{len(SYMBOLS)} symbols.")
 
             # ---------------------------- Token/WS recreation helpers ----------------------------
 
@@ -1974,7 +1979,7 @@ def main():
         )
 
         _real_print("[auth] Fyers model initialized. Running warmup history fetch (best-effort).")
-        warmup_all(FYERS)
+        # warmup_all(FYERS) removed as it was redundant
         warmup_all_full(FYERS)
 
         global FYERS_SOCKET
