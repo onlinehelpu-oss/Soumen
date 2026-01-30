@@ -122,9 +122,15 @@ class BotConfig:
 
     # Gamma Blast (Short-Term ROC + Option Chain)
     ROC_PERIOD = 2  # Short term momentum
-    ROC_THRESHOLD = 0.15  # % Move required
+    ROC_THRESHOLD = 0.20  # Stricter momentum
     OI_CHANGE_THRESHOLD = 500000  # Significant OI Chg
     GAMMA_STOP_LOSS = 15  # Points
+    RSI_GAMMA_LONG = 65
+    RSI_GAMMA_SHORT = 35
+
+    # Smart Trail
+    TRAIL_TRIGGER_ATR = 0.5 # Move to BE after 0.5 ATR
+    TRAIL_STEP_ATR = 0.2
 
     # Risk Management
     R_MULTIPLIER = 2.0
@@ -516,9 +522,9 @@ class Strategy:
 
         # --- GAMMA BLAST LOGIC (Proxy) ---
         # Live: OptionChainManager.check_gamma_blast(...)
-        # Backtest Proxy: Price ROC > Threshold AND Volume > 2x Avg
-        gamma_long = (roc > BotConfig.ROC_THRESHOLD) and (vol_curr > 1.5 * vol_avg)
-        gamma_short = (roc < -BotConfig.ROC_THRESHOLD) and (vol_curr > 1.5 * vol_avg)
+        # Backtest Proxy: Price ROC > Threshold AND Volume > 2x Avg AND RSI Extreme
+        gamma_long = (roc > BotConfig.ROC_THRESHOLD) and (vol_curr > 2.0 * vol_avg) and (rsi > BotConfig.RSI_GAMMA_LONG)
+        gamma_short = (roc < -BotConfig.ROC_THRESHOLD) and (vol_curr > 2.0 * vol_avg) and (rsi < BotConfig.RSI_GAMMA_SHORT)
 
         # --- LONG SIGNAL ---
         # Strategy: SuperTrend + VWAP + (Filters) OR Gamma Blast
@@ -697,17 +703,31 @@ def run_backtester():
                             "pnl": 0,
                             "delta": delta,
                             "theta": theta,
+                            "atr": curr['atr'],
+                            "highest": entry_price, # For Trailing
+                            "lowest": entry_price, # For Trailing
                             "outcome": "OPEN"
                         }
                 else:
                     # Manage Active Trade
                     t = active_trade
                     delta = t.get('delta', 0.5)
+                    atr = t.get('atr', 100)
 
                     if t['type'] == "BUY":
+                        # Update Highest High
+                        if curr['high'] > t['highest']: t['highest'] = curr['high']
+
+                        # Trailing Logic
+                        profit_dist = t['highest'] - t['entry']
+                        # Trigger: 0.5 ATR profit -> Move SL to Breakeven
+                        if profit_dist >= (BotConfig.TRAIL_TRIGGER_ATR * atr):
+                            new_sl = t['entry'] + (profit_dist - (BotConfig.TRAIL_STEP_ATR * atr))
+                            t['sl'] = max(t['sl'], new_sl)
+
                         # SL Hit
                         if curr['low'] <= t['sl']:
-                            t['outcome'] = "LOSS"
+                            t['outcome'] = "LOSS" if t['sl'] < t['entry'] else "TRAIL_HIT"
                             t['pnl'] = (t['sl'] - t['entry']) * delta
                             trades.append(t)
                             active_trade = None
@@ -725,9 +745,19 @@ def run_backtester():
                             active_trade = None
 
                     elif t['type'] == "SELL":
+                        # Update Lowest Low
+                        if curr['low'] < t['lowest']: t['lowest'] = curr['low']
+
+                        # Trailing Logic
+                        profit_dist = t['entry'] - t['lowest']
+                        # Trigger
+                        if profit_dist >= (BotConfig.TRAIL_TRIGGER_ATR * atr):
+                            new_sl = t['entry'] - (profit_dist - (BotConfig.TRAIL_STEP_ATR * atr))
+                            t['sl'] = min(t['sl'], new_sl)
+
                         # SL Hit
                         if curr['high'] >= t['sl']:
-                            t['outcome'] = "LOSS"
+                            t['outcome'] = "LOSS" if t['sl'] > t['entry'] else "TRAIL_HIT"
                             t['pnl'] = (t['entry'] - t['sl']) * delta
                             trades.append(t)
                             active_trade = None
