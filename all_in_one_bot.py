@@ -457,6 +457,11 @@ def run_backtester():
             compression_high = 0
             compression_low = 0
 
+            # Funnel Stats
+            flushes_count = 0
+            compressions_count = 0
+            signals_count = 0
+
             for i in range(21, len(df)):
                 curr = df.iloc[i]
 
@@ -466,6 +471,7 @@ def run_backtester():
                     if Strategy.detect_flush(curr, df.iloc[i-20:i]):
                         state = "FLUSH_DETECTED"
                         flush_idx = i
+                        flushes_count += 1
                         # print(f"  [Flush] {curr['timestamp']} Price: {curr['close']}")
 
                 elif state == "FLUSH_DETECTED":
@@ -483,6 +489,7 @@ def run_backtester():
                             compression_high = c_h
                             compression_low = c_l
                             compression_start_idx = flush_idx + 1
+                            compressions_count += 1
                             # print(f"  [Compression] {curr['timestamp']} High: {c_h} Low: {c_l}")
 
                     if candles_since_flush > BotConfig.COMPRESSION_MAX_CANDLES:
@@ -502,12 +509,13 @@ def run_backtester():
                          entry_price = curr['close']
                          stop_loss = compression_low # Spot SL
                          target = entry_price + (entry_price - stop_loss) * 2 # 1:2 RR on Spot
+                         signals_count += 1
 
                          # Simulate Trade Result (Spot)
                          outcome = "OPEN"
                          pnl = 0
 
-                         for j in range(i+1, min(i+50, len(df))):
+                         for j in range(i+1, min(i+100, len(df))):
                              fut = df.iloc[j]
                              if fut['low'] <= stop_loss:
                                  outcome = "LOSS"
@@ -518,11 +526,18 @@ def run_backtester():
                                  pnl = target - entry_price
                                  break
 
+                         # Mark to Market Close if still OPEN at end of data
+                         if outcome == "OPEN":
+                             last_close = df.iloc[-1]['close']
+                             pnl = last_close - entry_price
+                             outcome = "OPEN (MTM)"
+
                          trades.append({
                              "time": curr['timestamp'],
                              "type": "BUY",
                              "entry": entry_price,
                              "sl": stop_loss,
+                             "tgt": target,
                              "outcome": outcome,
                              "pnl": pnl
                          })
@@ -540,12 +555,16 @@ def run_backtester():
             # Summary
             wins = len([t for t in trades if t['outcome'] == "WIN"])
             losses = len([t for t in trades if t['outcome'] == "LOSS"])
-            total = len(trades)
-            win_rate = (wins/total*100) if total > 0 else 0
+            mtm_pnls = sum([t['pnl'] for t in trades])
 
-            print(f"  Signals: {total}, Wins: {wins}, Losses: {losses}, WR: {win_rate:.1f}%")
-            if total > 0:
-                print(f"  Last Trade: {trades[-1]}")
+            print(f"  Stats: Flushes:{flushes_count} | Compressions:{compressions_count} | Signals:{signals_count}")
+            print(f"  Results: Wins:{wins} | Losses:{losses} | Net PnL (Spot Points): {mtm_pnls:.2f}")
+
+            if trades:
+                print(f"  Recent Trades:")
+                for t in trades[-5:]:
+                    ts_str = t['time'].strftime('%Y-%m-%d %H:%M')
+                    print(f"    [{ts_str}] {t['type']} @ {t['entry']:.2f} -> {t['outcome']} (PnL: {t['pnl']:.2f})")
 
         except Exception as e:
             print(f"  ❌ Error: {e}")
