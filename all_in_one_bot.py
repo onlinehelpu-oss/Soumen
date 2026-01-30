@@ -132,6 +132,10 @@ class BotConfig:
     TRAIL_TRIGGER_ATR = 0.5 # Move to BE after 0.5 ATR
     TRAIL_STEP_ATR = 0.2
 
+    # Exhaustion Filters (Avoid Buying Tops)
+    MAX_VWAP_DIST = 0.8 # % Max dist from VWAP
+    CLIMAX_CANDLE_ATR = 2.5 # Max candle range in ATRs
+
     # Risk Management
     R_MULTIPLIER = 2.0
     ATR_PERIOD = 14
@@ -143,7 +147,7 @@ class BotConfig:
     ALLOCATION_AMOUNT = 20000  # Capital per trade
 
     # --- Session Timing ---
-    ENTRY_CUTOFF_NSE = dt.time(15, 0)
+    ENTRY_CUTOFF_NSE = dt.time(14, 45)
     EXIT_ALL_NSE = dt.time(15, 15)
 
     # --- Watchlist (Indices) ---
@@ -514,11 +518,32 @@ class Strategy:
         # --- FILTERS (Advance Model) ---
         # 1. HV Filter: Avoid Low Volatility (Dead Markets)
         # 2. Expiry Chop Filter: If DTE < 1, require Strong Trend (ADX > 30)
+        # 3. Exhaustion Filter: Avoid Climax Candles and Overextension
+        # 4. Time Filter: No new entries after Cutoff
 
         valid_vol = hv > 0.10
         valid_expiry = True
         if dte < 1: # Expiry Day
             if adx < 30: valid_expiry = False
+
+        # Exhaustion Check
+        candle_range = curr_candle['high'] - curr_candle['low']
+        is_climax = candle_range > (BotConfig.CLIMAX_CANDLE_ATR * atr)
+
+        dist_vwap = abs(curr_candle['close'] - vwap) / vwap * 100
+        is_overextended = dist_vwap > BotConfig.MAX_VWAP_DIST
+
+        # Time Check
+        is_time_ok = True
+        if 'timestamp' in curr_candle:
+             ts = curr_candle['timestamp']
+             # Ensure ts is a datetime object
+             if isinstance(ts, pd.Timestamp):
+                 if ts.time() >= BotConfig.ENTRY_CUTOFF_NSE:
+                     is_time_ok = False
+
+        if is_climax or is_overextended or not is_time_ok:
+            return None, 0
 
         # --- GAMMA BLAST LOGIC (Proxy) ---
         # Live: OptionChainManager.check_gamma_blast(...)
