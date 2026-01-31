@@ -11,6 +11,7 @@
 # - VWAP & EMA (9, 21) Indication
 # - Candle Pattern Recognition (Hammer, Shooting Star)
 # - CSV logging
+# - Customizable Candle Timeframe (CLI)
 #
 # Requirements:
 #   pip install fyers-apiv3 requests pandas numpy
@@ -27,6 +28,7 @@ import math
 import hashlib
 import csv
 import requests
+import argparse
 import pandas as pd
 import numpy as np
 from urllib.parse import urlparse, parse_qs, quote
@@ -79,7 +81,7 @@ ROC_WINDOW_SEC = 70  # price confirm lookback
 # -------- Indicator Params --------
 EMA_FAST = 9
 EMA_SLOW = 21
-CANDLE_TIMEFRAME = "5" # 5 minutes
+CANDLE_TIMEFRAME = "5" # Default 5 minutes, can be overridden by CLI
 
 # ===============================
 # Symbol Master (Lot Size / Step)
@@ -1115,6 +1117,24 @@ def ensure_valid_token_and_client():
 # Main loop
 # ===============================
 def main():
+    global CANDLE_TIMEFRAME
+
+    # Parse CLI arguments for timeframe
+    parser = argparse.ArgumentParser(description="Gamma Blast Monitor with Customizable Timeframe")
+    parser.add_argument("--timeframe", "-tf", type=str, default="5",
+                        help="Candle timeframe in minutes (e.g., 1, 3, 5, 15). Default: 5")
+    args = parser.parse_args()
+
+    # Clean input (remove 'm' if present, e.g. "5m" -> "5")
+    tf_input = args.timeframe.lower().replace("m", "").strip()
+    if tf_input.isdigit() and int(tf_input) > 0:
+        CANDLE_TIMEFRAME = tf_input
+    else:
+        print(f"Warning: Invalid timeframe '{args.timeframe}'. Using default: 5")
+        CANDLE_TIMEFRAME = "5"
+
+    print(f"Starting Gamma Blast Monitor... (Candle Timeframe: {CANDLE_TIMEFRAME}m)")
+
     try:
         fy, app_id, token_prefixed = ensure_valid_token_and_client()
         print(f"\nAccess Token ready for {app_id}.")
