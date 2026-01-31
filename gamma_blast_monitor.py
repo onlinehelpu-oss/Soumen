@@ -82,7 +82,7 @@ ROC_WINDOW_SEC = 70  # price confirm lookback
 # -------- Indicator Params --------
 EMA_FAST = 9
 EMA_SLOW = 21
-CANDLE_TIMEFRAME = "5" # Default 5 minutes, can be overridden by CLI
+CANDLE_TIMEFRAME = "5" # Default 5 minutes, can be overridden by CLI or editing this variable
 
 # -------- Trade State --------
 TRADE_ENABLED = False
@@ -479,10 +479,13 @@ def format_oi(v):
 # ===============================
 # Indicators & Patterns
 # ===============================
-def fetch_candles(fy, symbol, resolution=CANDLE_TIMEFRAME, days=5):
+def fetch_candles(fy, symbol, resolution=None, days=5):
     """
     Fetches historical candle data for indicators.
     """
+    if resolution is None:
+        resolution = CANDLE_TIMEFRAME
+
     end_date = datetime.date.today()
     start_date = end_date - datetime.timedelta(days=days)
 
@@ -1301,21 +1304,21 @@ def main():
 
     # Parse CLI arguments for timeframe
     parser = argparse.ArgumentParser(description="Gamma Blast Monitor with Customizable Timeframe")
-    parser.add_argument("--timeframe", "-tf", type=str, default="5",
-                        help="Candle timeframe in minutes (e.g., 1, 3, 5, 15). Default: 5")
+    parser.add_argument("--timeframe", "-tf", type=str, default=None,
+                        help=f"Candle timeframe in minutes (e.g., 1, 3, 5, 15). Default: {CANDLE_TIMEFRAME}")
     parser.add_argument("--trade", action="store_true", help="Enable Automated Trading")
     parser.add_argument("--lots", type=int, default=1, help="Lot Multiplier (default 1)")
     parser.add_argument("--rr", type=float, default=2.0, help="Risk:Reward Ratio (default 2.0)")
 
     args = parser.parse_args()
 
-    # Clean input (remove 'm' if present, e.g. "5m" -> "5")
-    tf_input = args.timeframe.lower().replace("m", "").strip()
-    if tf_input.isdigit() and int(tf_input) > 0:
-        CANDLE_TIMEFRAME = tf_input
-    else:
-        print(f"Warning: Invalid timeframe '{args.timeframe}'. Using default: 5")
-        CANDLE_TIMEFRAME = "5"
+    # Update timeframe if provided via CLI
+    if args.timeframe:
+        tf_input = args.timeframe.lower().replace("m", "").strip()
+        if tf_input.isdigit() and int(tf_input) > 0:
+            CANDLE_TIMEFRAME = tf_input
+        else:
+            print(f"Warning: Invalid timeframe '{args.timeframe}'. Using configured default: {CANDLE_TIMEFRAME}")
 
     TRADE_ENABLED = args.trade
     LOT_MULTIPLIER = args.lots
