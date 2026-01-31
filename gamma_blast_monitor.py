@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# Combined & Rectified:
+# Combined & Rectified (Updated):
 # - Robust auth (APPID:token, dual-host exchange, upfront quotes() probe with forced re-auth on -15)
 # - Batched quotes + short-term ROC
 # - Option-chain fetch with symbol-variant fallback
 # - Real-time expiry selection (skip same-day after 15:25 IST)
 # - Gamma Blast (ΔOI window + dynamic threshold + price ROC confirm)
+# - Gamma Wall Detection (Max OI Levels)
+# - VWAP & EMA (9, 21) Indication
+# - Candle Pattern Recognition (Hammer, Shooting Star)
 # - CSV logging
 #
 # Requirements:
-#   pip install fyers-apiv3 requests
+#   pip install fyers-apiv3 requests pandas numpy
 #
 # NOTE: 'redirect_url' in fyers_login_details.json MUST match your Fyers app config exactly.
 
@@ -24,6 +27,8 @@ import math
 import hashlib
 import csv
 import requests
+import pandas as pd
+import numpy as np
 from urllib.parse import urlparse, parse_qs, quote
 from fyers_apiv3 import fyersModel
 
@@ -71,6 +76,11 @@ GB_OICH_SCALE = 0.05  # scale * max(CE_abs, PE_abs)
 GB_ROC_BP_THRESHOLD = 5.0  # price ROC (bp) confirmation
 ROC_WINDOW_SEC = 70  # price confirm lookback
 
+# -------- Indicator Params --------
+EMA_FAST = 9
+EMA_SLOW = 21
+CANDLE_TIMEFRAME = "5" # 5 minutes
+
 # ===============================
 # Symbol Master (Lot Size / Step)
 # ===============================
@@ -92,67 +102,29 @@ def fetch_symbol_master():
         try:
             r = requests.get(url, timeout=15)
             r.raise_for_status()
-            # Columns (approx):
-            # 0:FyersToken, 1:Name, 2:InstType, 3:MinLot, 4:TickSize, ..., 13:SymbolDetails, ...
-            # We need to parse CSV lines carefully.
             lines = r.text.strip().split("\n")
             reader = csv.reader(lines)
-            header = next(reader, None)  # skip header if present (check Fyers format)
-            # Fyers public CSVs usually don't have headers, or we check first row.
-            # If first row "Fytoken" etc, skip.
+            header = next(reader, None)
             if header and "Fytoken" in str(header[0]):
                 pass
             else:
-                # Reset reader if no header
                 reader = csv.reader(lines)
 
             for row in reader:
                 if len(row) < 14: continue
-                # row[1] e.g., "NSE:NIFTY23OCT19500CE" or "NSE:NIFTYBANK-INDEX" (not in FO usually)
-                # Actually FO CSV contains derivatives.
-                # We need to extract UNDERLYING name to group them.
-                # row[13] is often "NIFTY" or "BANKNIFTY" (Symbol Details)
-                # row[3] is Min Lot Size
-                # To find step, we collect strikes from row[1] if possible, or use logic?
-                # Actually, parsing symbol string "NIFTY23OCT19500CE" is complex.
-                # Easier approach: Group by row[13] (Root Symbol).
-
                 root = row[13].strip().upper()
                 if not root: continue
-
                 try:
                     lot = int(row[3])
                 except:
                     continue
-
-                # Extract strike from Name if possible?
-                # The CSV format is tricky. Let's rely on standard logic + lot size.
-                # But wait, we need Strike Step for the script.
-                # Let's verify commonly known roots.
-
                 if root not in temp_data:
                     temp_data[root] = {"lot": lot, "strikes": set()}
-
-                # Just store lot size primarily. Step is harder to infer from CSV without parsing every symbol.
-                # We can try to update lot size if it changes (usually constant for an expiry).
                 temp_data[root]["lot"] = lot
 
         except Exception as e:
             print(f"Warning: Failed to fetch/parse {exch} master: {e}")
 
-    # Post-process: Map known indices to these roots
-    # NIFTY50-INDEX -> NIFTY
-    # NIFTYBANK-INDEX -> BANKNIFTY
-    # FINNIFTY-INDEX -> FINNIFTY
-    # SENSEX-INDEX -> SENSEX
-    # MIDCPNIFTY-INDEX -> MIDCPNIFTY
-
-    # Hardcoded fallback steps if CSV fails or logic is too complex
-    # But we want "automatic".
-    # For Step: We will use a robust lookup.
-    # For Lot: We use the fetched value.
-
-    # Map our SYMBOLS to Roots
     mapping = {
         "NSE:NIFTY50-INDEX": "NIFTY",
         "NSE:NIFTYBANK-INDEX": "BANKNIFTY",
@@ -163,7 +135,7 @@ def fetch_symbol_master():
     }
 
     defaults = {
-        "NIFTY": {"step": 50, "lot": 25},  # 25 is recent change? 75->50->25? CSV will be truth.
+        "NIFTY": {"step": 50, "lot": 25},
         "BANKNIFTY": {"step": 100, "lot": 15},
         "FINNIFTY": {"step": 50, "lot": 25},
         "SENSEX": {"step": 100, "lot": 10},
@@ -172,19 +144,14 @@ def fetch_symbol_master():
     }
 
     for sym_full, root in mapping.items():
-        # Default
         d = defaults.get(root, {"step": 100, "lot": 1})
         final_lot = d["lot"]
         final_step = d["step"]
-
-        # Override Lot from CSV if available
         if root in temp_data:
             fetched_lot = temp_data[root]["lot"]
             if fetched_lot > 0:
                 final_lot = fetched_lot
-
         SYMBOL_MASTER_MAP[sym_full] = {"lot_size": final_lot, "step": final_step}
-        # print(f"DEBUG: {sym_full} -> Lot:{final_lot}, Step:{final_step}")
 
     print("Symbol Master loaded.")
 
@@ -196,7 +163,6 @@ def load_or_prompt_creds():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r") as f:
             data = json.load(f)
-            # Robust strip for all string values
             if isinstance(data, dict):
                 for k, v in data.items():
                     if isinstance(v, str):
@@ -241,8 +207,6 @@ def extract_code(user_input):
 
 
 def validate_authcode(app_id, secret_id, auth_code, max_retries=5):
-    """Dual-host exchange for robustness (api-t1 first, then api)."""
-
     def _exchange_on(host):
         url = f"https://{host}.fyers.in/api/v3/validate-authcode"
         payload = {
@@ -479,6 +443,130 @@ def format_oi(v):
         return f"{int(round(float(v))):,}"
     except Exception:
         return str(v)
+
+# ===============================
+# Indicators & Patterns
+# ===============================
+def fetch_candles(fy, symbol, resolution=CANDLE_TIMEFRAME, days=5):
+    """
+    Fetches historical candle data for indicators.
+    """
+    end_date = datetime.date.today()
+    start_date = end_date - datetime.timedelta(days=days)
+
+    payload = {
+        "symbol": symbol,
+        "resolution": str(resolution),
+        "date_format": "1",
+        "range_from": start_date.strftime("%Y-%m-%d"),
+        "range_to": end_date.strftime("%Y-%m-%d"),
+        "cont_flag": "1"
+    }
+
+    try:
+        response = fy.history(data=payload)
+        if response.get("s") != "ok":
+            return None
+        candles = response.get("candles", [])
+        if not candles:
+            return None
+
+        df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        # timestamp is epoch
+        df["datetime"] = pd.to_datetime(df["timestamp"], unit="s").dt.tz_localize('UTC').dt.tz_convert('Asia/Kolkata')
+        return df
+    except Exception as e:
+        print(f"Error fetching candles for {symbol}: {e}")
+        return None
+
+def calculate_vwap(df):
+    """
+    Calculates Intraday VWAP.
+    Resets at the start of each day.
+    """
+    df = df.copy()
+    df['date'] = df['datetime'].dt.date
+    df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3
+    df['pv'] = df['typical_price'] * df['volume']
+
+    # Group by date and calculate cumulative sums
+    df['cum_pv'] = df.groupby('date')['pv'].cumsum()
+    df['cum_vol'] = df.groupby('date')['volume'].cumsum()
+    df['vwap'] = df['cum_pv'] / df['cum_vol']
+
+    return df
+
+def calculate_indicators(df):
+    """
+    Calculates EMA and Patterns.
+    """
+    if df is None or df.empty:
+        return None
+
+    # EMA
+    df[f'ema_{EMA_FAST}'] = df['close'].ewm(span=EMA_FAST, adjust=False).mean()
+    df[f'ema_{EMA_SLOW}'] = df['close'].ewm(span=EMA_SLOW, adjust=False).mean()
+
+    # VWAP
+    df = calculate_vwap(df)
+
+    return df
+
+def detect_patterns(df):
+    """
+    Detects Hammer and Shooting Star on the LAST COMPLETE candle.
+    """
+    if df is None or len(df) < 2:
+        return "N/A"
+
+    # We look at the last closed candle (second to last row if current is forming,
+    # but strictly speaking history API might not return the forming candle depending on params.
+    # Assuming last row is the latest available candle.)
+    # Let's use the last row.
+    row = df.iloc[-1]
+
+    O, H, L, C = row['open'], row['high'], row['low'], row['close']
+    body = abs(C - O)
+    upper_wick = H - max(C, O)
+    lower_wick = min(C, O) - L
+    range_len = H - L
+
+    pattern = []
+
+    # Green Hammer: Green Body, Lower Wick >= 2 * Body, Upper Wick small
+    if C > O and lower_wick >= 2 * body and upper_wick <= 0.5 * body:
+        pattern.append("Green Hammer")
+
+    # Red Shooting Star: Red Body, Upper Wick >= 2 * Body, Lower Wick small
+    if C < O and upper_wick >= 2 * body and lower_wick <= 0.5 * body:
+        pattern.append("Red Shooting Star")
+
+    return ", ".join(pattern) if pattern else "None"
+
+def find_gamma_walls(strikes_map):
+    """
+    Finds strikes with highest OI for CE (Resistance) and PE (Support).
+    """
+    max_ce_oi = -1
+    max_ce_strike = -1
+    max_pe_oi = -1
+    max_pe_strike = -1
+
+    for strike, data in strikes_map.items():
+        ce = data.get("CE")
+        pe = data.get("PE")
+
+        if ce and ce.get("oi") is not None:
+            if ce["oi"] > max_ce_oi:
+                max_ce_oi = ce["oi"]
+                max_ce_strike = strike
+
+        if pe and pe.get("oi") is not None:
+            if pe["oi"] > max_pe_oi:
+                max_pe_oi = pe["oi"]
+                max_pe_strike = strike
+
+    return max_ce_strike, max_ce_oi, max_pe_strike, max_pe_oi
 
 # ===============================
 # Black-Scholes (fallback greeks)
@@ -759,6 +847,28 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
     print(f"\nLive LTP for {symbol} is: {S}")
     print(f"ATM strike is: {atm_strike} (Step: {step}, Lot: {lot_size})")
 
+    # ---- Fetch Indicators (New) ----
+    print("Fetching indicators...")
+    try:
+        df_hist = fetch_candles(fy, symbol)
+        if df_hist is not None:
+            df_ind = calculate_indicators(df_hist)
+            if df_ind is not None and not df_ind.empty:
+                last = df_ind.iloc[-1]
+                vwap = last.get('vwap', 0)
+                ema_f = last.get(f'ema_{EMA_FAST}', 0)
+                ema_s = last.get(f'ema_{EMA_SLOW}', 0)
+                pattern = detect_patterns(df_ind)
+
+                print(f"INDICATORS [{CANDLE_TIMEFRAME}m]: VWAP={vwap:.2f} | EMA{EMA_FAST}={ema_f:.2f} | EMA{EMA_SLOW}={ema_s:.2f}")
+                print(f"PATTERNS   [{CANDLE_TIMEFRAME}m]: {pattern}")
+            else:
+                print("Indicators: Not enough data.")
+        else:
+            print("Indicators: Failed to fetch history.")
+    except Exception as e:
+        print(f"Indicators Error: {e}")
+
     resp, err, used_sym = get_optionchain_response(fy, symbol)
     if err or not isinstance(resp, dict):
         print("Warning: could not parse optionchain response.")
@@ -768,6 +878,10 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
     if strikes_map is None:
         print("Warning: could not parse strikes from optionchain response.")
         return {"status": "oc_error", "detail": {"message": "no strikes"}}
+
+    # ---- Gamma Wall (New) ----
+    cw_k, cw_v, pw_k, pw_v = find_gamma_walls(strikes_map)
+    print(f"GAMMA WALLS: Max Call OI: {format_oi(cw_v)} @ {cw_k} | Max Put OI: {format_oi(pw_v)} @ {pw_k}")
 
     # Expiry -> time to expiry (years)
     T = None
