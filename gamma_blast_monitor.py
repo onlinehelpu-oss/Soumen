@@ -12,6 +12,7 @@
 # - Candle Pattern Recognition (Hammer, Shooting Star)
 # - CSV logging
 # - Customizable Candle Timeframe (CLI)
+# - Automated Trading (Gamma Blast + Trend Confirmation)
 #
 # Requirements:
 #   pip install fyers-apiv3 requests pandas numpy
@@ -82,6 +83,35 @@ ROC_WINDOW_SEC = 70  # price confirm lookback
 EMA_FAST = 9
 EMA_SLOW = 21
 CANDLE_TIMEFRAME = "5" # Default 5 minutes, can be overridden by CLI
+
+# -------- Trade State --------
+TRADE_ENABLED = False
+LOT_MULTIPLIER = 1
+RISK_REWARD = 2.0
+
+class TradeState:
+    def __init__(self):
+        self.positions = {} # {symbol: {'type': 'CE'/'PE', 'entry': float, 'sl': float, 'target': float, 'qty': int, 'opt_sym': str}}
+
+    def in_position(self, symbol):
+        return symbol in self.positions
+
+    def get_position(self, symbol):
+        return self.positions.get(symbol)
+
+    def open_position(self, symbol, type_, entry, sl, target, qty, opt_sym):
+        self.positions[symbol] = {
+            'type': type_, 'entry': entry, 'sl': sl, 'target': target, 'qty': qty, 'opt_sym': opt_sym
+        }
+        print(f"[TRADE] OPEN {type_} on {symbol} | Spot Entry: {entry:.2f}, SL: {sl:.2f}, TGT: {target:.2f} | Opt: {opt_sym} x {qty}")
+
+    def close_position(self, symbol, reason, price):
+        if symbol in self.positions:
+            p = self.positions[symbol]
+            print(f"[TRADE] CLOSE {p['type']} on {symbol} | Reason: {reason} | Spot Price: {price:.2f}")
+            del self.positions[symbol]
+
+GLOBAL_TRADE_STATE = TradeState()
 
 # ===============================
 # Symbol Master (Lot Size / Step)
@@ -851,6 +881,8 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
 
     # ---- Fetch Indicators (New) ----
     print("Fetching indicators...")
+    vwap = 0
+    pattern = "None"
     try:
         df_hist = fetch_candles(fy, symbol)
         if df_hist is not None:
@@ -922,6 +954,91 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
             print("Dealer hedge pressure: short puts  -> SELL index/futures (↓).")
     else:
         print(f"No blast ({reason})")
+
+    # ---- Trading Logic (New) ----
+    if TRADE_ENABLED:
+        try:
+            if not GLOBAL_TRADE_STATE.in_position(symbol):
+                # ENTRY LOGIC
+                signal_bull = (blast and blast_dir == "BULL")
+                signal_bear = (blast and blast_dir == "BEAR")
+
+                # Confirmations (Strict: Price vs VWAP)
+                # Patterns can be additive
+                valid_bull = signal_bull and (S > vwap)
+                valid_bear = signal_bear and (S < vwap)
+
+                if valid_bull:
+                    print(f"[TRADE SIGNAL] BULLISH ENTRY on {symbol}")
+                    # Find CE symbol
+                    ce_strike = atm_strike
+                    ce_sym_full = ""
+                    # Locate option symbol in map if possible
+                    if strikes_map.get(ce_strike) and strikes_map[ce_strike].get("CE"):
+                         # The map stores data, but we need the symbol string.
+                         # parse_optionchain.. extracts data. It doesn't save the symbol string explicitly in the simplified map.
+                         # We need to re-resolve or assume standard format.
+                         # Safer to call resolve_option_symbol helper if we import it, or just use Fyers naming convention
+                         # For robust trading, let's use the helper we are about to add.
+                         pass
+
+                    # Resolve Symbol
+                    opt_sym, _ = resolve_option_symbol(fy, True, S, symbol)
+                    if opt_sym:
+                        sl_price = S - (S * 0.005) # 0.5% SL
+                        tgt_price = S + (S * 0.005 * RISK_REWARD)
+
+                        resp = place_market_order(fy, opt_sym, lot_size * LOT_MULTIPLIER, "BUY")
+                        if resp.get("s") == "ok":
+                            GLOBAL_TRADE_STATE.open_position(symbol, "CE", S, sl_price, tgt_price, lot_size * LOT_MULTIPLIER, opt_sym)
+
+                elif valid_bear:
+                    print(f"[TRADE SIGNAL] BEARISH ENTRY on {symbol}")
+                    # Resolve Symbol (Buy PE)
+                    opt_sym, _ = resolve_option_symbol(fy, False, S, symbol)
+                    if opt_sym:
+                        sl_price = S + (S * 0.005)
+                        tgt_price = S - (S * 0.005 * RISK_REWARD)
+
+                        resp = place_market_order(fy, opt_sym, lot_size * LOT_MULTIPLIER, "BUY")
+                        if resp.get("s") == "ok":
+                            GLOBAL_TRADE_STATE.open_position(symbol, "PE", S, sl_price, tgt_price, lot_size * LOT_MULTIPLIER, opt_sym)
+
+            else:
+                # EXIT LOGIC
+                pos = GLOBAL_TRADE_STATE.get_position(symbol)
+                p_type = pos['type']
+                entry = pos['entry']
+                sl = pos['sl']
+                target = pos['target']
+                opt_sym = pos['opt_sym']
+                qty = pos['qty']
+
+                exit_signal = False
+                reason = ""
+
+                if p_type == "CE":
+                    if S <= sl:
+                        exit_signal = True; reason = "SL Hit"
+                    elif S >= target:
+                        exit_signal = True; reason = "Target Hit"
+                    elif blast and blast_dir == "BEAR": # Reversal
+                        exit_signal = True; reason = "Reversal Signal"
+                elif p_type == "PE":
+                    if S >= sl:
+                        exit_signal = True; reason = "SL Hit"
+                    elif S <= target:
+                        exit_signal = True; reason = "Target Hit"
+                    elif blast and blast_dir == "BULL": # Reversal
+                        exit_signal = True; reason = "Reversal Signal"
+
+                if exit_signal:
+                    resp = place_market_order(fy, opt_sym, qty, "SELL") # Close Long Option
+                    if resp.get("s") == "ok":
+                        GLOBAL_TRADE_STATE.close_position(symbol, reason, S)
+
+        except Exception as e:
+            print(f"[TRADE ERROR] {e}")
 
     # ---- Pretty OC table around ATM ----
     minK = atm_strike - (num_strikes * step)
@@ -1112,17 +1229,84 @@ def ensure_valid_token_and_client():
     # Other error codes
     raise RuntimeError(f"quotes() probe failed: code={code}, message={msg}")
 
+# ===============================
+# Order Helpers (Added)
+# ===============================
+def resolve_option_symbol(fyers, is_ce, spot_ltp, symbol_root):
+    # Mapping for roots (simplified)
+    # The monitor loop iterates SYMBOLS = ["NSE:NIFTY50-INDEX", ...]
+    # We need to map "NSE:NIFTY50-INDEX" -> "NSE:NIFTY50-INDEX" for option chain fetching.
+    try:
+        resp = fyers.optionchain(data={"symbol": symbol_root}) or {}
+        chain = (resp.get("data") or {}).get("optionChain", []) or (resp.get("data") or {}).get("optionsChain", [])
+        if not chain: return None, None
+
+        step = SYMBOL_MASTER_MAP.get(symbol_root, {}).get("step", 50)
+        target = round(spot_ltp / step) * step
+        opt_type = "CE" if is_ce else "PE"
+
+        filt = [row for row in chain if str(row.get("option_type", "")).upper() == opt_type]
+        if not filt: return None, None
+
+        # Sort by Expiry
+        def expiry_key(row):
+            exp = row.get("expiry_date", row.get("expiry"))
+            try:
+                return datetime.datetime.strptime(exp, "%d%b%y") if exp and len(exp) == 7 else datetime.datetime.strptime(exp, "%Y-%m-%d")
+            except:
+                return datetime.datetime.max
+
+        # Earliest expiry
+        filt.sort(key=expiry_key)
+        best_expiry = filt[0].get("expiry_date", filt[0].get("expiry"))
+
+        # Filter for this expiry
+        filt = [r for r in filt if r.get("expiry_date", r.get("expiry")) == best_expiry]
+
+        # Nearest strike
+        def strike_key(row):
+            sp = row.get("strike_price", row.get("strikePrice"))
+            return abs(float(sp) - target)
+
+        best = min(filt, key=strike_key)
+        sym = best.get("symbol") or best.get("tradingsymbol") or best.get("tsym")
+        return sym, best_expiry
+    except Exception as e:
+        print(f"Option resolve error: {e}")
+        return None, None
+
+def place_market_order(fyers, symbol, qty, side):
+    """
+    side: 'BUY' or 'SELL'
+    """
+    s_map = {"BUY": 1, "SELL": -1}
+    data = {
+        "symbol": symbol, "qty": qty, "type": 2,  # Market
+        "side": s_map.get(side, 1),
+        "productType": "INTRADAY",
+        "limitPrice": 0, "stopPrice": 0,
+        "validity": "DAY", "disclosedQty": 0, "offlineOrder": False,
+    }
+    print(f"[ORDER] Placing {side} {qty} on {symbol}...")
+    try:
+        return fyers.place_order(data=data)
+    except Exception as e:
+        return {"s": "error", "message": str(e)}
 
 # ===============================
 # Main loop
 # ===============================
 def main():
-    global CANDLE_TIMEFRAME
+    global CANDLE_TIMEFRAME, TRADE_ENABLED, LOT_MULTIPLIER, RISK_REWARD
 
     # Parse CLI arguments for timeframe
     parser = argparse.ArgumentParser(description="Gamma Blast Monitor with Customizable Timeframe")
     parser.add_argument("--timeframe", "-tf", type=str, default="5",
                         help="Candle timeframe in minutes (e.g., 1, 3, 5, 15). Default: 5")
+    parser.add_argument("--trade", action="store_true", help="Enable Automated Trading")
+    parser.add_argument("--lots", type=int, default=1, help="Lot Multiplier (default 1)")
+    parser.add_argument("--rr", type=float, default=2.0, help="Risk:Reward Ratio (default 2.0)")
+
     args = parser.parse_args()
 
     # Clean input (remove 'm' if present, e.g. "5m" -> "5")
@@ -1133,7 +1317,15 @@ def main():
         print(f"Warning: Invalid timeframe '{args.timeframe}'. Using default: 5")
         CANDLE_TIMEFRAME = "5"
 
+    TRADE_ENABLED = args.trade
+    LOT_MULTIPLIER = args.lots
+    RISK_REWARD = args.rr
+
     print(f"Starting Gamma Blast Monitor... (Candle Timeframe: {CANDLE_TIMEFRAME}m)")
+    if TRADE_ENABLED:
+        print(f"*** AUTOMATED TRADING ENABLED (Lots: {LOT_MULTIPLIER}, R:R: 1:{RISK_REWARD}) ***")
+    else:
+        print("Monitoring Mode (Trading Disabled)")
 
     try:
         fy, app_id, token_prefixed = ensure_valid_token_and_client()
