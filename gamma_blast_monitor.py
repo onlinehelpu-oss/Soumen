@@ -13,6 +13,7 @@
 # - CSV logging
 # - Customizable Candle Timeframe (CLI)
 # - Automated Trading (Gamma Blast + Trend Confirmation)
+# - State Persistence (JSON) and Broker Sync
 #
 # Requirements:
 #   pip install fyers-apiv3 requests pandas numpy
@@ -88,10 +89,28 @@ CANDLE_TIMEFRAME = "5" # Default 5 minutes, can be overridden by CLI or editing 
 TRADE_ENABLED = False
 LOT_MULTIPLIER = 1
 RISK_REWARD = 2.0
+STATE_FILE = "gamma_bot_state.json"
 
 class TradeState:
     def __init__(self):
         self.positions = {} # {symbol: {'type': 'CE'/'PE', 'entry': float, 'sl': float, 'target': float, 'qty': int, 'opt_sym': str}}
+        self.load_state()
+
+    def load_state(self):
+        if os.path.exists(STATE_FILE):
+            try:
+                with open(STATE_FILE, 'r') as f:
+                    self.positions = json.load(f)
+                print(f"[STATE] Loaded {len(self.positions)} positions from {STATE_FILE}")
+            except Exception as e:
+                print(f"[STATE] Error loading state: {e}")
+
+    def save_state(self):
+        try:
+            with open(STATE_FILE, 'w') as f:
+                json.dump(self.positions, f, indent=2)
+        except Exception as e:
+            print(f"[STATE] Error saving state: {e}")
 
     def in_position(self, symbol):
         return symbol in self.positions
@@ -103,6 +122,7 @@ class TradeState:
         self.positions[symbol] = {
             'type': type_, 'entry': entry, 'sl': sl, 'target': target, 'qty': qty, 'opt_sym': opt_sym
         }
+        self.save_state()
         print(f"[TRADE] OPEN {type_} on {symbol} | Spot Entry: {entry:.2f}, SL: {sl:.2f}, TGT: {target:.2f} | Opt: {opt_sym} x {qty}")
 
     def close_position(self, symbol, reason, price):
@@ -110,6 +130,13 @@ class TradeState:
             p = self.positions[symbol]
             print(f"[TRADE] CLOSE {p['type']} on {symbol} | Reason: {reason} | Spot Price: {price:.2f}")
             del self.positions[symbol]
+            self.save_state()
+
+    def update_quantity(self, symbol, new_qty):
+        if symbol in self.positions:
+            self.positions[symbol]['qty'] = new_qty
+            self.save_state()
+            print(f"[SYNC] Updated {symbol} quantity to {new_qty}")
 
 GLOBAL_TRADE_STATE = TradeState()
 
@@ -1255,7 +1282,15 @@ def resolve_option_symbol(fyers, is_ce, spot_ltp, symbol_root):
         def expiry_key(row):
             exp = row.get("expiry_date", row.get("expiry"))
             try:
-                return datetime.datetime.strptime(exp, "%d%b%y") if exp and len(exp) == 7 else datetime.datetime.strptime(exp, "%Y-%m-%d")
+                if not exp: return datetime.datetime.max
+                exp = str(exp).strip()
+                # Try multiple formats
+                for fmt in ("%d-%m-%Y", "%Y-%m-%d", "%d%b%y"):
+                    try:
+                        return datetime.datetime.strptime(exp, fmt)
+                    except ValueError:
+                        continue
+                return datetime.datetime.max
             except:
                 return datetime.datetime.max
 
@@ -1283,10 +1318,11 @@ def place_market_order(fyers, symbol, qty, side):
     side: 'BUY' or 'SELL'
     """
     s_map = {"BUY": 1, "SELL": -1}
+    # User requested to carry position, so use MARGIN (Normal) instead of INTRADAY
     data = {
         "symbol": symbol, "qty": qty, "type": 2,  # Market
         "side": s_map.get(side, 1),
-        "productType": "INTRADAY",
+        "productType": "MARGIN",
         "limitPrice": 0, "stopPrice": 0,
         "validity": "DAY", "disclosedQty": 0, "offlineOrder": False,
     }
@@ -1295,6 +1331,65 @@ def place_market_order(fyers, symbol, qty, side):
         return fyers.place_order(data=data)
     except Exception as e:
         return {"s": "error", "message": str(e)}
+
+# ===============================
+# Sync Logic (New)
+# ===============================
+def sync_with_broker(fy):
+    """
+    Syncs internal TradeState with actual broker positions.
+    - If Position in State but NOT in Broker -> Remove from State (Manual Close).
+    - If Position in State AND in Broker (diff qty) -> Update State Qty.
+    - If Position in Broker but NOT in State -> Ignore.
+    """
+    if not TRADE_ENABLED: return
+
+    print("[SYNC] Checking broker positions...")
+    try:
+        resp = fy.positions()
+        if resp.get("s") != "ok":
+            print(f"[SYNC] Error fetching positions: {resp.get('message')}")
+            return
+
+        net_positions = resp.get("netPositions", [])
+
+        # Create a map of broker positions: {symbol: qty}
+        # We focus on open positions (netQty != 0)
+        broker_map = {}
+        for p in net_positions:
+            sym = p.get("symbol")
+            qty = p.get("netQty", 0)
+            if sym:
+                broker_map[sym] = int(qty)
+
+        # Iterate over LOCAL state to reconcile
+        # We need a list of keys to avoid runtime error during deletion
+        local_symbols = list(GLOBAL_TRADE_STATE.positions.keys())
+
+        for index_symbol in local_symbols:
+            pos_data = GLOBAL_TRADE_STATE.positions[index_symbol]
+            opt_sym = pos_data['opt_sym']
+            local_qty = pos_data['qty']
+
+            # Check if this option symbol exists in broker map
+            broker_qty = broker_map.get(opt_sym, 0)
+
+            if broker_qty == 0:
+                # Case 1: Fully Closed manually
+                print(f"[SYNC] Position {opt_sym} missing in broker. Assuming manual close.")
+                GLOBAL_TRADE_STATE.close_position(index_symbol, "Manual Close Detected", 0.0)
+
+            elif broker_qty != local_qty:
+                # Case 2: Partial Close or Mismatch
+                # Note: We assume positive qty for Long. If strategy supports short, check signs.
+                # Gamma Blast buys options (Long), so qty > 0.
+                print(f"[SYNC] Qty mismatch for {opt_sym}. Local: {local_qty}, Broker: {broker_qty}. Syncing...")
+                GLOBAL_TRADE_STATE.update_quantity(index_symbol, broker_qty)
+
+            # Case 3: Match -> Do nothing
+
+    except Exception as e:
+        print(f"[SYNC] Exception: {e}")
 
 # ===============================
 # Main loop
@@ -1327,6 +1422,7 @@ def main():
     print(f"Starting Gamma Blast Monitor... (Candle Timeframe: {CANDLE_TIMEFRAME}m)")
     if TRADE_ENABLED:
         print(f"*** AUTOMATED TRADING ENABLED (Lots: {LOT_MULTIPLIER}, R:R: 1:{RISK_REWARD}) ***")
+        print(f"*** State Persistence: {STATE_FILE} ***")
     else:
         print("Monitoring Mode (Trading Disabled)")
 
@@ -1349,6 +1445,10 @@ def main():
             print("\n" + "=" * 60)
             print(f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S}  ->  Refresh cycle #{cycle}")
             print("=" * 60)
+
+            # 0) Sync with Broker (if trading)
+            if TRADE_ENABLED:
+                sync_with_broker(fy)
 
             # 1) Batched quotes for all symbols
             ltps = get_ltps_batched(fy, SYMBOLS)
