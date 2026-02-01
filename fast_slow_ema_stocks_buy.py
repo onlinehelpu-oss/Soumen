@@ -670,12 +670,16 @@ def place_gtt_stoploss(symbol: str, qty: int, trigger_price: float) -> dict:
 
     data = {
         "symbol": symbol,
-        "qty": qty,
-        "type": 1,
-        "side": -1,
+        "type": 1,  # Single order
+        "side": -1, # Sell
         "productType": order_product_type,
-        "limitPrice": sl_price,
-        "stopPrice": trigger_price,
+        "orderInfo": {
+            "leg1": {
+                "price": sl_price,
+                "qty": qty,
+                "triggerPrice": trigger_price
+            }
+        }
     }
     if FYERS is None:
         err = {"s": "error", "message": "no fyers client for gtt"}
