@@ -1297,6 +1297,9 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                     state.target_price = None
                 else:
                     _real_print(f"[{symbol}] STOP-LOSS SELL FAILED: {sell_resp}")
+                    # If sell fails (e.g. manual close), force immediate sync to reset state
+                    _real_print(f"[{symbol}] Forcing immediate position sync due to order failure...")
+                    sync_with_broker_positions()
         except Exception as e:
             _real_print(f"[on_tick:stop_loss] error: {e}")
 
