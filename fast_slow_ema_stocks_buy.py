@@ -704,7 +704,7 @@ def cancel_gtt_order(gtt_id: str) -> dict:
     if FYERS is None:
         return {"s": "error", "message": "no fyers client"}
     try:
-        return FYERS.cancel_gtt(id=gtt_id)
+        return FYERS.cancel_gtt_order(id=gtt_id)
     except Exception as e:
         return {"s": "error", "message": str(e)}
 
