@@ -671,7 +671,7 @@ def place_gtt_stoploss(symbol: str, qty: int, trigger_price: float) -> dict:
     data = {
         "symbol": symbol,
         "qty": qty,
-        "type": 4,
+        "type": 1,
         "side": -1,
         "productType": order_product_type,
         "limitPrice": sl_price,
@@ -685,8 +685,11 @@ def place_gtt_stoploss(symbol: str, qty: int, trigger_price: float) -> dict:
         try:
             resp = FYERS.place_gtt(data=data)
             log_trade_event(symbol, "GTT_PLACE", qty, trigger_price, resp)
+            if isinstance(resp, dict) and resp.get("s") != "ok":
+                _real_print(f"[order] GTT placement failed: {resp}")
             return resp
-        except Exception:
+        except Exception as e:
+            _real_print(f"[order] GTT Exception: {e}")
             time.sleep(1)
     err = {"s": "error", "message": "gtt failed after retries"}
     log_trade_event(symbol, "GTT_FAIL", qty, trigger_price, err)
