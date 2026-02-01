@@ -683,7 +683,7 @@ def place_gtt_stoploss(symbol: str, qty: int, trigger_price: float) -> dict:
         return err
     for attempt in range(1, 3):
         try:
-            resp = FYERS.place_gtt(data=data)
+            resp = FYERS.place_gtt_order(data=data)
             log_trade_event(symbol, "GTT_PLACE", qty, trigger_price, resp)
             if isinstance(resp, dict) and resp.get("s") != "ok":
                 _real_print(f"[order] GTT placement failed: {resp}")
