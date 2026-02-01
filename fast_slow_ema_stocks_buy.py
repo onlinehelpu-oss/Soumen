@@ -1569,6 +1569,17 @@ def on_ws_error(err):
             )
             _remove_local_tokens(TOKENS_DIR)
             _clear_config_access_token()
+
+            # Force interactive login flow to get a fresh token
+            try:
+                _real_print("[auth] Prompting for new login to refresh token...")
+                new_token = run_interactive_login()
+                if new_token:
+                    global ACCESS_TOKEN
+                    ACCESS_TOKEN = new_token
+            except Exception as e:
+                _real_print(f"[auth] Interactive login failed: {e}")
+
             ok = _recreate_fyers_and_ws()
             if ok:
                 _real_print("[ws:error] Re-auth and reconnect succeeded.")
