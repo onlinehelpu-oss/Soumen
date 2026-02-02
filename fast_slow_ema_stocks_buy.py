@@ -891,11 +891,11 @@ def compute_prev_swing_high_for_entry(state: SymbolState, lookback: int, referen
             if is_peak:
                 peaks.append(current)
 
-        # If reference price is provided, find nearest Fractal Peak > reference
+        # If reference price is provided, find LATEST Fractal Peak > reference
         if reference_price is not None and not math.isnan(reference_price):
             valid_peaks = [p for p in peaks if p > reference_price]
             if valid_peaks:
-                return float(min(valid_peaks))  # Nearest resistance (Swing High) above entry
+                return float(valid_peaks[-1])  # LATEST (Most Recent) Swing High above entry
 
         # Fallback to absolute max if no higher swing found or no ref price
         return float(prior["high"].max())
