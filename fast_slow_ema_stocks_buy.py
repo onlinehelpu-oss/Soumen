@@ -1709,12 +1709,13 @@ def _recreate_fyers_and_ws():
     # ---------------------------- SYNC WITH BROKER ----------------------------
 
 
-def sync_with_broker_positions():
+def sync_with_broker_positions(force_sync=False):
     """
     Periodically syncs bot state with Fyers broker positions.
     - If bot has a position but broker doesn't -> Mark as closed (manual exit).
     - If bot has a position and broker has different qty/price -> Update bot state.
     - If broker has a position but bot doesn't -> Ignore (don't manage other trades).
+    :param force_sync: If True, bypass the 30-second grace period (used when order fails).
     """
     if FYERS is None:
         return
@@ -1762,8 +1763,8 @@ def sync_with_broker_positions():
 
                 # Case 1: Bot has position, Broker doesn't (Manual Full Close)
                 if total_broker_qty == 0:
-                    # Grace period check
-                    if (time.time() - getattr(state, "entry_time", 0)) < 30:
+                    # Grace period check - skip if force_sync is True
+                    if not force_sync and (time.time() - getattr(state, "entry_time", 0)) < 30:
                         continue
 
                     _real_print(f"[sync] Position for {sym} missing in broker (qty=0). Assuming MANUAL CLOSE.")
