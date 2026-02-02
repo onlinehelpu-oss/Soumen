@@ -666,6 +666,48 @@ def place_market_order(symbol: str, qty: int, side: int) -> dict:
     return err
 
 
+def verify_order_success(order_id: str, max_retries: int = 4) -> bool:
+    """
+    Polls the orderbook to verify if the order was Accepted/Filled.
+    Returns True if Filled (2), Pending (6), Transit (4), or Open (11).
+    Returns False if Rejected (5) or Cancelled (1).
+    """
+    if not order_id or FYERS is None:
+        return False
+
+    _real_print(f"[order] Verifying status for Order ID: {order_id}...")
+
+    for i in range(max_retries):
+        try:
+            time.sleep(1) # Wait for broker to process
+            resp = FYERS.orderbook()
+            if isinstance(resp, dict) and resp.get("s") == "ok":
+                orders = resp.get("orderBook", [])
+                for o in orders:
+                    if str(o.get("id")) == str(order_id):
+                        # Status Codes:
+                        # 1: Cancelled, 2: Traded/Filled, 3: (unused?), 4: Transit,
+                        # 5: Rejected, 6: Pending, 11: Open? (Fyers docs vary, but 2/6 are key)
+                        status = o.get("status")
+                        msg = o.get("message", "")
+
+                        if status in (2, 6, 4, 11):
+                            _real_print(f"[order] Order verified! Status={status} ({msg})")
+                            return True
+                        elif status in (5, 1):
+                            _real_print(f"[order] Order REJECTED/CANCELLED! Status={status} Msg={msg}")
+                            return False
+                        else:
+                            _real_print(f"[order] Order status {status} unknown. Assuming pending.")
+                            return True # Assume OK if uncertain
+        except Exception as e:
+            _real_print(f"[order] Verification error: {e}")
+            time.sleep(0.5)
+
+    _real_print("[order] Could not verify order status (timeout). Assuming success to be safe.")
+    return True # Fail-open: Let Sync fix it if it's actually missing
+
+
 def place_gtt_stoploss(symbol: str, qty: int, trigger_price: float) -> dict:
     sl_price = round(trigger_price * 0.99, 1)
 
@@ -1085,78 +1127,89 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                             )
                             resp = place_market_order(symbol, qty, side=1)
                             if isinstance(resp, dict) and resp.get("s") == "ok":
-                                state.entry_price = ltp
-                                state.qty = qty
-                                state.just_entered = True
-                                state.entry_time = time.time()
-                                state.exit_pending = False
-                                state.exit_signal_candle = None
-                                state.exit_signal_expiry = None
-                                state.exit_try_count = 0
-                                state.last_failed_exit_ts = None
+                                order_id = resp.get("id")
+                                # VERIFY ORDER WAS NOT REJECTED
+                                if verify_order_success(order_id):
+                                    state.entry_price = ltp
+                                    state.qty = qty
+                                    state.just_entered = True
+                                    state.entry_time = time.time()
+                                    state.exit_pending = False
+                                    state.exit_signal_candle = None
+                                    state.exit_signal_expiry = None
+                                    state.exit_try_count = 0
+                                    state.last_failed_exit_ts = None
 
-                                # Capture ATR for trailing
-                                try:
-                                    if not state.data.empty and "atr" in state.data.columns:
-                                        last_atr = float(state.data["atr"].iloc[-1])
-                                        state.atr_at_entry = last_atr
-                                        _real_print(f"[entry-debug] ATR at entry: {last_atr:.2f}")
-                                    else:
+                                    # Capture ATR for trailing
+                                    try:
+                                        if not state.data.empty and "atr" in state.data.columns:
+                                            last_atr = float(state.data["atr"].iloc[-1])
+                                            state.atr_at_entry = last_atr
+                                            _real_print(f"[entry-debug] ATR at entry: {last_atr:.2f}")
+                                        else:
+                                            state.atr_at_entry = 0.0
+                                    except Exception:
                                         state.atr_at_entry = 0.0
-                                except Exception:
-                                    state.atr_at_entry = 0.0
 
-                                if SL_MODE == "signal_low":
-                                    state.stop_price = float(state.signal_candle["low"])
-                                else:
-                                    swing = compute_swing_low_for_signal(
-                                        state, SWING_LOOKBACK
-                                    )
-                                    state.stop_price = (
-                                        float(state.signal_candle["low"])
-                                        if math.isnan(swing) or swing <= 0
-                                        else float(swing)
-                                    )
+                                    if SL_MODE == "signal_low":
+                                        state.stop_price = float(state.signal_candle["low"])
+                                    else:
+                                        swing = compute_swing_low_for_signal(
+                                            state, SWING_LOOKBACK
+                                        )
+                                        state.stop_price = (
+                                            float(state.signal_candle["low"])
+                                            if math.isnan(swing) or swing <= 0
+                                            else float(swing)
+                                        )
 
-                                    # Validate potential target against actual entry price
-                                if (
-                                        state.potential_target_price is not None
-                                        and state.potential_target_price > state.entry_price
-                                ):
-                                    state.target_price = state.potential_target_price
-                                else:
-                                    state.target_price = None
+                                        # Validate potential target against actual entry price
+                                    if (
+                                            state.potential_target_price is not None
+                                            and state.potential_target_price > state.entry_price
+                                    ):
+                                        state.target_price = state.potential_target_price
+                                    else:
+                                        state.target_price = None
 
-                                    # Enhanced logging for target
-                                if state.target_price is not None:
-                                    target_str = f"{state.target_price:.2f}"
-                                elif state.potential_target_price is not None:
-                                    target_str = f"N/A (target {state.potential_target_price:.2f} <= entry {state.entry_price:.2f})"
-                                else:
-                                    target_str = "N/A"
+                                        # Enhanced logging for target
+                                    if state.target_price is not None:
+                                        target_str = f"{state.target_price:.2f}"
+                                    elif state.potential_target_price is not None:
+                                        target_str = f"N/A (target {state.potential_target_price:.2f} <= entry {state.entry_price:.2f})"
+                                    else:
+                                        target_str = "N/A"
 
-                                state.potential_target_price = None  # Clear after use
+                                    state.potential_target_price = None  # Clear after use
 
-                                _real_print(
-                                    f"[ENTRY CONFIRMED] {state.symbol}: "
-                                    f"Entered at {state.entry_price:.2f} | "
-                                    f"Target={target_str} | "
-                                    f"Stoploss={state.stop_price:.2f}"
-                                )
-
-                                gtt_resp = place_gtt_stoploss(
-                                    symbol, qty, trigger_price=state.stop_price
-                                )
-                                if isinstance(gtt_resp, dict) and gtt_resp.get("s") == "ok":
-                                    state.gtt_order_id = (
-                                            gtt_resp.get("id") or gtt_resp.get("gtt_id")
-                                    )
                                     _real_print(
-                                        f"[order] GTT placed id={state.gtt_order_id}"
+                                        f"[ENTRY CONFIRMED] {state.symbol}: "
+                                        f"Entered at {state.entry_price:.2f} | "
+                                        f"Target={target_str} | "
+                                        f"Stoploss={state.stop_price:.2f}"
                                     )
-                                state.status = "position"
-                                state.signal_candle = None
-                                state.signal_close_ts = None
+
+                                    gtt_resp = place_gtt_stoploss(
+                                        symbol, qty, trigger_price=state.stop_price
+                                    )
+                                    if isinstance(gtt_resp, dict) and gtt_resp.get("s") == "ok":
+                                        state.gtt_order_id = (
+                                                gtt_resp.get("id") or gtt_resp.get("gtt_id")
+                                        )
+                                        _real_print(
+                                            f"[order] GTT placed id={state.gtt_order_id}"
+                                        )
+                                    state.status = "position"
+                                    state.signal_candle = None
+                                    state.signal_close_ts = None
+                                else:
+                                    _real_print(f"[order] BUY ORDER REJECTED/CANCELLED for {symbol}. Resetting to WATCH.")
+                                    state.status = "watch" # Go back to watch, do not cooldown? or cooldown?
+                                    # If rejected (e.g. margin), maybe cooldown is better?
+                                    # Let's do cooldown to avoid infinite retries on same signal
+                                    state.status = "cooldown"
+                                    state.signal_candle = None
+                                    state.signal_close_ts = None
                             else:
                                 _real_print(
                                     f"[order] BUY ORDER FAILED for {symbol}: {resp}"
