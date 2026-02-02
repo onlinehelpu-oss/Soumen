@@ -830,7 +830,11 @@ def compute_swing_low_for_signal(state: SymbolState, lookback: int) -> float:
         return float("nan")
 
 
-def compute_prev_swing_high_for_entry(state: SymbolState, lookback: int) -> float:
+def compute_prev_swing_high_for_entry(state: SymbolState, lookback: int, reference_price: float = None) -> float:
+    """
+    Calculates the target based on the nearest swing high that is greater than the reference price (entry/signal high).
+    If no higher swing is found in the lookback, it falls back to the absolute highest high.
+    """
     try:
         df = state.data
         if df is None or df.empty:
@@ -842,9 +846,18 @@ def compute_prev_swing_high_for_entry(state: SymbolState, lookback: int) -> floa
             df_up_to = df
         if df_up_to.shape[0] <= 1:
             return float("nan")
+
         prior = df_up_to.iloc[:-1].tail(lookback)
         if prior.empty:
             return float("nan")
+
+        # If reference price is provided, find nearest high > reference
+        if reference_price is not None and not math.isnan(reference_price):
+            higher_swings = prior[prior["high"] > reference_price]["high"]
+            if not higher_swings.empty:
+                return float(higher_swings.min())  # Nearest resistance above entry
+
+        # Fallback to absolute max if no higher swing found or no ref price
         return float(prior["high"].max())
     except Exception:
         return float("nan")
@@ -1376,7 +1389,8 @@ def evaluate_on_new_candle(st: SymbolState):
             }
 
             # Calculate potential target and store it for validation after entry
-            target = compute_prev_swing_high_for_entry(st, SWING_HIGH_LOOKBACK)
+            # Use current signal high as reference for "nearest swing high > entry"
+            target = compute_prev_swing_high_for_entry(st, SWING_HIGH_LOOKBACK, reference_price=curr_high)
             st.potential_target_price = float(target) if target is not None and not math.isnan(target) else None
 
             try:
