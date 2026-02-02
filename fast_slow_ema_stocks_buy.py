@@ -139,7 +139,8 @@ MAX_REAUTH_ATTEMPTS = 3
 _real_print = print
 ALLOWED_SUBSTRINGS = (
     "ENTRY SIGNAL", "[signal:", "EXIT SIGNAL", "[exit:", "[CANDLE]", "[order]", "[auth]", "[ws]",
-    "[blocked-entry]", "[entry-debug]", "[exit-debug]", "TARGET EXIT", "STOP-LOSS", "[ENTRY CONFIRMED]"
+    "[blocked-entry]", "[entry-debug]", "[exit-debug]", "TARGET EXIT", "STOP-LOSS", "[ENTRY CONFIRMED]",
+    "[sync]", "[warmup]", "[main]"
 )
 
 
@@ -619,6 +620,9 @@ def decide_qty(symbol: str, entry_price: float) -> int:
 
 
 def place_market_order(symbol: str, qty: int, side: int) -> dict:
+    if qty <= 0:
+        return {"s": "error", "message": "qty is 0"}
+
     side_str = "BUY" if side == 1 else "SELL"
 
     # Dynamically set productType based on exchange
@@ -1293,6 +1297,12 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
 
         try:
             if ltp <= state.stop_price:
+                # Check cooldown to prevent rapid looping on failure
+                if state.last_failed_exit_ts:
+                    diff = (dt.now(IST).replace(tzinfo=None) - state.last_failed_exit_ts).total_seconds()
+                    if diff < 10:
+                        return
+
                 _real_print(
                     f"[{symbol}] STOP-LOSS HIT at LTP {ltp:.2f} (<= {state.stop_price:.2f})"
                 )
@@ -1310,9 +1320,15 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                     state.target_price = None
                 else:
                     _real_print(f"[{symbol}] STOP-LOSS SELL FAILED: {sell_resp}")
-                    # If sell fails (e.g. manual close), force immediate sync to reset state
-                    _real_print(f"[{symbol}] Forcing immediate position sync due to order failure...")
-                    sync_with_broker_positions()
+                    state.last_failed_exit_ts = dt.now(IST).replace(tzinfo=None)
+                    # If sell fails, check if we are still in the grace period
+                    if (dt.now(IST).replace(tzinfo=None).timestamp() - getattr(state, "entry_time", 0)) < 30:
+                        _real_print(f"[{symbol}] Sell failed inside grace period. Waiting 5s for API sync...")
+                        time.sleep(5)
+                    else:
+                        # If outside grace period, force sync to detect manual close
+                        _real_print(f"[{symbol}] Forcing immediate position sync due to order failure...")
+                        sync_with_broker_positions(force_sync=True)
         except Exception as e:
             _real_print(f"[on_tick:stop_loss] error: {e}")
 
@@ -1528,7 +1544,8 @@ def on_ws_open():
                     _real_print(
                         f"****** [{sym}] ENTRY SIGNAL (BODY crossed from below both EMAs to above both EMAs, EMA_fast>EMA_slow) ******")
                     _real_print(
-                        f"[signal:{sym}] signal_high={float(sc.get('high')):.2f} signal_low={float(sc.get('low')):.2f} | waiting for NEXT CANDLE to attempt breakout entry")
+                        f"[signal:{sym}] signal_high={float(sc.get('high')):.2f} signal_low={float(sc.get('low')):.2f} | waiting for NEXT CANDLE to attempt breakout entry"
+                    )
                 if getattr(st, "status", None) == "position" and getattr(st, "exit_pending",
                                                                          False) and st.exit_signal_candle:
                     ec = st.exit_signal_candle
@@ -1769,58 +1786,76 @@ def sync_with_broker_positions(force_sync=False):
             if qty != 0:
                 broker_qty_map[sym] = broker_qty_map.get(sym, 0) + qty
 
+        # Check if we need to fetch orders (only if we have missing positions that bot thinks are open)
+        pending_orders_map = {}
+        need_orderbook = False
+        for sym, state in SYMBOL_STATES.items():
+            if state.status == "position":
+                if broker_qty_map.get(sym, 0) == 0:
+                    # Potential missing position - we might need to check if it's pending in orderbook
+                    need_orderbook = True
+                    break
+
+        if need_orderbook:
+            try:
+                ord_resp = FYERS.orderbook()
+                if isinstance(ord_resp, dict) and ord_resp.get("s") == "ok":
+                    orders = ord_resp.get("orderBook", [])
+                    for o in orders:
+                        # Check for pending Buy/Sell orders
+                        # status=6 is Pending, status=4 is Transit? Check Fyers docs.
+                        # Usually we care if there is ANY open order for this symbol
+                        # status: 1=Cancelled, 2=Traded/Filled, 5=Rejected, 6=Pending
+                        status = o.get("status")
+                        s = o.get("symbol")
+                        if status in (6, 4, 11): # 6=Pending, 4=Transit, 11=Open
+                            pending_orders_map[s] = True
+            except Exception as e:
+                _real_print(f"[sync] Error fetching orderbook: {e}")
+
         # Iterate over monitored symbols that are in 'position' state
         for sym, state in SYMBOL_STATES.items():
             if state.status == "position":
-                # Total quantity across Positions + Holdings
-                total_broker_qty = broker_qty_map.get(sym, 0)
-
-                # Case 1: Bot has position, Broker doesn't (Manual Full Close)
-                if total_broker_qty == 0:
-                    # Grace period check - skip if force_sync is True
-                    if not force_sync and (time.time() - getattr(state, "entry_time", 0)) < 30:
+                # Check Grace Period
+                if not force_sync:
+                    # If we entered less than 30 seconds ago, skip sync to allow API update
+                    if state.entry_time > 0 and (time.time() - state.entry_time) < 30:
                         continue
 
-                    _real_print(f"[sync] Position for {sym} missing in broker (qty=0). Assuming MANUAL CLOSE.")
-                    state.status = "watch"
-                    state.qty = 0
-                    state.entry_price = 0.0
-                    state.stop_price = 0.0
-                    state.target_price = None
-                    state.exit_pending = False
-                    state.exit_signal_candle = None
-                    if state.gtt_order_id:
-                        cancel_gtt_order(state.gtt_order_id)
-                        state.gtt_order_id = None
+                actual_qty = broker_qty_map.get(sym, 0)
+
+                # Case 1: Bot has position, Broker has 0
+                if actual_qty == 0:
+                    # Check if we have a pending order
+                    if pending_orders_map.get(sym):
+                        # Pending order exists, so don't close the position yet
+                        # _real_print(f"[sync] {sym} has 0 qty but PENDING order found. Waiting.")
+                        pass
+                    else:
+                        _real_print(f"[sync] Position for {sym} missing in broker (qty=0). Resetting to WATCH.")
+                        state.status = "watch"
+                        state.qty = 0
+                        state.entry_price = 0.0
+                        state.stop_price = 0.0
+                        state.target_price = None
+                        state.exit_pending = False
+                        state.exit_signal_candle = None
+                        if state.gtt_order_id:
+                            cancel_gtt_order(state.gtt_order_id)
+                            state.gtt_order_id = None
                     continue
 
-                # Case 2: Broker has position. Check mismatch logic.
-                # Assuming Long-only bot. If negative, user flipped to short. Treat as closed.
-                if total_broker_qty < 0:
-                    _real_print(f"[sync] Position for {sym} is short ({total_broker_qty}) in broker. Mark closed.")
-                    state.status = "watch"
-                    state.qty = 0
-                    state.entry_price = 0.0
-                    state.stop_price = 0.0
-                    state.target_price = None
-                    state.exit_pending = False
-                    state.exit_signal_candle = None
-                    if state.gtt_order_id:
-                        cancel_gtt_order(state.gtt_order_id)
-                        state.gtt_order_id = None
-                    continue
+                # Case 2: Broker has position. Compare Quantities.
+                # Logic:
+                # - If broker < bot: Partial close happened externally. Update bot.
+                # - If broker > bot: Extra shares bought externally. Ignore extra (Isolate).
+                # - If broker == bot: All good.
 
-                # Case 3: Partial or Excess logic
-                # Isolation Rule:
-                # - If broker qty < bot qty: User partially closed. We must reduce bot qty.
-                # - If broker qty >= bot qty: User added more (or existing holdings). We IGNORE excess and keep bot qty.
-
-                if total_broker_qty < state.qty:
-                    _real_print(f"[sync] Partial close detected for {sym}. Bot: {state.qty} -> Broker: {total_broker_qty}. Updating.")
-                    state.qty = total_broker_qty
-                elif total_broker_qty > state.qty:
-                    # Do not update. We stick to state.qty
-                    # _real_print(f"[sync] Excess qty for {sym} (Broker: {total_broker_qty} > Bot: {state.qty}). Ignoring excess.")
+                if actual_qty < state.qty:
+                    _real_print(f"[sync] Qty mismatch for {sym}: Bot={state.qty}, Broker={actual_qty}. Updating bot to {actual_qty}.")
+                    state.qty = actual_qty
+                elif actual_qty > state.qty:
+                    # _real_print(f"[sync] Ignoring excess qty for {sym}: Bot={state.qty}, Broker={actual_qty}.")
                     pass
 
     except Exception as e:
