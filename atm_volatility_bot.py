@@ -912,6 +912,33 @@ class VolatilityEngine:
             else:
                 reason.append(f"Only {passed_count}/5 filters passed")
 
+        # Trade Advice / Hard Rules
+        advice = {}
+        if decision != "NO TRADE":
+            atm_strike = curr.get('atm_strike', "N/A")
+            # Target: Expected Move
+            # Stop: ~40% of Straddle Price (invalidation)
+            sl_buffer = req_move * 0.4
+
+            if "CALL" in decision:
+                target_price = spot + exp_move
+                stop_price = spot - sl_buffer
+            elif "PUT" in decision:
+                target_price = spot - exp_move
+                stop_price = spot + sl_buffer
+            else: # Straddle
+                target_price = f"{spot + exp_move:.2f} / {spot - exp_move:.2f}"
+                stop_price = f"Spot +/- {sl_buffer:.2f}"
+
+            advice = {
+                "suggested_strike": atm_strike,
+                "ideal_entry": "Immediate (Momentum)",
+                "max_hold": "45 Minutes",
+                "pos_size": "2-3% Risk Capital",
+                "profit_rule": f"Target Spot: {target_price}",
+                "hard_stop": f"Invalidation Spot: {stop_price} (or IV drop > 5%)"
+            }
+
         return {
             "decision": decision,
             "reason": ", ".join(reason),
@@ -935,7 +962,8 @@ class VolatilityEngine:
                 "req_move": req_move,
                 "oi_rate": oi_rate,
                 "gamma_blast": curr.get('gamma_blast')
-            }
+            },
+            "advice": advice
         }
 
 # Global Engine Instance
@@ -1173,7 +1201,8 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
             "spot": S,
             "T_intraday": T_intra,
             "gamma_blast": blast,
-            "blast_dir": blast_dir
+            "blast_dir": blast_dir,
+            "atm_strike": atm_strike
         }
 
         _VOL_ENGINE.update(symbol, data)
@@ -1182,6 +1211,16 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
         # PRINT REPORT
         print(f"\n--- VOLATILITY ENGINE: {symbol} ---")
         print(f"Decision: {res['decision']} ({res.get('reason', '')})")
+
+        if res.get('advice'):
+            adv = res['advice']
+            print("\n>>> TRADE ADVICE <<<")
+            print(f"Suggested Strike: {adv['suggested_strike']}")
+            print(f"Profit Target: {adv['profit_rule']}")
+            print(f"Hard Stop: {adv['hard_stop']}")
+            print(f"Max Hold: {adv['max_hold']} | Size: {adv['pos_size']}")
+            print(">>> END ADVICE <<<\n")
+
         sc = res['scores']
         print(f"Scores -> CE: {sc['ce']}, PE: {sc['pe']}, Straddle: {sc['straddle']}")
         print(
