@@ -901,14 +901,8 @@ class VolatilityEngine:
             reason.append("Time > 14:00")
         else:
             if passed_count >= 4:
-                # Determine type
-                blast_dir = curr.get('blast_dir')
-                if blast_dir == "BULL":
-                    decision = "ATM CALL BUY"
-                elif blast_dir == "BEAR":
-                    decision = "ATM PUT BUY"
-                else:
-                    decision = "ATM LONG STRADDLE"
+                # Force LONG STRADDLE as per user request (ignoring directional bias)
+                decision = "ATM LONG STRADDLE"
             else:
                 reason.append(f"Only {passed_count}/5 filters passed")
 
