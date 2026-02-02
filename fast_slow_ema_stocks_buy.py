@@ -836,8 +836,9 @@ def compute_swing_low_for_signal(state: SymbolState, lookback: int) -> float:
 
 def compute_prev_swing_high_for_entry(state: SymbolState, lookback: int, reference_price: float = None) -> float:
     """
-    Calculates the target based on the nearest swing high that is greater than the reference price (entry/signal high).
-    If no higher swing is found in the lookback, it falls back to the absolute highest high.
+    Calculates the target based on the nearest SWING HIGH (Fractal Peak) that is greater than the reference price.
+    Uses a 5-bar fractal definition (Pivot Width = 2) to filter out noise.
+    If no valid structural swing high is found above entry, falls back to the global maximum of the lookback period.
     """
     try:
         df = state.data
@@ -848,22 +849,58 @@ def compute_prev_swing_high_for_entry(state: SymbolState, lookback: int, referen
             df_up_to = df.loc[:sig_ts]
         else:
             df_up_to = df
+
+        # We exclude the signal candle itself to look at past structure
         if df_up_to.shape[0] <= 1:
             return float("nan")
 
-        prior = df_up_to.iloc[:-1].tail(lookback)
+        # Take the window of interest. We need enough data to compute pivots.
+        # If lookback is 50, we take 50 candles BEFORE signal.
+        prior = df_up_to.iloc[:-1].tail(lookback).copy()
         if prior.empty:
             return float("nan")
 
-        # If reference price is provided, find nearest high > reference
+        pivot_width = 2  # 5-bar fractal (2 left, 2 right)
+
+        # If prior is too short for pivot calc, fallback to max
+        if len(prior) < (pivot_width * 2 + 1):
+            return float(prior["high"].max())
+
+        highs = prior["high"].values
+        peaks = []
+
+        # Fractal Swing High Detection
+        # Check for peaks where High[i] > Neighbors
+        for i in range(pivot_width, len(highs) - pivot_width):
+            current = highs[i]
+            is_peak = True
+
+            # Check left neighbors
+            for j in range(1, pivot_width + 1):
+                if highs[i-j] >= current:
+                    is_peak = False
+                    break
+            if not is_peak: continue
+
+            # Check right neighbors
+            for j in range(1, pivot_width + 1):
+                if highs[i+j] >= current:
+                    is_peak = False
+                    break
+
+            if is_peak:
+                peaks.append(current)
+
+        # If reference price is provided, find nearest Fractal Peak > reference
         if reference_price is not None and not math.isnan(reference_price):
-            higher_swings = prior[prior["high"] > reference_price]["high"]
-            if not higher_swings.empty:
-                return float(higher_swings.min())  # Nearest resistance above entry
+            valid_peaks = [p for p in peaks if p > reference_price]
+            if valid_peaks:
+                return float(min(valid_peaks))  # Nearest resistance (Swing High) above entry
 
         # Fallback to absolute max if no higher swing found or no ref price
         return float(prior["high"].max())
-    except Exception:
+    except Exception as e:
+        _real_print(f"[warn] compute_prev_swing_high error: {e}")
         return float("nan")
 
 
