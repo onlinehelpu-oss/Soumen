@@ -1862,26 +1862,43 @@ def sync_with_broker_positions(force_sync=False):
 
         # Create map of symbol -> total open quantity
         # Key: symbol, Value: quantity
+        # NORMALIZE KEYS to handle NSE:X vs X-EQ issues
         broker_qty_map = {}
+
+        def normalize(s):
+            # Remove NSE: or MCX: prefix and -EQ suffix for looser matching
+            # But be careful not to merge different symbols.
+            # Ideally Fyers v3 uses full name.
+            if not s: return ""
+            return s.upper().replace("NSE:", "").replace("MCX:", "").replace("BSE:", "")
 
         for p in net_positions:
             sym = p.get("symbol")
             qty = int(p.get("netQty", 0))
             if qty != 0:
+                # Store exact match
                 broker_qty_map[sym] = broker_qty_map.get(sym, 0) + qty
+                # Store normalized match
+                norm = normalize(sym)
+                if norm != sym:
+                    broker_qty_map[norm] = broker_qty_map.get(norm, 0) + qty
 
         for h in holdings_list:
             sym = h.get("symbol")
             qty = int(h.get("quantity", 0))  # Holdings usually strictly long/positive
             if qty != 0:
                 broker_qty_map[sym] = broker_qty_map.get(sym, 0) + qty
+                norm = normalize(sym)
+                if norm != sym:
+                    broker_qty_map[norm] = broker_qty_map.get(norm, 0) + qty
 
         # Check if we need to fetch orders (only if we have missing positions that bot thinks are open)
         pending_orders_map = {}
         need_orderbook = False
         for sym, state in SYMBOL_STATES.items():
             if state.status == "position":
-                if broker_qty_map.get(sym, 0) == 0:
+                # Check exact OR normalized
+                if broker_qty_map.get(sym, 0) == 0 and broker_qty_map.get(normalize(sym), 0) == 0:
                     # Potential missing position - we might need to check if it's pending in orderbook
                     need_orderbook = True
                     break
@@ -1893,13 +1910,11 @@ def sync_with_broker_positions(force_sync=False):
                     orders = ord_resp.get("orderBook", [])
                     for o in orders:
                         # Check for pending Buy/Sell orders
-                        # status=6 is Pending, status=4 is Transit? Check Fyers docs.
-                        # Usually we care if there is ANY open order for this symbol
-                        # status: 1=Cancelled, 2=Traded/Filled, 5=Rejected, 6=Pending
                         status = o.get("status")
                         s = o.get("symbol")
                         if status in (6, 4, 11): # 6=Pending, 4=Transit, 11=Open
                             pending_orders_map[s] = True
+                            pending_orders_map[normalize(s)] = True
             except Exception as e:
                 _real_print(f"[sync] Error fetching orderbook: {e}")
 
@@ -1913,11 +1928,14 @@ def sync_with_broker_positions(force_sync=False):
                         continue
 
                 actual_qty = broker_qty_map.get(sym, 0)
+                if actual_qty == 0:
+                    # Try normalized lookup
+                    actual_qty = broker_qty_map.get(normalize(sym), 0)
 
                 # Case 1: Bot has position, Broker has 0
                 if actual_qty == 0:
-                    # Check if we have a pending order
-                    if pending_orders_map.get(sym):
+                    # Check if we have a pending order (Exact or Normalized)
+                    if pending_orders_map.get(sym) or pending_orders_map.get(normalize(sym)):
                         # Pending order exists, so don't close the position yet
                         # _real_print(f"[sync] {sym} has 0 qty but PENDING order found. Waiting.")
                         pass
