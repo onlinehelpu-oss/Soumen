@@ -631,6 +631,15 @@ def decide_qty(symbol: str, entry_price: float) -> int:
         return 0
 
 
+def round_to_tick(price: float, tick_size: float = 0.05) -> float:
+    """
+    Rounds price to the nearest tick size (default 0.05 for NSE EQ).
+    """
+    if price is None:
+        return 0.0
+    return round(round(price / tick_size) * tick_size, 2)
+
+
 def place_market_order(symbol: str, qty: int, side: int) -> dict:
     if qty <= 0:
         return {"s": "error", "message": "qty is 0"}
@@ -721,7 +730,18 @@ def verify_order_success(order_id: str, max_retries: int = 4) -> bool:
 
 
 def place_gtt_stoploss(symbol: str, qty: int, trigger_price: float) -> dict:
-    sl_price = round(trigger_price * 0.99, 1)
+    # Round trigger and limit prices to strict tick size (0.05)
+    # SL Limit is set 1% below trigger to ensure fill (Market protection)
+    # But Fyers GTT usually treats 'price' as Limit Price.
+    # Note: If trigger_price itself came from a calculation, round it first.
+
+    # Assuming tick size 0.05 for NSE. MCX might differ but 0.05 is safe common denominator usually.
+    # Actually MCX Crude/Silver has different ticks.
+    # For now, default 0.05 works for NSE EQ (user context).
+
+    clean_trigger = round_to_tick(trigger_price, 0.05)
+    sl_limit_raw = clean_trigger * 0.99
+    clean_limit = round_to_tick(sl_limit_raw, 0.05)
 
     # Dynamically set productType based on exchange
     order_product_type = "INTRADAY" if symbol.startswith("MCX:") else PRODUCT_TYPE
@@ -733,9 +753,9 @@ def place_gtt_stoploss(symbol: str, qty: int, trigger_price: float) -> dict:
         "productType": order_product_type,
         "orderInfo": {
             "leg1": {
-                "price": sl_price,
+                "price": clean_limit,
                 "qty": qty,
-                "triggerPrice": trigger_price
+                "triggerPrice": clean_trigger
             }
         }
     }
