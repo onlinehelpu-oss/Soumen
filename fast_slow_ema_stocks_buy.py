@@ -972,7 +972,14 @@ def compute_prev_swing_high_for_entry(state: SymbolState, lookback: int, referen
                 return float(valid_peaks[-1])  # LATEST (Most Recent) Swing High above entry
 
         # Fallback to absolute max if no higher swing found or no ref price
-        return float(prior["high"].max())
+        fallback = float(prior["high"].max())
+        if reference_price is not None and not math.isnan(reference_price):
+            if fallback > reference_price:
+                return fallback
+            else:
+                return float("nan")  # No resistance found above signal high (New High)
+
+        return fallback
     except Exception as e:
         _real_print(f"[warn] compute_prev_swing_high error: {e}")
         return float("nan")
@@ -1530,6 +1537,10 @@ def evaluate_on_new_candle(st: SymbolState):
             # Use current signal high as reference for "nearest swing high > entry"
             target = compute_prev_swing_high_for_entry(st, SWING_HIGH_LOOKBACK, reference_price=curr_high)
             st.potential_target_price = float(target) if target is not None and not math.isnan(target) else None
+
+            if st.potential_target_price is None:
+                _real_print(f"[signal-check] {st.symbol} ENTRY BLOCKED: No valid target found > Signal High ({curr_high:.2f}).")
+                return
 
             try:
                 sig_start = pd.to_datetime(curr.name)
