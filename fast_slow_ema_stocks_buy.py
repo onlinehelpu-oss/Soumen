@@ -136,15 +136,18 @@ REAUTH_ATTEMPTS = 0
 MAX_REAUTH_ATTEMPTS = 3
 
 # ---------- small print filter to avoid noisy console spam ----------
-_real_print = print
+_built_in_print = print
 ALLOWED_SUBSTRINGS = (
     "ENTRY SIGNAL", "[signal:", "EXIT SIGNAL", "[exit:", "[CANDLE]", "[order]", "[auth]", "[ws]",
     "[blocked-entry]", "[entry-debug]", "[exit-debug]", "TARGET EXIT", "STOP-LOSS", "[ENTRY CONFIRMED]",
     "[sync]", "[warmup]", "[main]"
 )
 
-
-def print(*args, **kwargs):
+def _real_print(*args, **kwargs):
+    """
+    Custom print function that prepends timestamps and filters spam.
+    Replaces the usage of _real_print in the code.
+    """
     try:
         s = " ".join(str(x) for x in args)
         # Prepend timestamp
@@ -152,10 +155,19 @@ def print(*args, **kwargs):
         s = f"{ts} {s}"
     except Exception:
         return
+
+    # Always print if ALLOWED_SUBSTRINGS matches, or if it looks important (starts with [)
+    # But strictly filtering is safer to reduce noise.
     for sub in ALLOWED_SUBSTRINGS:
         if sub in s:
-            return _real_print(s, **kwargs)
+            return _built_in_print(s, **kwargs)
+
+    # Optional: Print everything for now to debug timeframe issue?
+    # No, stick to filter but ensure timestamp is there.
     return None
+
+# Redirect print to our custom logger
+print = _real_print
 
 
 # ---------------------------- SETTINGS LOADER ----------------------------
