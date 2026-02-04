@@ -68,6 +68,10 @@ HTTP_JITTER = (0.1, 0.6)
 ENTRY_START_TIME = datetime.time(9, 15)
 ENTRY_END_TIME = datetime.time(15, 0)
 
+# Risk / Profit Goals
+TARGET_PROFIT = 2000.0
+MAX_LOSS = 2000.0
+
 # -------- Gamma Blast params --------
 GB_STRIKES_AROUND_ATM = 8  # window on each side
 GB_OICH_MIN_ABS_FLOOR = 100.0  # absolute floor for threshold
@@ -1294,9 +1298,16 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
                      pe_sym = strikes_map[best_pe_k]["PE"].get("symbol")
 
                 if ce_sym and pe_sym:
+                    # Find Entry LTPs
+                    ce_ltp_entry = 0.0
+                    pe_ltp_entry = 0.0
+                    for r in rows:
+                        if r["strike"] == best_ce_k and r.get("ce_ltp"): ce_ltp_entry = r["ce_ltp"]
+                        if r["strike"] == best_pe_k and r.get("pe_ltp"): pe_ltp_entry = r["pe_ltp"]
+
                     qty = lot_size
                     print(f"\n>>> AUTO ENTRY: SELL STRANGLE {best_ce_k}CE & {best_pe_k}PE (IV={iv_now:.2f})")
-                    print(f"    Symbols: {ce_sym}, {pe_sym}")
+                    print(f"    Symbols: {ce_sym} ({ce_ltp_entry}), {pe_sym} ({pe_ltp_entry})")
 
                     try:
                         ret1 = fy.place_order(data={
@@ -1316,17 +1327,30 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
                         s1 = isinstance(ret1, dict) and ret1.get("s") == "ok"
                         s2 = isinstance(ret2, dict) and ret2.get("s") == "ok"
 
-                        if s1 and s2:
+                        if s1 or s2:
                             pos.active = True
-                            pos.call_symbol = ce_sym
-                            pos.put_symbol = pe_sym
-                            pos.call_strike = best_ce_k
-                            pos.put_strike = best_pe_k
-                            pos.entry_iv = iv_now
                             pos.lots = qty
+                            pos.entry_iv = iv_now
                             pos.last_adjust_time = time.time()
+                            pos.realized_pnl = 0.0
+
+                            if s1:
+                                pos.call_symbol = ce_sym
+                                pos.call_strike = best_ce_k
+                                pos.entry_price_ce = ce_ltp_entry
+                            else:
+                                print(f"    ⚠ Call Entry Failed: {ret1}")
+                                pos.call_symbol = None
+
+                            if s2:
+                                pos.put_symbol = pe_sym
+                                pos.put_strike = best_pe_k
+                                pos.entry_price_pe = pe_ltp_entry
+                            else:
+                                print(f"    ⚠ Put Entry Failed: {ret2}")
+                                pos.put_symbol = None
                         else:
-                            print("    Entry Failed: API did not return 'ok'.")
+                            print(f"    Entry Failed: Both legs failed. {ret1}, {ret2}")
 
                     except Exception as e:
                         print(f"    Entry Execution Failed: {e}")
@@ -1338,8 +1362,8 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
 
             if time_since_adj > 120:
 
-                # 🔴 CALL SIDE UNDER ATTACK
-                if spot > pos.call_strike:
+                # 🔴 CALL SIDE UNDER ATTACK (Roll Put Closer)
+                if pos.call_symbol and spot > pos.call_strike and pos.put_symbol:
                     print(f"⚠ Call side threatened (Spot {spot} > Call {pos.call_strike}). Rolling PUT closer.")
 
                     new_put_strike = pos.put_strike + step
@@ -1350,6 +1374,17 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
                     if new_put_sym and is_option_contract(new_put_sym):
                         print(f"    Rolling Put: {pos.put_symbol} -> {new_put_sym} (Strike {pos.put_strike} -> {new_put_strike})")
                         try:
+                            # PnL Calculation (Old Leg)
+                            old_pe_ltp = 0.0
+                            new_pe_ltp = 0.0
+                            if pos.put_strike in strikes_map and strikes_map[pos.put_strike].get("PE"):
+                                old_pe_ltp = strikes_map[pos.put_strike]["PE"].get("ltp") or 0.0
+                            if new_put_strike in strikes_map and strikes_map[new_put_strike].get("PE"):
+                                new_pe_ltp = strikes_map[new_put_strike]["PE"].get("ltp") or 0.0
+
+                            leg_pnl = (pos.entry_price_pe - old_pe_ltp) * pos.lots
+                            print(f"    Realizing Put PnL: {leg_pnl:.2f} (Entry {pos.entry_price_pe} -> Exit {old_pe_ltp})")
+
                             r1 = fy.place_order(data={
                                 "symbol": pos.put_symbol,
                                 "qty": pos.lots, "type": 2, "side": 1, "productType": "INTRADAY",
@@ -1364,6 +1399,8 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
                             if isinstance(r2, dict) and r2.get("s") == "ok":
                                 pos.put_symbol = new_put_sym
                                 pos.put_strike = new_put_strike
+                                pos.entry_price_pe = new_pe_ltp
+                                pos.realized_pnl += leg_pnl
                                 pos.last_adjust_time = time.time()
                             else:
                                 print(f"    Roll Put Failed: New leg order status: {r2}")
@@ -1373,8 +1410,8 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
                     else:
                         print(f"    Cannot roll Put: New strike {new_put_strike} not found in chain.")
 
-                # 🔵 PUT SIDE UNDER ATTACK
-                elif spot < pos.put_strike:
+                # 🔵 PUT SIDE UNDER ATTACK (Roll Call Closer)
+                elif pos.put_symbol and spot < pos.put_strike and pos.call_symbol:
                     print(f"⚠ Put side threatened (Spot {spot} < Put {pos.put_strike}). Rolling CALL closer.")
 
                     new_call_strike = pos.call_strike - step
@@ -1385,6 +1422,17 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
                     if new_call_sym and is_option_contract(new_call_sym):
                          print(f"    Rolling Call: {pos.call_symbol} -> {new_call_sym} (Strike {pos.call_strike} -> {new_call_strike})")
                          try:
+                            # PnL Calculation (Old Leg)
+                            old_ce_ltp = 0.0
+                            new_ce_ltp = 0.0
+                            if pos.call_strike in strikes_map and strikes_map[pos.call_strike].get("CE"):
+                                old_ce_ltp = strikes_map[pos.call_strike]["CE"].get("ltp") or 0.0
+                            if new_call_strike in strikes_map and strikes_map[new_call_strike].get("CE"):
+                                new_ce_ltp = strikes_map[new_call_strike]["CE"].get("ltp") or 0.0
+
+                            leg_pnl = (pos.entry_price_ce - old_ce_ltp) * pos.lots
+                            print(f"    Realizing Call PnL: {leg_pnl:.2f} (Entry {pos.entry_price_ce} -> Exit {old_ce_ltp})")
+
                             r1 = fy.place_order(data={
                                 "symbol": pos.call_symbol,
                                 "qty": pos.lots, "type": 2, "side": 1, "productType": "INTRADAY",
@@ -1399,6 +1447,8 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
                             if isinstance(r2, dict) and r2.get("s") == "ok":
                                 pos.call_symbol = new_call_sym
                                 pos.call_strike = new_call_strike
+                                pos.entry_price_ce = new_ce_ltp
+                                pos.realized_pnl += leg_pnl
                                 pos.last_adjust_time = time.time()
                             else:
                                 print(f"    Roll Call Failed: New leg order status: {r2}")
@@ -1410,26 +1460,71 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
 
         # ================= AUTO EXIT =================
         if pos.active:
+            # 1. Calculate Live PnL
+            curr_ce_ltp = 0.0
+            curr_pe_ltp = 0.0
+
+            if pos.call_symbol and pos.call_strike in strikes_map and strikes_map[pos.call_strike].get("CE"):
+                curr_ce_ltp = strikes_map[pos.call_strike]["CE"].get("ltp") or 0.0
+            if pos.put_symbol and pos.put_strike in strikes_map and strikes_map[pos.put_strike].get("PE"):
+                curr_pe_ltp = strikes_map[pos.put_strike]["PE"].get("ltp") or 0.0
+
+            # Short PnL: (Entry - Current) * Qty
+            unrealized_ce = (pos.entry_price_ce - curr_ce_ltp) * pos.lots if pos.call_symbol else 0.0
+            unrealized_pe = (pos.entry_price_pe - curr_pe_ltp) * pos.lots if pos.put_symbol else 0.0
+            total_pnl = pos.realized_pnl + unrealized_ce + unrealized_pe
+
+            print(f"    POS PnL: Total {total_pnl:.2f} (Real {pos.realized_pnl:.2f} + Unr CE {unrealized_ce:.2f} + Unr PE {unrealized_pe:.2f})")
+
+            # 2. Check Triggers
+            exit_triggered = False
+            exit_reason = ""
+
             iv_now = data.get("iv_atm", 0)
+
+            # Condition A: IV Crush
             if pos.entry_iv > 0 and iv_now < pos.entry_iv * 0.8:
-                print(f"💰 IV Crushed (IV {iv_now:.2f} < 80% of {pos.entry_iv:.2f}). Closing Strangle.")
+                exit_triggered = True
+                exit_reason = f"IV Crushed (IV {iv_now:.2f} < 80% of {pos.entry_iv:.2f})"
+
+            # Condition B: Target Profit
+            elif total_pnl >= TARGET_PROFIT:
+                exit_triggered = True
+                exit_reason = f"Target Profit Hit ({total_pnl:.2f} >= {TARGET_PROFIT})"
+
+            # Condition C: Max Loss
+            elif total_pnl <= -MAX_LOSS:
+                exit_triggered = True
+                exit_reason = f"Max Loss Hit ({total_pnl:.2f} <= -{MAX_LOSS})"
+
+            if exit_triggered:
+                print(f"💰 EXIT TRIGGER: {exit_reason}. Closing Strangle.")
 
                 try:
-                    r1 = fy.place_order(data={
-                        "symbol": pos.call_symbol,
-                        "qty": pos.lots, "type": 2, "side": 1, "productType": "INTRADAY",
-                        "limitPrice": 0, "stopPrice": 0, "validity": "DAY", "disclosedQty": 0, "offlineOrder": False
-                    })
-                    r2 = fy.place_order(data={
-                        "symbol": pos.put_symbol,
-                        "qty": pos.lots, "type": 2, "side": 1, "productType": "INTRADAY",
-                        "limitPrice": 0, "stopPrice": 0, "validity": "DAY", "disclosedQty": 0, "offlineOrder": False
-                    })
+                    r1, r2 = None, None
+                    if pos.call_symbol:
+                        r1 = fy.place_order(data={
+                            "symbol": pos.call_symbol,
+                            "qty": pos.lots, "type": 2, "side": 1, "productType": "INTRADAY",
+                            "limitPrice": 0, "stopPrice": 0, "validity": "DAY", "disclosedQty": 0, "offlineOrder": False
+                        })
+                    if pos.put_symbol:
+                        r2 = fy.place_order(data={
+                            "symbol": pos.put_symbol,
+                            "qty": pos.lots, "type": 2, "side": 1, "productType": "INTRADAY",
+                            "limitPrice": 0, "stopPrice": 0, "validity": "DAY", "disclosedQty": 0, "offlineOrder": False
+                        })
 
-                    if (isinstance(r1, dict) and r1.get("s") == "ok") and (isinstance(r2, dict) and r2.get("s") == "ok"):
+                    # Logic: If all attempted exits succeeded, close position
+                    call_ok = (not pos.call_symbol) or (isinstance(r1, dict) and r1.get("s") == "ok")
+                    put_ok = (not pos.put_symbol) or (isinstance(r2, dict) and r2.get("s") == "ok")
+
+                    if call_ok and put_ok:
                         pos.active = False
+                        pos.call_symbol = None
+                        pos.put_symbol = None
                     else:
-                        print(f"    Exit Partial/Failed: {r1}, {r2}")
+                        print(f"    Exit Partial/Failed. Call OK: {call_ok}, Put OK: {put_ok}")
 
                 except Exception as e:
                     print(f"    Exit Execution Failed: {e}")
@@ -1540,6 +1635,10 @@ class StranglePosition:
         self.lots = 0
         self.entry_iv = 0.0
         self.last_adjust_time = 0
+        # PnL Tracking
+        self.entry_price_ce = 0.0
+        self.entry_price_pe = 0.0
+        self.realized_pnl = 0.0
 
 POSITIONS = {}  # {symbol: StranglePosition()}
 
