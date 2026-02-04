@@ -1296,14 +1296,13 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                                     state.status = "position"
                                     state.signal_candle = None
                                     state.signal_close_ts = None
+                                    save_state_to_disk()  # PERSIST IMMEDIATELY
                                 else:
                                     _real_print(f"[order] BUY ORDER REJECTED/CANCELLED for {symbol}. Resetting to WATCH.")
-                                    state.status = "watch" # Go back to watch, do not cooldown? or cooldown?
-                                    # If rejected (e.g. margin), maybe cooldown is better?
-                                    # Let's do cooldown to avoid infinite retries on same signal
                                     state.status = "cooldown"
                                     state.signal_candle = None
                                     state.signal_close_ts = None
+                                    save_state_to_disk()
                             else:
                                 _real_print(
                                     f"[order] BUY ORDER FAILED for {symbol}: {resp}"
@@ -1311,6 +1310,7 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                                 state.status = "cooldown"
                                 state.signal_candle = None
                                 state.signal_close_ts = None
+                                save_state_to_disk()
                     else:
                         _real_print(
                             f"[entry-debug] {symbol} next candle {next_allowed_bucket} "
@@ -1398,6 +1398,7 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                         state.exit_pending = False
                         state.exit_signal_candle = None
                         state.target_price = None
+                        save_state_to_disk()  # PERSIST IMMEDIATELY
                     else:
                         _real_print(f"[{symbol}] EXIT ORDER FAILED: {resp}")
                         state.last_failed_exit_ts = dt.now(IST).replace(tzinfo=None)
@@ -1407,6 +1408,7 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                             state.exit_pending = False
                             state.exit_signal_candle = None
                             state.target_price = None
+                            save_state_to_disk()
             else:
                 if ltp < exit_low:
                     _real_print(
@@ -1502,6 +1504,7 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                     state.status = "cooldown"
                     state.gtt_order_id = None
                     state.target_price = None
+                    save_state_to_disk()  # PERSIST IMMEDIATELY
                 else:
                     _real_print(f"[{symbol}] STOP-LOSS SELL FAILED: {sell_resp}")
                     state.last_failed_exit_ts = dt.now(IST).replace(tzinfo=None)
@@ -1513,6 +1516,7 @@ def on_tick(symbol: str, ltp: float, ts: Optional[dt] = None):
                         # If outside grace period, force sync to detect manual close
                         _real_print(f"[{symbol}] Forcing immediate position sync due to order failure...")
                         sync_with_broker_positions(force_sync=True)
+                        save_state_to_disk()
         except Exception as e:
             _real_print(f"[on_tick:stop_loss] error: {e}")
 
@@ -2083,9 +2087,12 @@ def sync_with_broker_positions(force_sync=False):
                                     success = True
                                 else:
                                     # If already cancelled or not found, treat as cleared
+                                    code = c_resp.get("code")
                                     msg = str(c_resp.get("message", "")).lower()
-                                    if "not found" in msg or "invalid" in msg or "cancel" in msg:
+                                    # Code -52: Not a pending order
+                                    if code == -52 or "not found" in msg or "invalid" in msg or "cancel" in msg or "not a pending order" in msg:
                                         success = True
+                                        _real_print(f"[sync] GTT {state.gtt_order_id} already gone. Cleared.")
 
                             if success:
                                 state.gtt_order_id = None
