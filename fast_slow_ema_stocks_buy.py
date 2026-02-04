@@ -461,9 +461,12 @@ def get_tick_size(symbol: str) -> float:
                 if ts is not None:
                     ts = float(ts)
                     TICK_SIZE_CACHE[symbol] = ts
+                    _real_print(f"[tick-size] Cached {ts} for {symbol}")
                     return ts
-    except Exception:
-        pass
+        else:
+            _real_print(f"[tick-size] Failed to fetch quotes for {symbol}: {resp}")
+    except Exception as e:
+        _real_print(f"[tick-size] Exception fetching quotes for {symbol}: {e}")
 
     # Default fallback
     if symbol.startswith("MCX:"):
@@ -767,42 +770,68 @@ def place_gtt_stoploss(symbol: str, qty: int, trigger_price: float) -> dict:
     # Fetch correct tick size dynamically
     ts = get_tick_size(symbol)
 
-    # Round trigger and limit prices to strict tick size (0.05)
-    # SL Limit is set 1% below trigger to ensure fill (Market protection)
-    clean_trigger = round_to_tick(trigger_price, ts)
-    sl_limit_raw = clean_trigger * 0.99
-    clean_limit = round_to_tick(sl_limit_raw, ts)
-
     # Dynamically set productType based on exchange
     order_product_type = "INTRADAY" if symbol.startswith("MCX:") else PRODUCT_TYPE
 
-    data = {
-        "symbol": symbol,
-        "type": 1,  # Single order
-        "side": -1, # Sell
-        "productType": order_product_type,
-        "orderInfo": {
-            "leg1": {
-                "price": clean_limit,
-                "qty": qty,
-                "triggerPrice": clean_trigger
+    current_tick_size = ts
+
+    for attempt in range(1, 4):
+        # Round logic using current_tick_size (starts with fetched/default, updates if error found)
+        clean_trigger = round_to_tick(trigger_price, current_tick_size)
+        sl_limit_raw = clean_trigger * 0.99
+        clean_limit = round_to_tick(sl_limit_raw, current_tick_size)
+
+        data = {
+            "symbol": symbol,
+            "type": 1,  # Single order
+            "side": -1, # Sell
+            "productType": order_product_type,
+            "orderInfo": {
+                "leg1": {
+                    "price": clean_limit,
+                    "qty": qty,
+                    "triggerPrice": clean_trigger
+                }
             }
         }
-    }
-    if FYERS is None:
-        err = {"s": "error", "message": "no fyers client for gtt"}
-        log_trade_event(symbol, "GTT_FAIL", qty, trigger_price, err)
-        return err
-    for attempt in range(1, 3):
+
+        if FYERS is None:
+            err = {"s": "error", "message": "no fyers client for gtt"}
+            log_trade_event(symbol, "GTT_FAIL", qty, trigger_price, err)
+            return err
+
         try:
             resp = FYERS.place_gtt_order(data=data)
             log_trade_event(symbol, "GTT_PLACE", qty, trigger_price, resp)
-            if isinstance(resp, dict) and resp.get("s") != "ok":
-                _real_print(f"[order] GTT placement failed: {resp}")
-            return resp
+
+            if isinstance(resp, dict):
+                if resp.get("s") == "ok":
+                    return resp
+                else:
+                    _real_print(f"[order] GTT placement failed: {resp}")
+                    msg = str(resp.get("message", ""))
+                    # Adaptive Retry: Parse "tick size X.XXXX" from error
+                    if "tick size" in msg:
+                        import re
+                        match = re.search(r"tick size\s+([0-9\.]+)", msg)
+                        if match:
+                            forced_ts = float(match.group(1))
+                            if forced_ts > 0 and forced_ts != current_tick_size:
+                                _real_print(f"[order] Adaptive GTT: Broker enforced tick size {forced_ts}. Retrying...")
+                                current_tick_size = forced_ts
+                                time.sleep(0.5)
+                                continue # Retry loop with new tick size
+
+            # If not ok and not a tick size error, or retry exhausted
+            if attempt < 3:
+                time.sleep(1)
+            else:
+                return resp
+
         except Exception as e:
             _real_print(f"[order] GTT Exception: {e}")
             time.sleep(1)
+
     err = {"s": "error", "message": "gtt failed after retries"}
     log_trade_event(symbol, "GTT_FAIL", qty, trigger_price, err)
     return err
