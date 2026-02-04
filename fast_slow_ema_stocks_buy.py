@@ -140,7 +140,7 @@ _built_in_print = print
 ALLOWED_SUBSTRINGS = (
     "ENTRY SIGNAL", "[signal:", "EXIT SIGNAL", "[exit:", "[CANDLE]", "[order]", "[auth]", "[ws]",
     "[blocked-entry]", "[entry-debug]", "[exit-debug]", "TARGET EXIT", "STOP-LOSS", "[ENTRY CONFIRMED]",
-    "[sync]", "[warmup]", "[main]"
+    "[sync]", "[warmup]", "[main]", "[heartbeat]", "[signal-filtered]"
 )
 
 def _real_print(*args, **kwargs):
@@ -1529,7 +1529,14 @@ def evaluate_on_new_candle(st: SymbolState):
             # Calculate potential target and store it for validation after entry
             # Use current signal high as reference for "nearest swing high > entry"
             target = compute_prev_swing_high_for_entry(st, SWING_HIGH_LOOKBACK, reference_price=curr_high)
-            st.potential_target_price = float(target) if target is not None and not math.isnan(target) else None
+
+            # STRICT TARGET CHECK: If no valid target > signal_high, ignore the signal
+            if target is None or math.isnan(target) or target <= curr_high:
+                _real_print(f"[signal-filtered] {st.symbol} Signal ignored. No valid target > signal_high ({curr_high}). Found: {target}")
+                st.signal_candle = None
+                return
+
+            st.potential_target_price = float(target)
 
             try:
                 sig_start = pd.to_datetime(curr.name)
@@ -2270,13 +2277,21 @@ def main():
             sync_with_broker_positions()
 
         last_sync_time = time.time()
+        last_heartbeat_time = time.time()
         SYNC_INTERVAL = 60  # seconds
+        HEARTBEAT_INTERVAL = 300  # 5 minutes
 
         while True:
+            now = time.time()
             # Periodic Sync
-            if FYERS is not None and (time.time() - last_sync_time > SYNC_INTERVAL):
+            if FYERS is not None and (now - last_sync_time > SYNC_INTERVAL):
                 sync_with_broker_positions()
-                last_sync_time = time.time()
+                last_sync_time = now
+
+            # Periodic Heartbeat
+            if now - last_heartbeat_time > HEARTBEAT_INTERVAL:
+                _real_print(f"[heartbeat] Bot is active. Scanning {len(SYMBOLS)} symbols... (Silence means no signals found yet)")
+                last_heartbeat_time = now
 
             time.sleep(1)
     except KeyboardInterrupt:
