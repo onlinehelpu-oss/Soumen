@@ -1882,7 +1882,17 @@ def sync_with_broker_positions(force_sync=False):
 
     try:
         # 1. Fetch POSITIONS (Net/Intraday)
-        pos_resp = FYERS.positions()
+        # Added retry loop for flaky 503/Bad Gateway errors
+        pos_resp = None
+        for _ in range(3):
+            try:
+                pos_resp = FYERS.positions()
+                if isinstance(pos_resp, dict) and pos_resp.get("s") == "ok":
+                    break
+                time.sleep(1)
+            except Exception:
+                time.sleep(1)
+
         net_positions = []
         if isinstance(pos_resp, dict) and pos_resp.get("s") == "ok":
             net_positions = pos_resp.get("netPositions", [])
@@ -1891,7 +1901,17 @@ def sync_with_broker_positions(force_sync=False):
             return
 
         # 2. Fetch HOLDINGS (CNC delivery from previous days)
-        hold_resp = FYERS.holdings()
+        # Added retry loop for flaky 503/Bad Gateway errors
+        hold_resp = None
+        for _ in range(3):
+            try:
+                hold_resp = FYERS.holdings()
+                if isinstance(hold_resp, dict) and hold_resp.get("s") == "ok":
+                    break
+                time.sleep(1)
+            except Exception:
+                time.sleep(1)
+
         holdings_list = []
         if isinstance(hold_resp, dict) and hold_resp.get("s") == "ok":
             holdings_list = hold_resp.get("holdings", [])
