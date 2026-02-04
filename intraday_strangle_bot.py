@@ -71,8 +71,8 @@ ENTRY_END_TIME = datetime.time(15, 0)
 # Risk / Profit Goals
 TARGET_PROFIT = 2000.0
 MAX_LOSS = 2000.0
-ENABLE_TARGET_PROFIT = True
-ENABLE_MAX_LOSS = True
+ENABLE_TARGET_PROFIT = False
+ENABLE_MAX_LOSS = False
 
 # -------- Gamma Blast params --------
 GB_STRIKES_AROUND_ATM = 8  # window on each side
