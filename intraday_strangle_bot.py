@@ -32,6 +32,7 @@ from fyers_apiv3 import fyersModel
 # Configuration
 # ===============================
 CONFIG_FILE = "fyers_login_details.json"
+SETTINGS_FILE = "settings.json"
 TOKENS_DIR = "AccessToken"
 TODAY = str(datetime.date.today())
 TOKEN_PATH = os.path.join(TOKENS_DIR, f"{TODAY}.json")
@@ -76,7 +77,7 @@ ENABLE_TARGET_PROFIT = False  # Set to True to enable, False to disable
 ENABLE_MAX_LOSS = False       # Set to True to enable, False to disable
 
 # -------- Gamma Blast params --------
-GB_STRIKES_AROUND_ATM = 8  # window on each side
+GB_STRIKES_AROUND_ATM = 8  # window on each side (Default)
 GB_OICH_MIN_ABS_FLOOR = 100.0  # absolute floor for threshold
 GB_OICH_SCALE = 0.05  # scale * max(CE_abs, PE_abs)
 GB_ROC_BP_THRESHOLD = 5.0  # price ROC (bp) confirmation
@@ -1719,14 +1720,33 @@ def main():
         sys.exit(1)
 
 
+def load_settings():
+    """Loads configuration from settings.json if it exists."""
+    global GB_STRIKES_AROUND_ATM
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                data = json.load(f)
+                if "strikes_around_atm" in data:
+                    GB_STRIKES_AROUND_ATM = int(data["strikes_around_atm"])
+                    print(f"Loaded config from {SETTINGS_FILE}: GB_STRIKES_AROUND_ATM = {GB_STRIKES_AROUND_ATM}")
+        except Exception as e:
+            print(f"Warning: Failed to load {SETTINGS_FILE}: {e}")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Intraday Strangle Bot")
-    parser.add_argument("--strikes", type=int, default=8, help="Number of strikes around ATM to fetch (default: 8)")
+    # Default is None so we can distinguish if user provided it or not
+    parser.add_argument("--strikes", type=int, default=None, help="Number of strikes around ATM to fetch (overrides settings.json)")
     args = parser.parse_args()
 
-    # Update global config
-    GB_STRIKES_AROUND_ATM = args.strikes
+    # 1. Load from settings.json first
+    load_settings()
 
-    print(f"Configuration: GB_STRIKES_AROUND_ATM = {GB_STRIKES_AROUND_ATM}")
+    # 2. Override with CLI argument if provided
+    if args.strikes is not None:
+        GB_STRIKES_AROUND_ATM = args.strikes
+        print(f"CLI Override: GB_STRIKES_AROUND_ATM = {GB_STRIKES_AROUND_ATM}")
+    else:
+        print(f"Configuration: GB_STRIKES_AROUND_ATM = {GB_STRIKES_AROUND_ATM}")
 
     main()
