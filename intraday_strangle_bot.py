@@ -71,6 +71,8 @@ ENTRY_END_TIME = datetime.time(15, 0)
 # Risk / Profit Goals
 TARGET_PROFIT = 2000.0
 MAX_LOSS = 2000.0
+ENABLE_TARGET_PROFIT = True
+ENABLE_MAX_LOSS = True
 
 # -------- Gamma Blast params --------
 GB_STRIKES_AROUND_ATM = 8  # window on each side
@@ -1488,12 +1490,12 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
                 exit_reason = f"IV Crushed (IV {iv_now:.2f} < 80% of {pos.entry_iv:.2f})"
 
             # Condition B: Target Profit
-            elif total_pnl >= TARGET_PROFIT:
+            elif ENABLE_TARGET_PROFIT and total_pnl >= TARGET_PROFIT:
                 exit_triggered = True
                 exit_reason = f"Target Profit Hit ({total_pnl:.2f} >= {TARGET_PROFIT})"
 
             # Condition C: Max Loss
-            elif total_pnl <= -MAX_LOSS:
+            elif ENABLE_MAX_LOSS and total_pnl <= -MAX_LOSS:
                 exit_triggered = True
                 exit_reason = f"Max Loss Hit ({total_pnl:.2f} <= -{MAX_LOSS})"
 
