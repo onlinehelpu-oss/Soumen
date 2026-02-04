@@ -140,7 +140,7 @@ _built_in_print = print
 ALLOWED_SUBSTRINGS = (
     "ENTRY SIGNAL", "[signal:", "EXIT SIGNAL", "[exit:", "[CANDLE]", "[order]", "[auth]", "[ws]",
     "[blocked-entry]", "[entry-debug]", "[exit-debug]", "TARGET EXIT", "STOP-LOSS", "[ENTRY CONFIRMED]",
-    "[sync]", "[warmup]", "[main]", "[heartbeat]", "[signal-filtered]"
+    "[sync]", "[warmup]", "[main]", "[heartbeat]", "[signal-filtered]", "GTT"
 )
 
 def _real_print(*args, **kwargs):
@@ -436,6 +436,40 @@ def compute_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+TICK_SIZE_CACHE = {}
+
+def get_tick_size(symbol: str) -> float:
+    """
+    Fetches the tick size (min_price_increment) for a symbol from Fyers Quotes API.
+    Defaults to 0.05 (NSE Equity) if fetch fails.
+    """
+    if symbol in TICK_SIZE_CACHE:
+        return TICK_SIZE_CACHE[symbol]
+
+    if FYERS is None:
+        return 0.05
+
+    try:
+        # Fetch quote to get tick size
+        resp = FYERS.quotes(data={"symbols": symbol})
+        if isinstance(resp, dict) and resp.get("s") == "ok":
+            d = resp.get("d", [])
+            if d and len(d) > 0:
+                # min_price_increment is often in 'v' dict
+                val = d[0].get("v", {})
+                ts = val.get("min_price_increment")
+                if ts is not None:
+                    ts = float(ts)
+                    TICK_SIZE_CACHE[symbol] = ts
+                    return ts
+    except Exception:
+        pass
+
+    # Default fallback
+    if symbol.startswith("MCX:"):
+        return 1.0
+    return 0.05
+
 # ---------------------------- CANDLE MANAGER ----------------------------
 class CandleManager:
     def __init__(self, timeframe_min: int = 5, on_candle=None, tz="Asia/Kolkata",
@@ -730,18 +764,14 @@ def verify_order_success(order_id: str, max_retries: int = 4) -> bool:
 
 
 def place_gtt_stoploss(symbol: str, qty: int, trigger_price: float) -> dict:
+    # Fetch correct tick size dynamically
+    ts = get_tick_size(symbol)
+
     # Round trigger and limit prices to strict tick size (0.05)
     # SL Limit is set 1% below trigger to ensure fill (Market protection)
-    # But Fyers GTT usually treats 'price' as Limit Price.
-    # Note: If trigger_price itself came from a calculation, round it first.
-
-    # Assuming tick size 0.05 for NSE. MCX might differ but 0.05 is safe common denominator usually.
-    # Actually MCX Crude/Silver has different ticks.
-    # For now, default 0.05 works for NSE EQ (user context).
-
-    clean_trigger = round_to_tick(trigger_price, 0.05)
+    clean_trigger = round_to_tick(trigger_price, ts)
     sl_limit_raw = clean_trigger * 0.99
-    clean_limit = round_to_tick(sl_limit_raw, 0.05)
+    clean_limit = round_to_tick(sl_limit_raw, ts)
 
     # Dynamically set productType based on exchange
     order_product_type = "INTRADAY" if symbol.startswith("MCX:") else PRODUCT_TYPE
@@ -1887,14 +1917,15 @@ def sync_with_broker_positions(force_sync=False):
         # 1. Fetch POSITIONS (Net/Intraday)
         # Added retry loop for flaky 503/Bad Gateway errors
         pos_resp = None
-        for _ in range(3):
+        for attempt in range(4):
             try:
                 pos_resp = FYERS.positions()
                 if isinstance(pos_resp, dict) and pos_resp.get("s") == "ok":
                     break
-                time.sleep(1)
+                # Backoff if server error
+                time.sleep(1 + attempt)
             except Exception:
-                time.sleep(1)
+                time.sleep(1 + attempt)
 
         net_positions = []
         if isinstance(pos_resp, dict) and pos_resp.get("s") == "ok":
@@ -1906,14 +1937,14 @@ def sync_with_broker_positions(force_sync=False):
         # 2. Fetch HOLDINGS (CNC delivery from previous days)
         # Added retry loop for flaky 503/Bad Gateway errors
         hold_resp = None
-        for _ in range(3):
+        for attempt in range(4):
             try:
                 hold_resp = FYERS.holdings()
                 if isinstance(hold_resp, dict) and hold_resp.get("s") == "ok":
                     break
-                time.sleep(1)
+                time.sleep(1 + attempt)
             except Exception:
-                time.sleep(1)
+                time.sleep(1 + attempt)
 
         holdings_list = []
         if isinstance(hold_resp, dict) and hold_resp.get("s") == "ok":
@@ -2015,7 +2046,20 @@ def sync_with_broker_positions(force_sync=False):
                             _real_print(f"[sync] Cancelling GTT {state.gtt_order_id} for {sym}...")
                             c_resp = cancel_gtt_order(state.gtt_order_id)
                             _real_print(f"[sync] GTT Cancel Resp: {c_resp}")
-                            state.gtt_order_id = None
+
+                            # Determine if we should clear the GTT ID
+                            success = False
+                            if isinstance(c_resp, dict):
+                                if c_resp.get("s") == "ok":
+                                    success = True
+                                else:
+                                    # If already cancelled or not found, treat as cleared
+                                    msg = str(c_resp.get("message", "")).lower()
+                                    if "not found" in msg or "invalid" in msg or "cancel" in msg:
+                                        success = True
+
+                            if success:
+                                state.gtt_order_id = None
                     continue
 
                 # Case 2: Broker has position. Compare Quantities.
@@ -2088,6 +2132,10 @@ def load_state_from_disk():
             st.atr_at_entry = info.get("atr_at_entry", 0.0)
             st.sl_trailed = info.get("sl_trailed", False)
             st.entry_time = info.get("entry_time", 0.0)
+
+            if st.status == "position":
+                _real_print(f"[state] Restored active position: {sym} (Qty: {st.qty}, Entry: {st.entry_price})")
+
     except Exception as e:
         _real_print("[state] Failed to load state:", e)
 
