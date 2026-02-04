@@ -24,6 +24,7 @@ import math
 import hashlib
 import csv
 import requests
+import argparse
 from urllib.parse import urlparse, parse_qs, quote
 from fyers_apiv3 import fyersModel
 
@@ -738,8 +739,10 @@ def _variants_for_optionchain(symbol):
 
 
 def get_optionchain_response(fy, symbol):
+    # Dynamic strikecount based on configured window
+    sc = (GB_STRIKES_AROUND_ATM * 2) + 1
     for var in _variants_for_optionchain(symbol):
-        resp, err = call_with_retries(fy.optionchain, {"symbol": var, "strikecount": 17})
+        resp, err = call_with_retries(fy.optionchain, {"symbol": var, "strikecount": sc})
         if err:
             if err.get("error_code") == -300 or (resp and resp.get("s") == "error"):
                 print(f"DEBUG: optionchain() for '{symbol}' -> error on variant '{var}', trying next...")
@@ -1688,7 +1691,7 @@ def main():
                 update_price_history(sym, ltp)
 
                 if pull_chain:
-                    res = print_and_save_chain_for_symbol(fy, sym, ltp)
+                    res = print_and_save_chain_for_symbol(fy, sym, ltp, num_strikes=GB_STRIKES_AROUND_ATM)
                     if isinstance(res, dict) and res.get("status") in ("ltp_error", "oc_error"):
                         det = res.get("detail") or {}
                         if det.get("error_code") == 429:
@@ -1717,4 +1720,13 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Intraday Strangle Bot")
+    parser.add_argument("--strikes", type=int, default=8, help="Number of strikes around ATM to fetch (default: 8)")
+    args = parser.parse_args()
+
+    # Update global config
+    GB_STRIKES_AROUND_ATM = args.strikes
+
+    print(f"Configuration: GB_STRIKES_AROUND_ATM = {GB_STRIKES_AROUND_ATM}")
+
     main()
