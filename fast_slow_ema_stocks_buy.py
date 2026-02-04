@@ -306,8 +306,8 @@ def run_interactive_login() -> str:
             pass
 
     auth_url = build_auth_url(app_id, redirect_uri)
-    _real_print("\nLogin URL (open in browser, allow & complete login):")
-    _real_print(auth_url)
+    _real_print("\n[auth] Login URL (open in browser, allow & complete login):")
+    _real_print(f"[auth] {auth_url}")
 
     user_val = input("\nPaste the FULL redirect URL after login, or just the 'code=' value here: ").strip()
     try:
