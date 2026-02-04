@@ -64,6 +64,10 @@ HTTP_MAX_ATTEMPTS = 3
 HTTP_BACKOFF_BASE = 1.2
 HTTP_JITTER = (0.1, 0.6)
 
+# Time Filters
+ENTRY_START_TIME = datetime.time(9, 15)
+ENTRY_END_TIME = datetime.time(15, 0)
+
 # -------- Gamma Blast params --------
 GB_STRIKES_AROUND_ATM = 8  # window on each side
 GB_OICH_MIN_ABS_FLOOR = 100.0  # absolute floor for threshold
@@ -1242,7 +1246,10 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
 
         # ================= AUTO STRANGLE ENTRY =================
         # Check symbol-specific pos
-        if not pos.active and res["decision"] == "NO TRADE" and not blast:
+        now_time = datetime.datetime.now().time()
+        time_ok = ENTRY_START_TIME <= now_time <= ENTRY_END_TIME
+
+        if not pos.active and res["decision"] == "NO TRADE" and not blast and time_ok:
             iv_now = data.get("iv_atm", 0)
             if iv_now and iv_now > 0.18:
 
