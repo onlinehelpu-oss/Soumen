@@ -488,6 +488,10 @@ def format_oi(v):
     except Exception:
         return str(v)
 
+def is_option_contract(symbol):
+    """Ensures the symbol is a valid Call or Put option."""
+    return isinstance(symbol, str) and (symbol.endswith("CE") or symbol.endswith("PE"))
+
     # ===============================
 
 
@@ -1343,7 +1347,7 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
                     if new_put_strike in strikes_map and strikes_map[new_put_strike].get("PE"):
                         new_put_sym = strikes_map[new_put_strike]["PE"].get("symbol")
 
-                    if new_put_sym:
+                    if new_put_sym and is_option_contract(new_put_sym):
                         print(f"    Rolling Put: {pos.put_symbol} -> {new_put_sym} (Strike {pos.put_strike} -> {new_put_strike})")
                         try:
                             r1 = fy.place_order(data={
@@ -1378,7 +1382,7 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
                     if new_call_strike in strikes_map and strikes_map[new_call_strike].get("CE"):
                         new_call_sym = strikes_map[new_call_strike]["CE"].get("symbol")
 
-                    if new_call_sym:
+                    if new_call_sym and is_option_contract(new_call_sym):
                          print(f"    Rolling Call: {pos.call_symbol} -> {new_call_sym} (Strike {pos.call_strike} -> {new_call_strike})")
                          try:
                             r1 = fy.place_order(data={
