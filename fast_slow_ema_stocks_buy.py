@@ -782,7 +782,10 @@ def cancel_gtt_order(gtt_id: str) -> dict:
     if FYERS is None:
         return {"s": "error", "message": "no fyers client"}
     try:
-        return FYERS.cancel_gtt_order(id=gtt_id)
+        # API v3 expects data={'id': ...} usually, but some versions might take id kwarg.
+        # Safest is to follow the pattern of other calls or try both/standard data payload.
+        # Based on place_gtt_order using data=..., we use data here too.
+        return FYERS.cancel_gtt_order(data={"id": gtt_id})
     except Exception as e:
         return {"s": "error", "message": str(e)}
 
@@ -1897,8 +1900,8 @@ def sync_with_broker_positions(force_sync=False):
         if isinstance(pos_resp, dict) and pos_resp.get("s") == "ok":
             net_positions = pos_resp.get("netPositions", [])
         else:
-            _real_print(f"[sync] Error fetching positions: {pos_resp}")
-            return
+            _real_print(f"[sync] Error fetching positions: {pos_resp}. Aborting sync.")
+            return  # ABORT: Do not proceed with partial data
 
         # 2. Fetch HOLDINGS (CNC delivery from previous days)
         # Added retry loop for flaky 503/Bad Gateway errors
@@ -1916,8 +1919,9 @@ def sync_with_broker_positions(force_sync=False):
         if isinstance(hold_resp, dict) and hold_resp.get("s") == "ok":
             holdings_list = hold_resp.get("holdings", [])
         else:
-            # If holdings fail, we shouldn't necessarily abort, but log it.
-            _real_print(f"[sync] Warning fetching holdings: {hold_resp}")
+            # CRITICAL: If holdings fail, we MUST NOT assume 0 holdings.
+            _real_print(f"[sync] Error fetching holdings: {hold_resp}. Aborting sync.")
+            return  # ABORT: Do not proceed with partial data
 
         # Create map of symbol -> total open quantity
         # Key: symbol, Value: quantity
@@ -2008,7 +2012,9 @@ def sync_with_broker_positions(force_sync=False):
                         state.exit_pending = False
                         state.exit_signal_candle = None
                         if state.gtt_order_id:
-                            cancel_gtt_order(state.gtt_order_id)
+                            _real_print(f"[sync] Cancelling GTT {state.gtt_order_id} for {sym}...")
+                            c_resp = cancel_gtt_order(state.gtt_order_id)
+                            _real_print(f"[sync] GTT Cancel Resp: {c_resp}")
                             state.gtt_order_id = None
                     continue
 
