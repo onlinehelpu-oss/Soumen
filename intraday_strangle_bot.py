@@ -78,6 +78,7 @@ ENABLE_MAX_LOSS = False       # Set to True to enable, False to disable
 
 # -------- Gamma Blast params --------
 GB_STRIKES_AROUND_ATM = 8  # window on each side (Default)
+MIN_ENTRY_IV = 0.18        # Minimum ATM IV to trigger entry (Default: 18%)
 GB_OICH_MIN_ABS_FLOOR = 100.0  # absolute floor for threshold
 GB_OICH_SCALE = 0.05  # scale * max(CE_abs, PE_abs)
 GB_ROC_BP_THRESHOLD = 5.0  # price ROC (bp) confirmation
@@ -1265,7 +1266,7 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
 
         if not pos.active and res["decision"] == "NO TRADE" and not blast and time_ok:
             iv_now = data.get("iv_atm", 0)
-            if iv_now and iv_now > 0.18:
+            if iv_now and iv_now > MIN_ENTRY_IV:
 
                 # --- Strike Selection (Delta 0.12 - 0.18) ---
                 target_delta_ce = 0.15
@@ -1722,7 +1723,7 @@ def main():
 
 def load_settings():
     """Loads configuration from settings.json if it exists."""
-    global GB_STRIKES_AROUND_ATM
+    global GB_STRIKES_AROUND_ATM, MIN_ENTRY_IV
     if os.path.exists(SETTINGS_FILE):
         try:
             with open(SETTINGS_FILE, "r") as f:
@@ -1730,6 +1731,9 @@ def load_settings():
                 if "strikes_around_atm" in data:
                     GB_STRIKES_AROUND_ATM = int(data["strikes_around_atm"])
                     print(f"Loaded config from {SETTINGS_FILE}: GB_STRIKES_AROUND_ATM = {GB_STRIKES_AROUND_ATM}")
+                if "min_entry_iv" in data:
+                    MIN_ENTRY_IV = float(data["min_entry_iv"])
+                    print(f"Loaded config from {SETTINGS_FILE}: MIN_ENTRY_IV = {MIN_ENTRY_IV}")
         except Exception as e:
             print(f"Warning: Failed to load {SETTINGS_FILE}: {e}")
 
@@ -1737,6 +1741,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Intraday Strangle Bot")
     # Default is None so we can distinguish if user provided it or not
     parser.add_argument("--strikes", type=int, default=None, help="Number of strikes around ATM to fetch (overrides settings.json)")
+    parser.add_argument("--min-iv", type=float, default=None, help="Minimum IV to enter trade (e.g. 0.18 for 18%%)")
     args = parser.parse_args()
 
     # 1. Load from settings.json first
@@ -1748,5 +1753,11 @@ if __name__ == "__main__":
         print(f"CLI Override: GB_STRIKES_AROUND_ATM = {GB_STRIKES_AROUND_ATM}")
     else:
         print(f"Configuration: GB_STRIKES_AROUND_ATM = {GB_STRIKES_AROUND_ATM}")
+
+    if args.min_iv is not None:
+        MIN_ENTRY_IV = args.min_iv
+        print(f"CLI Override: MIN_ENTRY_IV = {MIN_ENTRY_IV}")
+    else:
+        print(f"Configuration: MIN_ENTRY_IV = {MIN_ENTRY_IV}")
 
     main()

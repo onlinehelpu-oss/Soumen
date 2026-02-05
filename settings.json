@@ -1,3 +1,4 @@
 {
-  "strikes_around_atm": 8
+  "strikes_around_atm": 8,
+  "min_entry_iv": 0.18
 }
