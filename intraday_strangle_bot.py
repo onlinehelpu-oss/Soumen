@@ -1751,13 +1751,28 @@ if __name__ == "__main__":
     if args.strikes is not None:
         GB_STRIKES_AROUND_ATM = args.strikes
         print(f"CLI Override: GB_STRIKES_AROUND_ATM = {GB_STRIKES_AROUND_ATM}")
-    else:
-        print(f"Configuration: GB_STRIKES_AROUND_ATM = {GB_STRIKES_AROUND_ATM}")
 
     if args.min_iv is not None:
         MIN_ENTRY_IV = args.min_iv
         print(f"CLI Override: MIN_ENTRY_IV = {MIN_ENTRY_IV}")
-    else:
-        print(f"Configuration: MIN_ENTRY_IV = {MIN_ENTRY_IV}")
+
+    # 3. Interactive Prompt (If no settings.json and no CLI args, optional)
+    # Check if we are running in an interactive terminal and no args were passed
+    # This helps users who just double-click the file
+    if not os.path.exists(SETTINGS_FILE) and args.strikes is None and args.min_iv is None:
+        print("\n--- Configuration ---")
+        try:
+            u_iv = input(f"Enter Min Entry IV (default {MIN_ENTRY_IV}): ").strip()
+            if u_iv:
+                MIN_ENTRY_IV = float(u_iv)
+
+            u_strikes = input(f"Enter Strikes Around ATM (default {GB_STRIKES_AROUND_ATM}): ").strip()
+            if u_strikes:
+                GB_STRIKES_AROUND_ATM = int(u_strikes)
+        except Exception as e:
+            print(f"Invalid input, using defaults. Error: {e}")
+
+    print(f"Final Configuration: GB_STRIKES_AROUND_ATM = {GB_STRIKES_AROUND_ATM}")
+    print(f"Final Configuration: MIN_ENTRY_IV = {MIN_ENTRY_IV}")
 
     main()
