@@ -2089,8 +2089,8 @@ def sync_with_broker_positions(force_sync=False):
                                     # If already cancelled or not found, treat as cleared
                                     code = c_resp.get("code")
                                     msg = str(c_resp.get("message", "")).lower()
-                                    # Code -52: Not a pending order
-                                    if code == -52 or "not found" in msg or "invalid" in msg or "cancel" in msg or "not a pending order" in msg:
+                                    # Code -52: Not a pending order, -51: Invalid order id
+                                    if code in (-52, -51) or "not found" in msg or "invalid" in msg or "cancel" in msg or "not a pending order" in msg:
                                         success = True
                                         _real_print(f"[sync] GTT {state.gtt_order_id} already gone. Cleared.")
 
@@ -2365,13 +2365,20 @@ def main():
         _real_print("=====================================================================\n")
 
         try:
+            # 1. Load State FIRST
+            load_state_from_disk()
+
+            # 2. Sync with Broker (Remove phantom positions before processing ticks)
+            if FYERS is not None and not args.test_table:
+                _real_print("[main] Performing initial position sync...")
+                sync_with_broker_positions()
+
+            # 3. Connect WebSocket (Starts tick processing)
             _real_print("[start] Connecting WebSocket...")
             FYERS_SOCKET.connect()
         except Exception as e:
             _real_print("[ws] connect failed:", e)
             return
-
-    load_state_from_disk()
 
     if args.test_table:
         CANDLE_MANAGER.force_close_all_up_to()
@@ -2380,11 +2387,6 @@ def main():
 
     try:
         _real_print("[main] Starting main loop. Press Ctrl+C to exit.")
-
-        # Initial sync
-        if FYERS is not None:
-            _real_print("[main] Performing initial position sync...")
-            sync_with_broker_positions()
 
         last_sync_time = time.time()
         last_heartbeat_time = time.time()
