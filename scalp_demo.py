@@ -1496,7 +1496,8 @@ def main():
                     for quote in resp["d"]:
                         sym = quote.get('n')
                         if sym:
-                            orchestrator.update_tick(sym, quote)
+                            # Extract 'v' to get the actual market data dict
+                            orchestrator.update_tick(sym, quote.get('v', {}))
                             tick_mgr = orchestrator.get_tick_manager(sym)
                             if tick_mgr.tick_count % ANALYSIS_EVERY_N_TICKS == 0:
                                 orchestrator.analyze_and_trade(sym)
