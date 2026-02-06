@@ -1543,15 +1543,28 @@ def print_and_save_chain_for_symbol(fy, symbol, S, num_strikes=8):
 # Auth probe & client init (rectified)
 # ===============================
 def _quotes_probe(fy):
-    try:
-        resp = fy.quotes(data={"symbols": "NSE:NIFTY50-INDEX"})
-    except Exception as e:
-        return False, (None, f"exception: {e}")
-    if isinstance(resp, dict) and resp.get("s") == "ok":
-        return True, None
-    code = resp.get("code") if isinstance(resp, dict) else None
-    msg = resp.get("message") if isinstance(resp, dict) else str(resp)[:200]
-    return False, (code, msg)
+    """Probes the API to check if token is valid. Retries on 429."""
+    for attempt in range(1, 4):
+        try:
+            resp = fy.quotes(data={"symbols": "NSE:NIFTY50-INDEX"})
+        except Exception as e:
+            return False, (None, f"exception: {e}")
+
+        if isinstance(resp, dict) and resp.get("s") == "ok":
+            return True, None
+
+        code = resp.get("code") if isinstance(resp, dict) else None
+        msg = resp.get("message") if isinstance(resp, dict) else str(resp)[:200]
+
+        if code == 429:
+            sleep_s = 2 ** attempt
+            print(f"DEBUG: Probe hit 429 (Rate Limit). Retrying in {sleep_s}s...")
+            time.sleep(sleep_s)
+            continue
+
+        return False, (code, msg)
+
+    return False, (429, "Rate limit exceeded after retries")
 
 
 def ensure_valid_token_and_client():
