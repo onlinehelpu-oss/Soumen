@@ -1112,6 +1112,11 @@ class ScalpingOrchestrator:
         """Process a new quote as a tick"""
         try:
             ltp = float(quote_data.get('lp', quote_data.get('ltp', 0)))
+
+            # Ignore invalid ticks (e.g. market closed or data error)
+            if ltp <= 0:
+                return
+
             bid = float(quote_data.get('bid', ltp))
             ask = float(quote_data.get('ask', ltp))
             bid_qty = int(quote_data.get('bid_size', 0))
