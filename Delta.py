@@ -334,6 +334,12 @@ class DeltaClient:
                             st.is_inverse = is_inverse
 
                         log("delta", f"Mapped {sym} -> ID {pid} | Val: {c_val} | Inv: {is_inverse}")
+
+                # Verify all configured symbols were found
+                found_symbols = set(self.products.keys())
+                for s in SYMBOLS_TO_MONITOR:
+                    if s not in found_symbols:
+                        log("warning", f"Symbol {s} not found in Delta Exchange products! Check spelling.")
             else:
                 log("error", "Failed to fetch products: " + str(data))
         except Exception as e:
