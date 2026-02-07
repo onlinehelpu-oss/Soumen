@@ -175,6 +175,10 @@ class SymbolState:
         self.data = pd.DataFrame()
         self.status = "watch"  # watch, entry_pending, position, cooldown
 
+        # Product Specs
+        self.contract_value = 1.0  # Default to 1 (USD)
+        self.is_inverse = False    # Default assumption (Linear)
+
         # Signal tracking
         self.signal_candle = None # dict
         self.signal_close_ts = None
@@ -306,10 +310,30 @@ class DeltaClient:
                 for p in data.get("result", []):
                     sym = p.get("symbol")
                     pid = p.get("id")
+
                     if sym in SYMBOLS_TO_MONITOR:
                         self.products[sym] = pid
                         self.id_to_symbol[pid] = sym
-                        log("delta", f"Mapped {sym} -> product_id {pid}")
+
+                        # Extract contract specs
+                        c_val = float(p.get("contract_value", 1.0))
+
+                        # Determine if Inverse or Linear
+                        # Inverse: Settled in Base (e.g. BTC), Quoted in Quote (e.g. USD) -> Settling != Quoting
+                        # Linear: Settled in Quote (e.g. USDT), Quoted in Quote (e.g. USDT) -> Settling == Quoting
+                        settling_sym = p.get("settling_asset", {}).get("symbol", "")
+                        quoting_sym = p.get("quoting_asset", {}).get("symbol", "")
+
+                        is_inverse = False
+                        if settling_sym and quoting_sym and (settling_sym != quoting_sym):
+                            is_inverse = True
+
+                        st = SYMBOL_STATES.get(sym)
+                        if st:
+                            st.contract_value = c_val
+                            st.is_inverse = is_inverse
+
+                        log("delta", f"Mapped {sym} -> ID {pid} | Val: {c_val} | Inv: {is_inverse}")
             else:
                 log("error", "Failed to fetch products: " + str(data))
         except Exception as e:
@@ -530,9 +554,26 @@ def on_tick(symbol, ltp, ts):
             st.entry_price = ltp
             # Let's say $1000 alloc per trade
             alloc = 1000.0
-            st.qty = alloc / ltp
 
-            log("trade", f"🚀 [PAPER] ENTER BUY {symbol} @ {ltp} (Trigger {trigger}) | Qty: {st.qty:.4f}")
+            # Calculate Quantity based on Product Type
+            if st.is_inverse:
+                # Inverse: Notional = Contracts * ContractValue
+                # Contracts = Notional / ContractValue
+                # e.g. BTCUSD (Inverse), Val=1 USD. Notional=$1000.
+                # Contracts = 1000 / 1 = 1000
+                st.qty = alloc / st.contract_value if st.contract_value > 0 else 0
+            else:
+                # Linear: Notional = Contracts * ContractValue * Price
+                # Contracts = Notional / (ContractValue * Price)
+                # e.g. BTCUSDT (Linear), Val=0.001 BTC. Price=60000. Notional=$1000.
+                # Contracts = 1000 / (0.001 * 60000) = 16.6
+                denom = st.contract_value * ltp
+                st.qty = alloc / denom if denom > 0 else 0
+
+            # Round to integer contracts (Delta usually uses integer contracts)
+            st.qty = int(st.qty)
+
+            log("trade", f"🚀 [PAPER] ENTER BUY {symbol} @ {ltp} (Trigger {trigger}) | Qty: {st.qty} Contracts")
             st.status = "position"
             st.target_price = st.potential_target_price
 
@@ -574,7 +615,26 @@ def on_tick(symbol, ltp, ts):
                 reason = "EXIT EMA TRIGGER"
 
         if exit_price > 0:
-            pnl = (exit_price - st.entry_price) * st.qty
+            # PnL Calculation
+            pnl = 0.0
+            if st.is_inverse:
+                # Inverse PnL (in Base Currency usually, but let's approximate USD PnL)
+                # Inverse PnL (BTC) = (1/Entry - 1/Exit) * Qty * ContractValue
+                # USD PnL approx = PnL(BTC) * ExitPrice
+                # Simplified USD PnL = (Exit - Entry) / Entry * Notional ?
+                # Actually, strictly: (1/Entry - 1/Exit) * Qty * Val * ExitPrice = (Exit - Entry)/Entry * Qty * Val
+                if st.entry_price > 0:
+                     # For Inverse (Long): (1/Entry - 1/Exit)
+                     # Wait, standard Inverse PnL = Qty * Val * (1/Entry - 1/Exit).
+                     # This gives BTC. To convert to USD, multiply by Exit Price.
+                     # USD PnL = Qty * Val * (1/Entry - 1/Exit) * Exit
+                     # = Qty * Val * (Exit - Entry) / (Entry * Exit) * Exit
+                     # = Qty * Val * (Exit - Entry) / Entry
+                     pnl = (st.qty * st.contract_value) * (exit_price - st.entry_price) / st.entry_price
+            else:
+                # Linear PnL = (Exit - Entry) * Qty * ContractValue
+                pnl = (exit_price - st.entry_price) * st.qty * st.contract_value
+
             PAPER_BALANCE += pnl
             PAPER_PNL += pnl
             icon = "✅" if pnl >= 0 else "❌"
