@@ -424,10 +424,13 @@ def evaluate_on_new_candle(st: SymbolState):
                 "low": curr_low
             }
             # Delta Time-based expiry: Signal valid for next candle only
-            st.signal_expiry = curr.name + timedelta(minutes=TIMEFRAME_MINUTES)
+            # curr.name is the start time of the *just closed* signal candle.
+            # We want to allow entry during the *entire* next candle (which just started).
+            # So expiry = start_time + 15m (end of signal candle) + 15m (end of next candle) = +30m total.
+            st.signal_expiry = curr.name + timedelta(minutes=TIMEFRAME_MINUTES * 2)
             st.status = "entry_pending"
 
-            log("signal", f"🔵 ENTRY SIGNAL {st.symbol} | High: {curr_high} | Target: {target:.2f} | Wait for break > High")
+            log("signal", f"🔵 ENTRY SIGNAL {st.symbol} | High: {curr_high} | Target: {target:.2f} | Wait for break > High (Expires: {st.signal_expiry})")
 
     # EXIT SIGNAL (Red candle close below Exit EMA)
     if st.status == "position":
@@ -475,6 +478,30 @@ def on_tick(symbol, ltp, ts):
 
     # ENTRY TRIGGER
     if st.status == "entry_pending" and st.signal_candle:
+        # Check Expiration (Strict Next Candle Rule)
+        # Convert ts (float/int or naive dt) to timezone-aware datetime for comparison
+        ts_obj = None
+        if isinstance(ts, (int, float)):
+             ts_obj = dt.fromtimestamp(ts).replace(tzinfo=None) # Naive local time? No, need to match signal_expiry (IST naive usually in this script)
+             # Actually, signal_expiry is derived from curr.name which comes from Pandas.
+             # In fetch_history, we localized to IST then removed tzinfo. So it is naive.
+             # So we need naive local time here too?
+             # Let's use datetime.now() if ts is close to now, or convert properly.
+             # Best: Ensure ts is datetime naive (local)
+             ts_obj = dt.fromtimestamp(ts)
+        elif isinstance(ts, dt):
+             ts_obj = ts
+
+        # Ensure naive for comparison if signal_expiry is naive
+        if st.signal_expiry and st.signal_expiry.tzinfo is None and ts_obj.tzinfo is not None:
+             ts_obj = ts_obj.replace(tzinfo=None) # Naive comparison
+
+        if st.signal_expiry and ts_obj and ts_obj > st.signal_expiry:
+             log("signal-expired", f"⏰ Signal Expired for {symbol} (No entry in next candle). Resetting to Watch.")
+             st.status = "watch"
+             st.signal_candle = None
+             return
+
         trigger = st.signal_candle["high"]
         if ltp > trigger:
             st.entry_price = ltp
