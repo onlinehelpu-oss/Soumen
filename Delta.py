@@ -19,7 +19,9 @@ from typing import Dict, Optional, List
 # ==============================================================================
 def load_config():
     try:
-        with open("config.json", "r") as f:
+        import os
+        config_path = os.path.join(os.path.dirname(__file__), "config.json")
+        with open(config_path, "r") as f:
             return json.load(f)
     except Exception as e:
         print(f"Error loading config.json: {e}. Using defaults.")
@@ -661,7 +663,14 @@ def main():
 
                 if sym and ltp:
                      # Check if ts is None/missing and fallback to time.time()
-                     if not ts: ts = time.time()
+                     if not ts:
+                         ts = time.time()
+                     else:
+                         # Ensure ts is in seconds (Delta often sends microseconds)
+                         # Current timestamp ~ 1.7e9 (seconds). 1.7e15 (us)
+                         if ts > 4102444800: # Year 2100 in seconds
+                             ts = ts / 1000000.0
+
                      on_tick(sym, float(ltp), ts)
 
         except Exception:
