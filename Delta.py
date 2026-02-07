@@ -5,20 +5,23 @@ import requests
 import pandas as pd
 from datetime import datetime as dt, timedelta
 import websocket
+import sys
 
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
+# Default to India, but will be updated by auto-selection
 BASE_URL = "https://api.india.delta.exchange"
 WS_URL = "wss://socket.india.delta.exchange"
+
 SYMBOLS_TO_MONITOR = ["BTCUSD", "ETHUSD", "SOLUSD"]
-TIMEFRAME_RES = "15m"  # 15 minute candles
+TIMEFRAME_RES = "15m"
 TIMEFRAME_MINUTES = 15
 LOOKBACK_CANDLES = 671
 
 # Strategy Params (Fast Slow Paper)
 EMA_FAST = 9
-EMA_SLOW = 15  # Updated to match image
+EMA_SLOW = 15
 
 # ==============================================================================
 # LOGGING HELPER
@@ -26,6 +29,72 @@ EMA_SLOW = 15  # Updated to match image
 def log(tag, message):
     timestamp = dt.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] [{tag}] {message}")
+
+# ==============================================================================
+# SERVER SELECTION
+# ==============================================================================
+def select_best_server():
+    global BASE_URL, WS_URL
+
+    # Define endpoints
+    india = ("India", "https://api.india.delta.exchange", "wss://socket.india.delta.exchange")
+    global_srv = ("Global", "https://api.delta.exchange", "wss://socket.delta.exchange")
+
+    log("init", "Checking server connectivity...")
+
+    def check_server(srv):
+        name, api, ws = srv
+        try:
+            start = time.time()
+            # 5s timeout
+            requests.head(f"{api}/v2/products", timeout=5)
+            lat = (time.time() - start) * 1000
+            return lat
+        except Exception as e:
+            return None
+
+    # 1. Check India First (Preferred)
+    lat_india = check_server(india)
+    if lat_india is not None:
+        log("init", f"  - India: {lat_india:.1f}ms")
+        if lat_india < 2000: # If India is responsive (< 2s), stick with it to ensure symbol compatibility
+            log("init", "India server is healthy. Selecting India.")
+            BASE_URL = india[1]
+            WS_URL = india[2]
+            return
+
+    # 2. If India failed or is slow, Check Global
+    if lat_india is None:
+        log("init", "  - India: Failed/Timeout")
+    else:
+        log("init", "  - India: Slow (>2s)")
+
+    lat_global = check_server(global_srv)
+    if lat_global is not None:
+        log("init", f"  - Global: {lat_global:.1f}ms")
+        log("init", "Selecting Global server due to India connectivity issues.")
+        BASE_URL = global_srv[1]
+        WS_URL = global_srv[2]
+        return
+    else:
+        log("init", "  - Global: Failed/Timeout")
+
+    # 3. Fallback logic
+    if lat_india is not None:
+         # Both might be slow, but India worked.
+         log("warning", "Both servers slow/failed check, but India responded. Using India.")
+         BASE_URL = india[1]
+         WS_URL = india[2]
+    elif lat_global is not None:
+         log("warning", "India failed, Global responded (slow). Using Global.")
+         BASE_URL = global_srv[1]
+         WS_URL = global_srv[2]
+    else:
+         log("error", "CRITICAL: Unable to connect to any Delta Exchange server.")
+         log("error", "Please check your internet connection or firewall.")
+         # Default to India and hope for the best
+         BASE_URL = india[1]
+         WS_URL = india[2]
 
 # ==============================================================================
 # DATA & INDICATORS
@@ -42,7 +111,7 @@ class DeltaClient:
         self.id_to_symbol = {} # id -> symbol
 
     def fetch_products(self):
-        log("delta", "Fetching product list...")
+        log("delta", f"Fetching product list from {BASE_URL}...")
         try:
             url = f"{BASE_URL}/v2/products"
             resp = requests.get(url, timeout=10)
@@ -84,7 +153,7 @@ class DeltaClient:
 
         try:
             url = f"{BASE_URL}/v2/history/candles"
-            resp = requests.get(url, params=params, timeout=10)
+            resp = requests.get(url, params=params, timeout=15) # Increased timeout slightly
             resp.raise_for_status()
             data = resp.json()
 
@@ -92,8 +161,6 @@ class DeltaClient:
                 candles = data.get("result", [])
                 df = pd.DataFrame(candles)
                 if not df.empty:
-                    # Rename columns to standard names if needed, usually: t, o, h, l, c, v
-                    # Delta returns: close, high, low, open, time, volume
                     df = df.sort_values(by="time").reset_index(drop=True)
                     return df
                 else:
@@ -152,16 +219,12 @@ class StrategyEngine:
         print("="*70)
 
         now = dt.now()
-        next_min = (now.minute // TIMEFRAME_MINUTES + 1) * TIMEFRAME_MINUTES
-        # Simple calc for time remaining
-        minutes_remaining = TIMEFRAME_MINUTES - (now.minute % TIMEFRAME_MINUTES)
-        seconds_remaining = 60 - now.second
 
         print(f"⏰ TIMEFRAME: {TIMEFRAME_MINUTES} minute candles")
         print(f"   - Each candle represents {TIMEFRAME_MINUTES} minutes of price action")
         print(f"   - New candle completes every {TIMEFRAME_MINUTES} minutes")
         print(f"   - Strategy: Fast({EMA_FAST}) / Slow({EMA_SLOW}) EMA Crossover")
-        # print(f"   - Time remaining: {minutes_remaining}m {seconds_remaining}s")
+        print(f"   - Server: {BASE_URL}")
         print("="*70 + "\n")
 
     def update(self):
@@ -209,18 +272,23 @@ class StrategyEngine:
 # MAIN LOGIC
 # ==============================================================================
 def main():
+    # 1. Select Best Server
+    select_best_server()
+
+    # 2. Init Client
     client = DeltaClient()
     client.fetch_products()
 
+    # 3. Init Strategy
     strategy = StrategyEngine(client)
     strategy.warmup()
 
-    # WebSocket (Keep Alive & Ticker Monitor)
+    # 4. WebSocket (Keep Alive & Ticker Monitor)
     log("main", "Starting WebSocket connection...")
     log("main", "Bot running. Press Ctrl+C to exit.")
 
     def on_ws_open(ws):
-        log("ws", "Connected to Delta Exchange")
+        log("ws", f"Connected to Delta Exchange ({WS_URL})")
         payload = {
             "type": "subscribe",
             "payload": {
@@ -236,9 +304,6 @@ def main():
         log("ws", f"Subscribed to {len(SYMBOLS_TO_MONITOR)} symbols")
 
     def on_ws_message(ws, message):
-        # Optional: Parse message to update live prices in real-time
-        # For now, we rely on the REST update loop for strategy signals
-        # But logging connection health is good
         pass
 
     def on_ws_error(ws, error):
@@ -258,7 +323,7 @@ def main():
                     on_error=on_ws_error,
                     on_close=on_ws_close
                 )
-                wsa.run_forever(ping_interval=30, ping_timeout=10)
+                wsa.run_forever(ping_interval=10, ping_timeout=5)
             except Exception as e:
                 log("ws_exception", f"Exception in WS loop: {e}")
 
@@ -288,7 +353,6 @@ def main():
                     status = "watch" # Default
 
                     # Format log to match user preference
-                    # [heartbeat]   🟢 BTCUSD       | LTP: $ 84,113.00 | Status: watch
                     print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {last['close']:,.2f} | Status: {status}")
 
     except KeyboardInterrupt:
