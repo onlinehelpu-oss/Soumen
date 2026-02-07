@@ -179,6 +179,7 @@ class SymbolState:
         self.last_candle_ts = None
         self.entry_time = 0.0
         self.just_entered = False
+        self.current_ltp = 0.0
 
 class CandleManager:
     def __init__(self, timeframe_min=15):
@@ -446,6 +447,9 @@ def on_tick(symbol, ltp, ts):
     st = SYMBOL_STATES.get(symbol)
     if not st: return
 
+    # Update real-time LTP
+    st.current_ltp = ltp
+
     # 1. Update Candle Manager
     closed_candle = CANDLE_MANAGER.process_tick(symbol, ltp, ts)
     if closed_candle:
@@ -655,8 +659,11 @@ def main():
                     slow = last.get("ema_slow_entry", 0)
                     trend = "🟢" if fast > slow else "🔴"
 
+                    # Use real-time LTP if available, else last close
+                    display_ltp = st.current_ltp if st.current_ltp > 0 else last['close']
+
                     # Log
-                    print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {last['close']:,.2f} | Status: {st.status}")
+                    print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | Status: {st.status}")
 
     except KeyboardInterrupt:
         print("\nExiting...")
