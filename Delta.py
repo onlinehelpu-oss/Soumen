@@ -10,6 +10,7 @@ import numpy as np
 import pytz
 import websocket
 import sys
+import traceback
 from datetime import datetime as dt, timedelta
 from typing import Dict, Optional, List
 
@@ -226,7 +227,8 @@ class CandleManager:
                  if ts_val > 4102444800:
                      ts_val = ts_val / 1000.0 # Maybe it was US?
 
-                 ts = dt.fromtimestamp(ts_val)
+                 # Important: fromtimestamp() returns Local Time. We want UTC aware first.
+                 ts = dt.fromtimestamp(ts_val, pytz.utc)
             else:
                  # String parsing
                  ts = pd.to_datetime(ts_val).to_pydatetime()
@@ -504,15 +506,12 @@ def on_tick(symbol, ltp, ts):
         # Convert ts (float/int or naive dt) to timezone-aware datetime for comparison
         ts_obj = None
         if isinstance(ts, (int, float)):
-             ts_obj = dt.fromtimestamp(ts).replace(tzinfo=None) # Naive local time? No, need to match signal_expiry (IST naive usually in this script)
-             # Actually, signal_expiry is derived from curr.name which comes from Pandas.
-             # In fetch_history, we localized to IST then removed tzinfo. So it is naive.
-             # So we need naive local time here too?
-             # Let's use datetime.now() if ts is close to now, or convert properly.
-             # Best: Ensure ts is datetime naive (local)
-             ts_obj = dt.fromtimestamp(ts)
+             # Ensure we convert the incoming UTC timestamp to IST correctly for comparison with signal_expiry (which is IST)
+             ts_obj = dt.fromtimestamp(ts, pytz.utc).astimezone(IST).replace(tzinfo=None)
         elif isinstance(ts, dt):
              ts_obj = ts
+             if ts_obj.tzinfo:
+                 ts_obj = ts_obj.astimezone(IST).replace(tzinfo=None)
 
         # Ensure naive for comparison if signal_expiry is naive
         if st.signal_expiry and st.signal_expiry.tzinfo is None and ts_obj.tzinfo is not None:
@@ -666,7 +665,7 @@ def main():
                      on_tick(sym, float(ltp), ts)
 
         except Exception:
-            pass
+            log("ws_error", f"Error in WebSocket processing: {traceback.format_exc()}")
 
     def on_ws_error(ws, error):
         log("ws_error", f"WebSocket Error: {error}")
