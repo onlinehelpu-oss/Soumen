@@ -1,0 +1,26 @@
+{
+    "base_url": "https://api.india.delta.exchange",
+    "ws_url": "wss://socket.india.delta.exchange",
+    "symbols": ["BTCUSD", "ETHUSD", "SOLUSD"],
+    "timeframe_res": "1m",
+    "timeframe_minutes": 1,
+    "lookback_candles": 1000,
+    "strategy": {
+        "exit_ema": 50,
+        "entry_fast_ema": 9,
+        "entry_slow_ema": 15,
+        "ema_buffer": 0.0,
+        "require_green_signal": true,
+        "min_range_pct": 0.0,
+        "sl_mode": "signal_low",
+        "swing_lookback": 5,
+        "swing_high_lookback": 50,
+        "trail_atr_mult": 1.0
+    },
+    "paper_trading": {
+        "enabled": true,
+        "balance": 10000.0,
+        "max_concurrent_pos": 3
+    },
+    "timezone": "Asia/Kolkata"
+}

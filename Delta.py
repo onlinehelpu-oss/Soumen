@@ -16,43 +16,55 @@ from typing import Dict, Optional, List
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
-# Default to India, but will be updated by auto-selection
-BASE_URL = "https://api.india.delta.exchange"
-WS_URL = "wss://socket.india.delta.exchange"
+def load_config():
+    try:
+        with open("config.json", "r") as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"Error loading config.json: {e}. Using defaults.")
+        return {}
 
-SYMBOLS_TO_MONITOR = ["BTCUSD", "ETHUSD", "SOLUSD"]
+CONFIG = load_config()
+
+# Default to India, but will be updated by auto-selection
+BASE_URL = CONFIG.get("base_url", "https://api.india.delta.exchange")
+WS_URL = CONFIG.get("ws_url", "wss://socket.india.delta.exchange")
+
+SYMBOLS_TO_MONITOR = CONFIG.get("symbols", ["BTCUSD", "ETHUSD", "SOLUSD"])
 
 # TIMEFRAME_RES: The resolution string required by Delta Exchange API (e.g., "1m", "15m", "1h", "1d").
-TIMEFRAME_RES = "15m"
+TIMEFRAME_RES = CONFIG.get("timeframe_res", "1m")
 
 # TIMEFRAME_MINUTES: The numeric duration of the candle in minutes, used for internal logic
 # (e.g., determining candle closure, signal expiry time calculations).
-TIMEFRAME_MINUTES = 15
+TIMEFRAME_MINUTES = CONFIG.get("timeframe_minutes", 1)
 
-LOOKBACK_CANDLES = 671
+LOOKBACK_CANDLES = CONFIG.get("lookback_candles", 1000)
 
-# Strategy Params (Copied from Fyers code)
-EXIT_EMA = 50
-ENTRY_FAST_EMA = 9
-ENTRY_SLOW_EMA = 15
+# Strategy Params
+STRATEGY = CONFIG.get("strategy", {})
+EXIT_EMA = STRATEGY.get("exit_ema", 50)
+ENTRY_FAST_EMA = STRATEGY.get("entry_fast_ema", 9)
+ENTRY_SLOW_EMA = STRATEGY.get("entry_slow_ema", 15)
 
-EMA_BUFFER = 0.0
-REQUIRE_GREEN_SIGNAL = True
-MIN_RANGE_PCT = 0.0
+EMA_BUFFER = STRATEGY.get("ema_buffer", 0.0)
+REQUIRE_GREEN_SIGNAL = STRATEGY.get("require_green_signal", True)
+MIN_RANGE_PCT = STRATEGY.get("min_range_pct", 0.0)
 
-SL_MODE = "signal_low"  # "signal_low" or "swing_low"
-SWING_LOOKBACK = 5
-SWING_HIGH_LOOKBACK = 50
-TRAIL_ATR_MULT = 1.0  # None = disabled
+SL_MODE = STRATEGY.get("sl_mode", "signal_low")  # "signal_low" or "swing_low"
+SWING_LOOKBACK = STRATEGY.get("swing_lookback", 5)
+SWING_HIGH_LOOKBACK = STRATEGY.get("swing_high_lookback", 50)
+TRAIL_ATR_MULT = STRATEGY.get("trail_atr_mult", 1.0)  # None = disabled
 
 # Simulation / Paper Trading
-PAPER_TRADE = True
-MAX_CONCURRENT_POS = 3
-PAPER_BALANCE = 10000.0 # Starting Balance in USD
+PAPER_CFG = CONFIG.get("paper_trading", {})
+PAPER_TRADE = PAPER_CFG.get("enabled", True)
+MAX_CONCURRENT_POS = PAPER_CFG.get("max_concurrent_pos", 3)
+PAPER_BALANCE = PAPER_CFG.get("balance", 10000.0) # Starting Balance in USD
 PAPER_PNL = 0.0
 
 # Timezone
-TIMEZONE = "Asia/Kolkata"
+TIMEZONE = CONFIG.get("timezone", "Asia/Kolkata")
 IST = pytz.timezone(TIMEZONE)
 
 # ==============================================================================
@@ -432,7 +444,7 @@ def evaluate_on_new_candle(st: SymbolState):
             # Delta Time-based expiry: Signal valid for next candle only
             # curr.name is the start time of the *just closed* signal candle.
             # We want to allow entry during the *entire* next candle (which just started).
-            # So expiry = start_time + 15m (end of signal candle) + 15m (end of next candle) = +30m total.
+            # So expiry = start_time + TF (end of signal candle) + TF (end of next candle) = +2*TF total.
             st.signal_expiry = curr.name + timedelta(minutes=TIMEFRAME_MINUTES * 2)
             st.status = "entry_pending"
 
@@ -472,6 +484,10 @@ def on_tick(symbol, ltp, ts):
             st.data = pd.concat([st.data, row])
             # Drop dupes
             st.data = st.data.loc[~st.data.index.duplicated(keep='last')]
+
+        # Truncate
+        if len(st.data) > LOOKBACK_CANDLES:
+            st.data = st.data.tail(LOOKBACK_CANDLES)
 
         # Recompute Indicators
         st.data = compute_indicators(st.data)
@@ -565,7 +581,7 @@ def on_tick(symbol, ltp, ts):
             log("trade", f"{icon} [PAPER] {reason} {symbol} @ {exit_price} | PnL: ${pnl:.2f}")
             log("trade", f"   Account Balance: ${PAPER_BALANCE:.2f}")
 
-            st.status = "cooldown"
+            st.status = "watch"
             st.qty = 0
 
         # Trailing Stop
