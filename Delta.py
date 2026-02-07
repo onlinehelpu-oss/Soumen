@@ -552,7 +552,7 @@ def on_tick(symbol, ltp, ts):
 
     # EXIT TRIGGERS
     if st.status == "position":
-        global PAPER_BALANCE
+        global PAPER_BALANCE, PAPER_PNL
         exit_price = 0.0
         reason = ""
 
