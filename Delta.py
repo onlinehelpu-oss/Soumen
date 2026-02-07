@@ -21,8 +21,14 @@ BASE_URL = "https://api.india.delta.exchange"
 WS_URL = "wss://socket.india.delta.exchange"
 
 SYMBOLS_TO_MONITOR = ["BTCUSD", "ETHUSD", "SOLUSD"]
+
+# TIMEFRAME_RES: The resolution string required by Delta Exchange API (e.g., "1m", "15m", "1h", "1d").
 TIMEFRAME_RES = "15m"
+
+# TIMEFRAME_MINUTES: The numeric duration of the candle in minutes, used for internal logic
+# (e.g., determining candle closure, signal expiry time calculations).
 TIMEFRAME_MINUTES = 15
+
 LOOKBACK_CANDLES = 671
 
 # Strategy Params (Copied from Fyers code)
