@@ -42,6 +42,8 @@ TRAIL_ATR_MULT = 1.0  # None = disabled
 # Simulation / Paper Trading
 PAPER_TRADE = True
 MAX_CONCURRENT_POS = 3
+PAPER_BALANCE = 10000.0 # Starting Balance in USD
+PAPER_PNL = 0.0
 
 # Timezone
 TIMEZONE = "Asia/Kolkata"
@@ -471,10 +473,13 @@ def on_tick(symbol, ltp, ts):
     if st.status == "entry_pending" and st.signal_candle:
         trigger = st.signal_candle["high"]
         if ltp > trigger:
-            log("trade", f"🚀 ENTER BUY {symbol} @ {ltp} (Trigger {trigger})")
-            st.status = "position"
             st.entry_price = ltp
-            st.qty = 100 # Mock
+            # Let's say $1000 alloc per trade
+            alloc = 1000.0
+            st.qty = alloc / ltp
+
+            log("trade", f"🚀 [PAPER] ENTER BUY {symbol} @ {ltp} (Trigger {trigger}) | Qty: {st.qty:.4f}")
+            st.status = "position"
             st.target_price = st.potential_target_price
 
             # Stop Loss
@@ -493,25 +498,38 @@ def on_tick(symbol, ltp, ts):
 
     # EXIT TRIGGERS
     if st.status == "position":
+        global PAPER_BALANCE
+        exit_price = 0.0
+        reason = ""
+
         # Target
         if st.target_price and ltp >= st.target_price:
-            log("trade", f"🎯 TARGET HIT {symbol} @ {ltp} (Target {st.target_price})")
-            st.status = "cooldown"
-            st.qty = 0
+            exit_price = ltp
+            reason = "TARGET HIT"
 
         # Stop Loss
         elif st.stop_price and ltp <= st.stop_price:
-            log("trade", f"🛑 STOP LOSS HIT {symbol} @ {ltp} (Stop {st.stop_price})")
-            st.status = "cooldown"
-            st.qty = 0
+            exit_price = ltp
+            reason = "STOP LOSS HIT"
 
         # Exit EMA Trigger
         elif st.exit_pending and st.exit_signal_candle:
             trigger = st.exit_signal_candle["low"]
             if ltp < trigger:
-                log("trade", f"📉 EXIT EMA TRIGGER {symbol} @ {ltp} (Trigger {trigger})")
-                st.status = "cooldown"
-                st.qty = 0
+                exit_price = ltp
+                reason = "EXIT EMA TRIGGER"
+
+        if exit_price > 0:
+            pnl = (exit_price - st.entry_price) * st.qty
+            PAPER_BALANCE += pnl
+            PAPER_PNL += pnl
+            icon = "✅" if pnl >= 0 else "❌"
+
+            log("trade", f"{icon} [PAPER] {reason} {symbol} @ {exit_price} | PnL: ${pnl:.2f}")
+            log("trade", f"   Account Balance: ${PAPER_BALANCE:.2f}")
+
+            st.status = "cooldown"
+            st.qty = 0
 
         # Trailing Stop
         if st.status == "position" and TRAIL_ATR_MULT and st.atr_at_entry > 0 and not st.sl_trailed:
