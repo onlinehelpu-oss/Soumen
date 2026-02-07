@@ -1,11 +1,17 @@
+# Fast Slow EMA Strategy - Delta Exchange Port (Fyers Logic)
+# -*- coding: utf-8 -*-
+
 import time
 import json
 import threading
 import requests
 import pandas as pd
-from datetime import datetime as dt, timedelta
+import numpy as np
+import pytz
 import websocket
 import sys
+from datetime import datetime as dt, timedelta
+from typing import Dict, Optional, List
 
 # ==============================================================================
 # CONFIGURATION
@@ -19,9 +25,27 @@ TIMEFRAME_RES = "15m"
 TIMEFRAME_MINUTES = 15
 LOOKBACK_CANDLES = 671
 
-# Strategy Params (Fast Slow Paper)
-EMA_FAST = 9
-EMA_SLOW = 15
+# Strategy Params (Copied from Fyers code)
+EXIT_EMA = 50
+ENTRY_FAST_EMA = 9
+ENTRY_SLOW_EMA = 15
+
+EMA_BUFFER = 0.0
+REQUIRE_GREEN_SIGNAL = True
+MIN_RANGE_PCT = 0.0
+
+SL_MODE = "signal_low"  # "signal_low" or "swing_low"
+SWING_LOOKBACK = 5
+SWING_HIGH_LOOKBACK = 50
+TRAIL_ATR_MULT = 1.0  # None = disabled
+
+# Simulation / Paper Trading
+PAPER_TRADE = True
+MAX_CONCURRENT_POS = 3
+
+# Timezone
+TIMEZONE = "Asia/Kolkata"
+IST = pytz.timezone(TIMEZONE)
 
 # ==============================================================================
 # LOGGING HELPER
@@ -46,7 +70,6 @@ def select_best_server():
         name, api, ws = srv
         try:
             start = time.time()
-            # 5s timeout
             requests.head(f"{api}/v2/products", timeout=5)
             lat = (time.time() - start) * 1000
             return lat
@@ -57,7 +80,7 @@ def select_best_server():
     lat_india = check_server(india)
     if lat_india is not None:
         log("init", f"  - India: {lat_india:.1f}ms")
-        if lat_india < 2000: # If India is responsive (< 2s), stick with it to ensure symbol compatibility
+        if lat_india < 2000:
             log("init", "India server is healthy. Selecting India.")
             BASE_URL = india[1]
             WS_URL = india[2]
@@ -79,9 +102,8 @@ def select_best_server():
     else:
         log("init", "  - Global: Failed/Timeout")
 
-    # 3. Fallback logic
+    # 3. Fallback
     if lat_india is not None:
-         # Both might be slow, but India worked.
          log("warning", "Both servers slow/failed check, but India responded. Using India.")
          BASE_URL = india[1]
          WS_URL = india[2]
@@ -91,24 +113,162 @@ def select_best_server():
          WS_URL = global_srv[2]
     else:
          log("error", "CRITICAL: Unable to connect to any Delta Exchange server.")
-         log("error", "Please check your internet connection or firewall.")
-         # Default to India and hope for the best
          BASE_URL = india[1]
          WS_URL = india[2]
 
 # ==============================================================================
-# DATA & INDICATORS
+# INDICATORS
 # ==============================================================================
 def compute_ema(series, span):
     return series.ewm(span=span, adjust=False).mean()
+
+def compute_atr(df, length=14):
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    prev_close = close.shift(1)
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return tr.ewm(alpha=1/length, adjust=False).mean()
+
+def compute_indicators(df):
+    if df is None or df.empty:
+        return df
+    df = df.copy()
+    df["ema_exit"] = compute_ema(df["close"], EXIT_EMA)
+    df["ema_fast_entry"] = compute_ema(df["close"], ENTRY_FAST_EMA)
+    df["ema_slow_entry"] = compute_ema(df["close"], ENTRY_SLOW_EMA)
+    df["atr"] = compute_atr(df, 14)
+    return df
+
+# ==============================================================================
+# STATE & CANDLE MANAGER
+# ==============================================================================
+class SymbolState:
+    def __init__(self, symbol: str):
+        self.symbol = symbol
+        self.data = pd.DataFrame()
+        self.status = "watch"  # watch, entry_pending, position, cooldown
+
+        # Signal tracking
+        self.signal_candle = None # dict
+        self.signal_close_ts = None
+        self.signal_expiry = None
+
+        # Position tracking
+        self.entry_price = 0.0
+        self.qty = 0
+        self.stop_price = 0.0
+        self.target_price = None
+        self.potential_target_price = None
+
+        # Trailing
+        self.atr_at_entry = 0.0
+        self.sl_trailed = False
+
+        # Exit logic
+        self.exit_pending = False
+        self.exit_signal_candle = None
+        self.exit_try_count = 0
+        self.last_failed_exit_ts = None
+
+        self.last_candle_ts = None
+        self.entry_time = 0.0
+        self.just_entered = False
+
+class CandleManager:
+    def __init__(self, timeframe_min=15):
+        self.tf = timeframe_min
+        self.partial = {} # symbol -> dict
+
+    def _floor_ts(self, ts: dt):
+        # Round down to nearest timeframe interval
+        minute = (ts.minute // self.tf) * self.tf
+        return ts.replace(second=0, microsecond=0, minute=minute)
+
+    def process_tick(self, symbol, ltp, ts_val):
+        # ts_val is either int timestamp (seconds/ms) or ISO string
+        try:
+            ts = None
+            # Heuristic check for milliseconds timestamp (year 56105 implies micro/milliseconds mismatch)
+            # Current timestamp ~ 1.7e9 (seconds). 1.7e12 (ms), 1.7e15 (us)
+
+            if isinstance(ts_val, (int, float)):
+                 # If timestamp is huge (> 3000-01-01), assume MS or US
+                 if ts_val > 32503680000: # Year 3000 in seconds
+                     ts_val = ts_val / 1000000.0 # Try converting US to S? or MS to S
+
+                 # Recheck reasonable range (Year 2000 - 2100)
+                 # 946684800 (2000) to 4102444800 (2100)
+                 if ts_val > 4102444800:
+                     ts_val = ts_val / 1000.0 # Maybe it was US?
+
+                 ts = dt.fromtimestamp(ts_val)
+            else:
+                 # String parsing
+                 ts = pd.to_datetime(ts_val).to_pydatetime()
+
+            # Localize if naive (Delta sends UTC usually)
+            if ts.tzinfo is None:
+                ts = pytz.utc.localize(ts)
+
+            # Convert to IST for logic consistency
+            ts_ist = ts.astimezone(IST).replace(tzinfo=None)
+
+            candle_start = self._floor_ts(ts_ist)
+
+            p = self.partial.get(symbol)
+
+            # Initialize partial candle if none
+            if p is None:
+                p = {
+                    "ts": candle_start,
+                    "open": ltp, "high": ltp, "low": ltp, "close": ltp,
+                    "ticks": 1
+                }
+                self.partial[symbol] = p
+                return None # No closed candle yet
+
+            # Check if we moved to a new candle bucket
+            if candle_start > p["ts"]:
+                # The previous candle is complete
+                completed = p.copy()
+
+                # Start new candle
+                self.partial[symbol] = {
+                    "ts": candle_start,
+                    "open": ltp, "high": ltp, "low": ltp, "close": ltp,
+                    "ticks": 1
+                }
+                return completed # Return the CLOSED candle
+
+            # Update current candle
+            p["high"] = max(p["high"], ltp)
+            p["low"] = min(p["low"], ltp)
+            p["close"] = ltp
+            p["ticks"] += 1
+            self.partial[symbol] = p
+            return None
+
+        except Exception as e:
+            # log("error", f"CandleManager error: {e} | Val: {ts_val}")
+            return None
+
+# ==============================================================================
+# GLOBAL STATE
+# ==============================================================================
+SYMBOL_STATES: Dict[str, SymbolState] = {s: SymbolState(s) for s in SYMBOLS_TO_MONITOR}
+CANDLE_MANAGER = CandleManager(TIMEFRAME_MINUTES)
 
 # ==============================================================================
 # DELTA EXCHANGE API CLIENT
 # ==============================================================================
 class DeltaClient:
     def __init__(self):
-        self.products = {}  # symbol -> id
-        self.id_to_symbol = {} # id -> symbol
+        self.products = {}
+        self.id_to_symbol = {}
 
     def fetch_products(self):
         log("delta", f"Fetching product list from {BASE_URL}...")
@@ -130,9 +290,6 @@ class DeltaClient:
         except Exception as e:
             log("error", f"Error fetching products: {e}")
 
-    def get_product_id(self, symbol):
-        return self.products.get(symbol)
-
     def fetch_history(self, symbol, resolution, num_candles):
         now_ts = int(time.time())
         res_map = {
@@ -140,20 +297,15 @@ class DeltaClient:
             "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600, "12h": 43200, "1d": 86400
         }
         res_sec = res_map.get(resolution, 60)
-
-        # Buffer: add extra 20 candles for EMA warmup
-        start_ts = now_ts - ((num_candles + 20) * res_sec)
+        start_ts = now_ts - ((num_candles + 50) * res_sec)
 
         params = {
-            "symbol": symbol,
-            "resolution": resolution,
-            "start": start_ts,
-            "end": now_ts
+            "symbol": symbol, "resolution": resolution,
+            "start": start_ts, "end": now_ts
         }
-
         try:
             url = f"{BASE_URL}/v2/history/candles"
-            resp = requests.get(url, params=params, timeout=15) # Increased timeout slightly
+            resp = requests.get(url, params=params, timeout=15)
             resp.raise_for_status()
             data = resp.json()
 
@@ -161,129 +313,251 @@ class DeltaClient:
                 candles = data.get("result", [])
                 df = pd.DataFrame(candles)
                 if not df.empty:
+                    # Delta returns: close, high, low, open, time, volume
                     df = df.sort_values(by="time").reset_index(drop=True)
+                    # Convert timestamp to datetime (UTC -> IST naive)
+                    df["ts"] = pd.to_datetime(df["time"], unit='s', utc=True).dt.tz_convert(IST).dt.tz_localize(None)
+                    df = df.set_index("ts")[["open", "high", "low", "close", "volume"]]
                     return df
-                else:
-                    return pd.DataFrame()
-            else:
-                log("error", f"History fetch failed for {symbol}: {data}")
-                return pd.DataFrame()
+            return pd.DataFrame()
         except Exception as e:
-            log("error", f"Error fetching history for {symbol}: {e}")
+            log("error", f"History fetch failed for {symbol}: {e}")
             return pd.DataFrame()
 
 # ==============================================================================
-# STRATEGY ENGINE
+# STRATEGY LOGIC (Ported)
 # ==============================================================================
-class StrategyEngine:
-    def __init__(self, client):
-        self.client = client
-        self.data = {} # symbol -> DataFrame
-        self.positions = {} # symbol -> side (1=Long, -1=Short, 0=None)
-        self.live_prices = {} # symbol -> float
+def compute_prev_swing_high_for_entry(state, lookback, reference_price):
+    try:
+        df = state.data
+        if df.empty: return None
 
-    def warmup(self):
-        log("warmup", "Fetching historical data...")
-        for sym in SYMBOLS_TO_MONITOR:
-            df = self.client.fetch_history(sym, TIMEFRAME_RES, LOOKBACK_CANDLES)
-            if not df.empty:
-                # Calculate Indicators
-                df['ema_fast'] = compute_ema(df['close'], EMA_FAST)
-                df['ema_slow'] = compute_ema(df['close'], EMA_SLOW)
-                self.data[sym] = df
-                self.positions[sym] = 0
-                self.live_prices[sym] = df.iloc[-1]['close']
-                log("warmup", f"Loaded {len(df)} candles for {sym}")
+        # Prior data only
+        if state.signal_candle:
+            sig_ts = state.signal_candle["ts"]
+            df_up_to = df.loc[:sig_ts]
+        else:
+            df_up_to = df
+
+        prior = df_up_to.iloc[:-1].tail(lookback).copy()
+        if prior.empty: return None
+
+        highs = prior["high"].values
+        if len(highs) < 5: return prior["high"].max()
+
+        pivot_width = 2
+        peaks = []
+        for i in range(pivot_width, len(highs) - pivot_width):
+            current = highs[i]
+            is_peak = True
+            for j in range(1, pivot_width + 1):
+                if highs[i-j] >= current or highs[i+j] >= current:
+                    is_peak = False
+                    break
+            if is_peak: peaks.append(current)
+
+        if reference_price is not None:
+            valid_peaks = [p for p in peaks if p > reference_price]
+            if valid_peaks: return valid_peaks[-1] # Latest peak
+
+        return prior["high"].max()
+    except Exception as e:
+        log("error", f"Swing high error: {e}")
+        return None
+
+def compute_swing_low_for_signal(state, lookback):
+    try:
+        if state.signal_candle:
+            df = state.data.loc[:state.signal_candle["ts"]]
+        else:
+            df = state.data
+        if df.empty: return float("nan")
+        return df.tail(lookback)["low"].min()
+    except Exception:
+        return float("nan")
+
+def evaluate_on_new_candle(st: SymbolState):
+    df = st.data
+    if df.shape[0] < 2: return
+
+    curr = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    curr_open = curr["open"]
+    curr_close = curr["close"]
+    curr_high = curr["high"]
+    curr_low = curr["low"]
+
+    ema_fast = curr.get("ema_fast_entry")
+    ema_slow = curr.get("ema_slow_entry")
+    ema_slow_prev = prev.get("ema_slow_entry")
+    ema_exit = curr.get("ema_exit")
+
+    # ENTRY SIGNAL
+    if st.status == "watch":
+        ema_sequence_ok = ema_fast > ema_slow
+        rising_slow_ema = ema_slow > ema_slow_prev
+
+        highest_ema = max(ema_fast, ema_slow)
+
+        touched_slow_ema = curr_low <= ema_slow
+        closed_above_both = curr_close > (highest_ema + EMA_BUFFER)
+        green_ok = (not REQUIRE_GREEN_SIGNAL) or (curr_close > curr_open)
+        higher_high = curr_high > prev["high"]
+
+        if (ema_sequence_ok and rising_slow_ema and touched_slow_ema
+            and closed_above_both and green_ok and higher_high):
+
+            target = compute_prev_swing_high_for_entry(st, SWING_HIGH_LOOKBACK, curr_high)
+
+            if target is None or target <= curr_high:
+                log("signal-filtered", f"{st.symbol} Signal ignored. No target > signal_high ({curr_high})")
+                return
+
+            st.potential_target_price = target
+            st.signal_candle = {
+                "ts": curr.name,
+                "high": curr_high,
+                "low": curr_low
+            }
+            # Delta Time-based expiry: Signal valid for next candle only
+            st.signal_expiry = curr.name + timedelta(minutes=TIMEFRAME_MINUTES)
+            st.status = "entry_pending"
+
+            log("signal", f"🔵 ENTRY SIGNAL {st.symbol} | High: {curr_high} | Target: {target:.2f} | Wait for break > High")
+
+    # EXIT SIGNAL (Red candle close below Exit EMA)
+    if st.status == "position":
+        intrabar_up = (curr_open < ema_exit) and (curr_high > ema_exit)
+        closed_below = curr_close < (ema_exit - EMA_BUFFER)
+        is_red = curr_close < curr_open
+
+        if is_red and intrabar_up and closed_below:
+            st.exit_signal_candle = {
+                "ts": curr.name,
+                "low": curr_low
+            }
+            st.exit_pending = True
+            log("signal", f"🟠 EXIT SIGNAL {st.symbol} | Low: {curr_low} | Wait for break < Low")
+
+def on_tick(symbol, ltp, ts):
+    st = SYMBOL_STATES.get(symbol)
+    if not st: return
+
+    # 1. Update Candle Manager
+    closed_candle = CANDLE_MANAGER.process_tick(symbol, ltp, ts)
+    if closed_candle:
+        # Append to DataFrame
+        row = pd.DataFrame([closed_candle])
+        row = row.set_index("ts")[["open", "high", "low", "close"]]
+
+        if st.data.empty:
+            st.data = row
+        else:
+            st.data = pd.concat([st.data, row])
+            # Drop dupes
+            st.data = st.data.loc[~st.data.index.duplicated(keep='last')]
+
+        # Recompute Indicators
+        st.data = compute_indicators(st.data)
+        st.last_candle_ts = closed_candle["ts"]
+
+        # Run Strategy
+        evaluate_on_new_candle(st)
+
+    # 2. Check Triggers (LTP)
+
+    # ENTRY TRIGGER
+    if st.status == "entry_pending" and st.signal_candle:
+        trigger = st.signal_candle["high"]
+        if ltp > trigger:
+            log("trade", f"🚀 ENTER BUY {symbol} @ {ltp} (Trigger {trigger})")
+            st.status = "position"
+            st.entry_price = ltp
+            st.qty = 100 # Mock
+            st.target_price = st.potential_target_price
+
+            # Stop Loss
+            if SL_MODE == "signal_low":
+                st.stop_price = st.signal_candle["low"]
             else:
-                log("warmup", f"No candles for {sym}")
+                swing = compute_swing_low_for_signal(st, SWING_LOOKBACK)
+                st.stop_price = st.signal_candle["low"] if np.isnan(swing) else swing
 
-        log("warmup", "Historical data loaded")
-        self.print_market_summary()
+            # ATR
+            if not st.data.empty:
+                st.atr_at_entry = st.data.iloc[-1]["atr"]
 
-    def print_market_summary(self):
-        print("\n" + "="*70)
-        print("📊 CURRENT MARKET PRICES (LTP)")
-        print("="*70)
-        for sym in SYMBOLS_TO_MONITOR:
-            df = self.data.get(sym)
-            if df is not None and not df.empty:
-                last = df.iloc[-1]
-                ltp = last['close']
-                vol = last['volume']
+            log("trade", f"   Target: {st.target_price} | Stop: {st.stop_price}")
+            st.signal_candle = None
 
-                # Check 24h Change logic if available (simplified here)
-                change = 0.00
-                trend_icon = "📈" if change >= 0 else "📉"
+    # EXIT TRIGGERS
+    if st.status == "position":
+        # Target
+        if st.target_price and ltp >= st.target_price:
+            log("trade", f"🎯 TARGET HIT {symbol} @ {ltp} (Target {st.target_price})")
+            st.status = "cooldown"
+            st.qty = 0
 
-                print(f"{sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {trend_icon}   +{change:.2f}% | Vol: $ {int(vol):,}")
-        print("="*70)
+        # Stop Loss
+        elif st.stop_price and ltp <= st.stop_price:
+            log("trade", f"🛑 STOP LOSS HIT {symbol} @ {ltp} (Stop {st.stop_price})")
+            st.status = "cooldown"
+            st.qty = 0
 
-        now = dt.now()
+        # Exit EMA Trigger
+        elif st.exit_pending and st.exit_signal_candle:
+            trigger = st.exit_signal_candle["low"]
+            if ltp < trigger:
+                log("trade", f"📉 EXIT EMA TRIGGER {symbol} @ {ltp} (Trigger {trigger})")
+                st.status = "cooldown"
+                st.qty = 0
 
-        print(f"⏰ TIMEFRAME: {TIMEFRAME_MINUTES} minute candles")
-        print(f"   - Each candle represents {TIMEFRAME_MINUTES} minutes of price action")
-        print(f"   - New candle completes every {TIMEFRAME_MINUTES} minutes")
-        print(f"   - Strategy: Fast({EMA_FAST}) / Slow({EMA_SLOW}) EMA Crossover")
-        print(f"   - Server: {BASE_URL}")
-        print("="*70 + "\n")
-
-    def update(self):
-        """Called periodically to fetch fresh data and check signals"""
-        for sym in SYMBOLS_TO_MONITOR:
-            # Fetch strictly new data to append
-            df_new = self.client.fetch_history(sym, TIMEFRAME_RES, 5)
-            if not df_new.empty:
-                df_old = self.data.get(sym, pd.DataFrame())
-                if df_old.empty:
-                    self.data[sym] = df_new
-                else:
-                    # Concatenate and drop duplicates based on time
-                    df_combined = pd.concat([df_old, df_new]).drop_duplicates(subset='time', keep='last').sort_values('time').reset_index(drop=True)
-
-                    # Update live price from latest candle close if available
-                    self.live_prices[sym] = df_combined.iloc[-1]['close']
-
-                    # Recalculate indicators
-                    df_combined['ema_fast'] = compute_ema(df_combined['close'], EMA_FAST)
-                    df_combined['ema_slow'] = compute_ema(df_combined['close'], EMA_SLOW)
-                    self.data[sym] = df_combined
-
-                self.check_signal(sym)
-
-    def check_signal(self, symbol):
-        df = self.data[symbol]
-        if len(df) < 2: return
-
-        curr = df.iloc[-1]
-        prev = df.iloc[-2]
-
-        # Crossover Logic
-        if prev['ema_fast'] <= prev['ema_slow'] and curr['ema_fast'] > curr['ema_slow']:
-            if self.positions[symbol] <= 0:
-                log("signal", f"🔵 BUY SIGNAL for {symbol} @ {curr['close']:.2f} (Fast {curr['ema_fast']:.2f} > Slow {curr['ema_slow']:.2f})")
-                self.positions[symbol] = 1
-
-        elif prev['ema_fast'] >= prev['ema_slow'] and curr['ema_fast'] < curr['ema_slow']:
-            if self.positions[symbol] >= 0:
-                log("signal", f"🟠 SELL SIGNAL for {symbol} @ {curr['close']:.2f} (Fast {curr['ema_fast']:.2f} < Slow {curr['ema_slow']:.2f})")
-                self.positions[symbol] = -1
+        # Trailing Stop
+        if st.status == "position" and TRAIL_ATR_MULT and st.atr_at_entry > 0 and not st.sl_trailed:
+            dist = st.atr_at_entry * TRAIL_ATR_MULT
+            if ltp >= (st.entry_price + dist):
+                st.stop_price = st.entry_price
+                st.sl_trailed = True
+                log("trade", f"🛡️ TRAILING STOP moved to Breakeven {st.entry_price}")
 
 # ==============================================================================
 # MAIN LOGIC
 # ==============================================================================
 def main():
-    # 1. Select Best Server
     select_best_server()
-
-    # 2. Init Client
     client = DeltaClient()
     client.fetch_products()
 
-    # 3. Init Strategy
-    strategy = StrategyEngine(client)
-    strategy.warmup()
+    # Warmup
+    log("warmup", "Fetching historical data...")
+    for sym in SYMBOLS_TO_MONITOR:
+        df = client.fetch_history(sym, TIMEFRAME_RES, LOOKBACK_CANDLES)
+        if not df.empty:
+            df = compute_indicators(df)
+            SYMBOL_STATES[sym].data = df
+            SYMBOL_STATES[sym].last_candle_ts = df.index[-1]
+            log("warmup", f"Loaded {len(df)} candles for {sym}")
 
-    # 4. WebSocket (Keep Alive & Ticker Monitor)
+    log("warmup", "Historical data loaded")
+
+    print("\n" + "="*70)
+    print("📊 CURRENT MARKET PRICES (LTP)")
+    print("="*70)
+    for sym in SYMBOLS_TO_MONITOR:
+        st = SYMBOL_STATES[sym]
+        if not st.data.empty:
+            last = st.data.iloc[-1]
+            print(f"{sym:<12} | LTP: $ {last['close']:,.2f} | 24h Change: 📈   +0.00% | Vol: {int(last.get('volume',0)):,}")
+    print("="*70)
+    print(f"⏰ TIMEFRAME: {TIMEFRAME_MINUTES} minute candles")
+    print(f"   - Each candle represents {TIMEFRAME_MINUTES} minutes of price action")
+    print(f"   - New candle completes every {TIMEFRAME_MINUTES} minutes")
+    print(f"   - Strategy: Fast({ENTRY_FAST_EMA}) / Slow({ENTRY_SLOW_EMA}) EMA Crossover")
+    print(f"   - Server: {BASE_URL}")
+    print("="*70 + "\n")
+
+    # WebSocket
     log("main", "Starting WebSocket connection...")
     log("main", "Bot running. Press Ctrl+C to exit.")
 
@@ -304,7 +578,24 @@ def main():
         log("ws", f"Subscribed to {len(SYMBOLS_TO_MONITOR)} symbols")
 
     def on_ws_message(ws, message):
-        pass
+        try:
+            data = json.loads(message)
+            if data.get("type") == "v2/ticker":
+                # Ticker update
+                # Format: {"type": "v2/ticker", "symbol": "BTCUSD", "mark_price": ..., "close": ...}
+                # Delta Ticker channel sends full object
+                sym = data.get("symbol")
+                # Use close or mark_price as LTP
+                ltp = data.get("close") or data.get("mark_price")
+                ts = data.get("timestamp") or time.time()
+
+                if sym and ltp:
+                     # Check if ts is None/missing and fallback to time.time()
+                     if not ts: ts = time.time()
+                     on_tick(sym, float(ltp), ts)
+
+        except Exception:
+            pass
 
     def on_ws_error(ws, error):
         log("ws_error", f"WebSocket Error: {error}")
@@ -315,7 +606,6 @@ def main():
     def run_ws():
         while True:
             try:
-                # Use run_forever with ping/pong to keep connection alive
                 wsa = websocket.WebSocketApp(
                     WS_URL,
                     on_open=on_ws_open,
@@ -325,35 +615,30 @@ def main():
                 )
                 wsa.run_forever(ping_interval=10, ping_timeout=5)
             except Exception as e:
-                log("ws_exception", f"Exception in WS loop: {e}")
-
-            log("ws", "Reconnecting in 5 seconds...")
+                log("ws_exception", f"Exception: {e}")
             time.sleep(5)
 
     ws_thread = threading.Thread(target=run_ws)
     ws_thread.daemon = True
     ws_thread.start()
 
-    # Main Loop
     try:
         while True:
-            time.sleep(60) # Check every minute
-
-            # Update Strategy
-            strategy.update()
-
-            # Log Status
+            # Wait for 1 minute before first heartbeat, then loop
+            time.sleep(60)
             log("heartbeat", f"Bot active. Monitoring {len(SYMBOLS_TO_MONITOR)} symbols...")
             log("heartbeat", f"📊 Current Market Prices:")
             for sym in SYMBOLS_TO_MONITOR:
-                df = strategy.data.get(sym)
-                if df is not None:
-                    last = df.iloc[-1]
-                    trend = "🟢" if last['ema_fast'] > last['ema_slow'] else "🔴"
-                    status = "watch" # Default
+                st = SYMBOL_STATES[sym]
+                if not st.data.empty:
+                    last = st.data.iloc[-1]
+                    # Determine trend based on fast/slow
+                    fast = last.get("ema_fast_entry", 0)
+                    slow = last.get("ema_slow_entry", 0)
+                    trend = "🟢" if fast > slow else "🔴"
 
-                    # Format log to match user preference
-                    print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {last['close']:,.2f} | Status: {status}")
+                    # Log
+                    print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {last['close']:,.2f} | Status: {st.status}")
 
     except KeyboardInterrupt:
         print("\nExiting...")
