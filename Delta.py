@@ -35,12 +35,21 @@ WS_URL = CONFIG.get("ws_url", "wss://socket.india.delta.exchange")
 
 SYMBOLS_TO_MONITOR = CONFIG.get("symbols", ["BTCUSD", "ETHUSD", "SOLUSD"])
 
-# TIMEFRAME_RES: The resolution string required by Delta Exchange API (e.g., "1m", "15m", "1h", "1d").
-TIMEFRAME_RES = CONFIG.get("timeframe_res", "1m")
-
-# TIMEFRAME_MINUTES: The numeric duration of the candle in minutes, used for internal logic
-# (e.g., determining candle closure, signal expiry time calculations).
+# TIMEFRAME CONFIGURATION
+# User provides 'timeframe_minutes' (e.g., 1, 5, 15). We derive API resolution string.
 TIMEFRAME_MINUTES = CONFIG.get("timeframe_minutes", 1)
+
+def get_resolution_str(minutes):
+    if minutes < 60:
+        return f"{minutes}m"
+    elif minutes % 60 == 0 and minutes < 1440:
+        return f"{minutes // 60}h"
+    elif minutes % 1440 == 0:
+        return f"{minutes // 1440}d"
+    else:
+        return "1m" # Fallback
+
+TIMEFRAME_RES = CONFIG.get("timeframe_res", get_resolution_str(TIMEFRAME_MINUTES))
 
 LOOKBACK_CANDLES = CONFIG.get("lookback_candles", 1000)
 
