@@ -83,14 +83,15 @@ PAPER_PNL = 0.0
 
 # Timezone
 TIMEZONE = CONFIG.get("timezone", "Asia/Kolkata")
-IST = pytz.timezone(TIMEZONE)
+USER_TZ = pytz.timezone(TIMEZONE)
 
 
 # ==============================================================================
 # LOGGING HELPER
 # ==============================================================================
 def log(tag, message):
-    timestamp = dt.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Log in User's Timezone
+    timestamp = dt.now(pytz.utc).astimezone(USER_TZ).strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] [{tag}] {message}")
 
 
@@ -269,10 +270,11 @@ class CandleManager:
             if ts.tzinfo is None:
                 ts = pytz.utc.localize(ts)
 
-            # Convert to IST for logic consistency
-            ts_ist = ts.astimezone(IST).replace(tzinfo=None)
+            # Use Naive UTC for internal calculation (matches Broker plotting)
+            # Remove TZ info to work with naive datetime objects
+            ts_utc_naive = ts.astimezone(pytz.utc).replace(tzinfo=None)
 
-            candle_start = self._floor_ts(ts_ist)
+            candle_start = self._floor_ts(ts_utc_naive)
 
             p = self.partial.get(symbol)
 
@@ -430,7 +432,8 @@ class DeltaClient:
                 df = pd.DataFrame(candles)
                 if not df.empty:
                     df = df.sort_values(by="time").reset_index(drop=True)
-                    df["ts"] = pd.to_datetime(df["time"], unit='s', utc=True).dt.tz_convert(IST).dt.tz_localize(None)
+                    # Use Naive UTC (Broker Plotting)
+                    df["ts"] = pd.to_datetime(df["time"], unit='s', utc=True).dt.tz_localize(None)
                     df = df.set_index("ts")[["open", "high", "low", "close", "volume"]]
 
                     if needs_resampling:
@@ -613,14 +616,14 @@ def on_tick(symbol, ltp, ts):
     # ENTRY TRIGGER
     if st.status == "entry_pending" and st.signal_candle:
         # Check Expiration (Strict Next Candle Rule)
-        # Convert ts (float/int or naive dt) to timezone-aware datetime for comparison
+        # Convert ts (float/int or naive dt) to naive UTC datetime for comparison
         ts_obj = None
         if isinstance(ts, (int, float)):
-            ts_obj = dt.fromtimestamp(ts, pytz.utc).astimezone(IST).replace(tzinfo=None)
+            ts_obj = dt.fromtimestamp(ts, pytz.utc).replace(tzinfo=None)
         elif isinstance(ts, dt):
             ts_obj = ts
             if ts_obj.tzinfo:
-                ts_obj = ts_obj.astimezone(IST).replace(tzinfo=None)
+                ts_obj = ts_obj.astimezone(pytz.utc).replace(tzinfo=None)
 
         if st.signal_expiry and st.signal_expiry.tzinfo is None and ts_obj.tzinfo is not None:
             ts_obj = ts_obj.replace(tzinfo=None)
