@@ -562,7 +562,7 @@ def evaluate_on_new_candle(st: SymbolState):
             st.status = "entry_pending"
 
             log("signal",
-                f"🔵 ENTRY SIGNAL {st.symbol} | High: {curr_high} | Open < LowerBB & Close > LowerBB | Wait for break > High")
+                f"🔵 ENTRY SIGNAL {st.symbol} | High: {curr_high} | Open: {curr_open} | Close: {curr_close} (Green) | LowerBB: {lower_bb:.2f} | Wait for break > High")
 
     # EXIT SIGNAL (Close above Upper BB)
     if st.status == "position":
@@ -845,14 +845,18 @@ def main():
                 if not st.data.empty:
                     last = st.data.iloc[-1]
 
+                    # Candle color (last completed candle)
+                    open_price = last.get("open", 0)
+                    close_price = last.get("close", 0)
+                    candle_color = "🟢" if close_price > open_price else "🔴"
+
                     # Trend based on Price vs Middle BB
                     ma = last.get("ma", 0)
-                    close = last.get("close", 0)
-                    trend = "🟢" if close > ma else "🔴"
+                    trend = "↑" if close_price > ma else "↓"
 
                     display_ltp = st.current_ltp if st.current_ltp > 0 else last['close']
 
-                    print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | Status: {st.status}")
+                    print(f"[heartbeat]   {candle_color} {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | Status: {st.status}")
 
             time.sleep(TIMEFRAME_MINUTES * 60)
 
