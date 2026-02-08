@@ -233,9 +233,14 @@ class CandleManager:
         self.partial = {}  # symbol -> dict
 
     def _floor_ts(self, ts: dt):
-        # Round down to nearest timeframe interval
-        minute = (ts.minute // self.tf) * self.tf
-        return ts.replace(second=0, microsecond=0, minute=minute)
+        # Round down to nearest timeframe interval (works for >60m too)
+        total_minutes = ts.hour * 60 + ts.minute
+        floored_minutes = (total_minutes // self.tf) * self.tf
+
+        hour = (floored_minutes // 60) % 24
+        minute = floored_minutes % 60
+
+        return ts.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
     def process_tick(self, symbol, ltp, ts_val):
         # ts_val is either int timestamp (seconds/ms) or ISO string
@@ -599,6 +604,12 @@ def on_tick(symbol, ltp, ts):
         # Recompute Indicators
         st.data = compute_indicators(st.data)
         st.last_candle_ts = closed_candle["ts"]
+
+        # Log Candle Close
+        c_close = closed_candle["close"]
+        c_open = closed_candle["open"]
+        color = "Green" if c_close > c_open else "Red"
+        log("candle-close", f"{symbol} closed at {c_close} ({color}). Evaluating signal...")
 
         # Run Strategy
         evaluate_on_new_candle(st)
