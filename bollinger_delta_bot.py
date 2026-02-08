@@ -605,12 +605,6 @@ def on_tick(symbol, ltp, ts):
         st.data = compute_indicators(st.data)
         st.last_candle_ts = closed_candle["ts"]
 
-        # Log Candle Close
-        c_close = closed_candle["close"]
-        c_open = closed_candle["open"]
-        color = "Green" if c_close > c_open else "Red"
-        log("candle-close", f"{symbol} closed at {c_close} ({color}). Evaluating signal...")
-
         # Run Strategy
         evaluate_on_new_candle(st)
 
