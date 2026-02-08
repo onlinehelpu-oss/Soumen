@@ -794,9 +794,10 @@ def main():
     ws_thread.start()
 
     try:
+        # Initial sleep before first heartbeat (align to timeframe or just wait)
+        time.sleep(TIMEFRAME_MINUTES * 60)
+
         while True:
-            # Wait for 1 minute before first heartbeat, then loop
-            time.sleep(60)
             log("heartbeat", f"Bot active. Monitoring {len(SYMBOLS_TO_MONITOR)} symbols...")
             log("heartbeat", f"📊 Current Market Prices:")
             for sym in SYMBOLS_TO_MONITOR:
@@ -813,6 +814,9 @@ def main():
 
                     # Log
                     print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | Status: {st.status}")
+
+            # Sleep based on strategy timeframe
+            time.sleep(TIMEFRAME_MINUTES * 60)
 
     except KeyboardInterrupt:
         print("\nExiting...")
