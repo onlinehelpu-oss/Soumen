@@ -40,19 +40,24 @@ SYMBOLS_TO_MONITOR = CONFIG.get("symbols", ["BTCUSD", "ETHUSD", "SOLUSD"])
 # TIMEFRAME CONFIGURATION
 TIMEFRAME_MINUTES = CONFIG.get("timeframe_minutes", 15)
 
+# List of natively supported resolutions by Delta API
+SUPPORTED_RESOLUTIONS_MIN = [1, 3, 5, 15, 30, 60, 120, 240, 360, 720, 1440]
+
 
 def get_resolution_str(minutes):
-    if minutes < 60:
-        return f"{minutes}m"
-    elif minutes % 60 == 0 and minutes < 1440:
-        return f"{minutes // 60}h"
-    elif minutes % 1440 == 0:
-        return f"{minutes // 1440}d"
-    else:
-        return "1m"  # Fallback
+    """
+    Returns the API resolution string if supported.
+    If not supported, returns None or the closest base resolution string is handled in fetch_history.
+    """
+    if minutes in SUPPORTED_RESOLUTIONS_MIN:
+        if minutes < 60:
+            return f"{minutes}m"
+        elif minutes % 60 == 0 and minutes < 1440:
+            return f"{minutes // 60}h"
+        elif minutes % 1440 == 0:
+            return f"{minutes // 1440}d"
+    return None  # Unsupported natively
 
-
-TIMEFRAME_RES = get_resolution_str(TIMEFRAME_MINUTES)
 
 LOOKBACK_CANDLES = CONFIG.get("lookback_candles", 1000)
 
@@ -357,19 +362,58 @@ class DeltaClient:
         except Exception as e:
             log("error", f"Error fetching products: {e}")
 
-    def fetch_history(self, symbol, resolution, num_candles):
+    def fetch_history(self, symbol, timeframe_minutes, num_candles):
+        """
+        Fetches historical candles. Handles unsupported resolutions by resampling.
+        """
         now_ts = int(time.time())
-        res_map = {
-            "1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800,
-            "1h": 3600, "2h": 7200, "4h": 14400, "6h": 21600, "12h": 43200, "1d": 86400
-        }
-        res_sec = res_map.get(resolution, 60)
-        start_ts = now_ts - ((num_candles + 50) * res_sec)
 
+        # Determine the resolution to use for the API call
+        res_str = get_resolution_str(timeframe_minutes)
+        api_res_str = res_str
+        base_minutes = timeframe_minutes
+
+        needs_resampling = False
+
+        if not api_res_str:
+            # Unsupported resolution (e.g., 10m). Find largest supported factor.
+            # SUPPORTED: 1, 3, 5, 15, 30, 60...
+            # For 10: 5 is largest factor.
+            # For 7: 1 is largest factor.
+
+            best_base = 1
+            for supported in SUPPORTED_RESOLUTIONS_MIN:
+                if supported >= timeframe_minutes:
+                    break
+                if timeframe_minutes % supported == 0:
+                    best_base = supported
+
+            api_res_str = get_resolution_str(best_base)
+            base_minutes = best_base
+            needs_resampling = True
+            log("warmup", f"Timeframe {timeframe_minutes}m not natively supported. Fetching {api_res_str} and resampling.")
+
+        # Calculate start time based on the API resolution we are fetching
+        # We fetch 'num_candles' of the target timeframe if possible, but limited by API max.
+        # If we need 1000 10m candles, and we fetch 5m candles, we'd need 2000 5m candles.
+        # Delta limit is usually ~1000-2000. We will stick to fetching max safely (1500 or so).
+        # To be safe, we just fetch a fixed large window.
+
+        limit_per_req = 2000 # Assume we can fetch this much
+
+        # Duration in seconds for the fetch
+        # If we want 1000 candles of TARGET timeframe:
+        duration_needed = num_candles * timeframe_minutes * 60
+        start_ts = now_ts - duration_needed
+
+        # API request
         params = {
-            "symbol": symbol, "resolution": resolution,
-            "start": start_ts, "end": now_ts
+            "symbol": symbol,
+            "resolution": api_res_str,
+            "start": start_ts,
+            "end": now_ts
         }
+
         try:
             url = f"{BASE_URL}/v2/history/candles"
             resp = requests.get(url, params=params, timeout=15)
@@ -383,6 +427,30 @@ class DeltaClient:
                     df = df.sort_values(by="time").reset_index(drop=True)
                     df["ts"] = pd.to_datetime(df["time"], unit='s', utc=True).dt.tz_convert(IST).dt.tz_localize(None)
                     df = df.set_index("ts")[["open", "high", "low", "close", "volume"]]
+
+                    if needs_resampling:
+                        # Resample to target timeframe
+                        # Logic: Resample 5m to 10m
+                        logic = {
+                            'open': 'first',
+                            'high': 'max',
+                            'low': 'min',
+                            'close': 'last',
+                            'volume': 'sum'
+                        }
+
+                        # Resample string: e.g. "10min"
+                        freq_str = f"{timeframe_minutes}min"
+
+                        # Pandas resample
+                        df_resampled = df.resample(freq_str, origin='epoch').agg(logic)
+
+                        # Drop incomplete last candle if it doesn't match the current time bucket?
+                        # Usually safe to keep. Drop NaNs.
+                        df_resampled = df_resampled.dropna()
+
+                        return df_resampled
+
                     return df
             return pd.DataFrame()
         except Exception as e:
@@ -675,7 +743,7 @@ def main():
     # Warmup
     log("warmup", "Fetching historical data...")
     for sym in SYMBOLS_TO_MONITOR:
-        df = client.fetch_history(sym, TIMEFRAME_RES, LOOKBACK_CANDLES)
+        df = client.fetch_history(sym, TIMEFRAME_MINUTES, LOOKBACK_CANDLES)
         if not df.empty:
             df = compute_indicators(df)
             SYMBOL_STATES[sym].data = df
