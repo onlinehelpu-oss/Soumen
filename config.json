@@ -2,7 +2,6 @@
     "base_url": "https://api.india.delta.exchange",
     "ws_url": "wss://socket.india.delta.exchange",
     "symbols": ["BTCUSD", "ETHUSD", "SOLUSD"],
-    "timeframe_res": "1m",
     "timeframe_minutes": 1,
     "lookback_candles": 1000,
     "strategy": {
@@ -20,7 +19,9 @@
     "paper_trading": {
         "enabled": true,
         "balance": 10000.0,
-        "max_concurrent_pos": 3
+        "max_concurrent_pos": 3,
+        "taker_fee_pct": 0.05,
+        "maker_fee_pct": 0.02
     },
     "timezone": "Asia/Kolkata"
 }

@@ -49,7 +49,8 @@ def get_resolution_str(minutes):
     else:
         return "1m" # Fallback
 
-TIMEFRAME_RES = CONFIG.get("timeframe_res", get_resolution_str(TIMEFRAME_MINUTES))
+# Always derive resolution from minutes to ensure consistency
+TIMEFRAME_RES = get_resolution_str(TIMEFRAME_MINUTES)
 
 LOOKBACK_CANDLES = CONFIG.get("lookback_candles", 1000)
 
@@ -73,6 +74,8 @@ PAPER_CFG = CONFIG.get("paper_trading", {})
 PAPER_TRADE = PAPER_CFG.get("enabled", True)
 MAX_CONCURRENT_POS = PAPER_CFG.get("max_concurrent_pos", 3)
 PAPER_BALANCE = PAPER_CFG.get("balance", 10000.0) # Starting Balance in USD
+TAKER_FEE_PCT = PAPER_CFG.get("taker_fee_pct", 0.05) / 100.0
+MAKER_FEE_PCT = PAPER_CFG.get("maker_fee_pct", 0.02) / 100.0
 PAPER_PNL = 0.0
 
 # Timezone
@@ -630,31 +633,45 @@ def on_tick(symbol, ltp, ts):
                 reason = "EXIT EMA TRIGGER"
 
         if exit_price > 0:
-            # PnL Calculation
-            pnl = 0.0
+            # PnL Calculation (Gross)
+            gross_pnl = 0.0
+            entry_notional = 0.0
+            exit_notional = 0.0
+
             if st.is_inverse:
-                # Inverse PnL (in Base Currency usually, but let's approximate USD PnL)
-                # Inverse PnL (BTC) = (1/Entry - 1/Exit) * Qty * ContractValue
-                # USD PnL approx = PnL(BTC) * ExitPrice
-                # Simplified USD PnL = (Exit - Entry) / Entry * Notional ?
-                # Actually, strictly: (1/Entry - 1/Exit) * Qty * Val * ExitPrice = (Exit - Entry)/Entry * Qty * Val
+                # Inverse: Notional = Qty * Val (Fixed in USD)
+                # Entry/Exit Notional for Fee calc is usually Qty * Val / Price in BTC, converted to USD?
+                # Delta Fees on Inverse are on Notional in BTC terms? No, Notional Value in USD.
+                # Fee = Notional_USD * Rate.
+                # Inverse Notional = Qty * ContractValue (USD).
+                notional_usd = st.qty * st.contract_value
+                entry_notional = notional_usd
+                exit_notional = notional_usd
+
                 if st.entry_price > 0:
-                     # For Inverse (Long): (1/Entry - 1/Exit)
-                     # Wait, standard Inverse PnL = Qty * Val * (1/Entry - 1/Exit).
-                     # This gives BTC. To convert to USD, multiply by Exit Price.
-                     # USD PnL = Qty * Val * (1/Entry - 1/Exit) * Exit
-                     # = Qty * Val * (Exit - Entry) / (Entry * Exit) * Exit
-                     # = Qty * Val * (Exit - Entry) / Entry
-                     pnl = (st.qty * st.contract_value) * (exit_price - st.entry_price) / st.entry_price
+                     # USD PnL approx
+                     gross_pnl = notional_usd * (exit_price - st.entry_price) / st.entry_price
             else:
+                # Linear: Notional = Qty * Val * Price
+                entry_notional = st.qty * st.contract_value * st.entry_price
+                exit_notional = st.qty * st.contract_value * exit_price
+
                 # Linear PnL = (Exit - Entry) * Qty * ContractValue
-                pnl = (exit_price - st.entry_price) * st.qty * st.contract_value
+                gross_pnl = (exit_price - st.entry_price) * st.qty * st.contract_value
 
-            PAPER_BALANCE += pnl
-            PAPER_PNL += pnl
-            icon = "✅" if pnl >= 0 else "❌"
+            # Fee Calculation (Assuming Taker for both Entry and Exit as we use Market orders)
+            # Fees are usually deducted from PnL
+            entry_fee = entry_notional * TAKER_FEE_PCT
+            exit_fee = exit_notional * TAKER_FEE_PCT
+            total_fee = entry_fee + exit_fee
 
-            log("trade", f"{icon} [PAPER] {reason} {symbol} @ {exit_price} | PnL: ${pnl:.2f}")
+            net_pnl = gross_pnl - total_fee
+
+            PAPER_BALANCE += net_pnl
+            PAPER_PNL += net_pnl
+            icon = "✅" if net_pnl >= 0 else "❌"
+
+            log("trade", f"{icon} [PAPER] {reason} {symbol} @ {exit_price} | PnL: ${net_pnl:.2f} (Gross: ${gross_pnl:.2f}, Fees: ${total_fee:.2f})")
             log("trade", f"   Account Balance: ${PAPER_BALANCE:.2f}")
 
             st.status = "watch"
