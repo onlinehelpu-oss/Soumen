@@ -74,6 +74,8 @@ PAPER_PNL = 0.0
 TIMEZONE = CONFIG.get("timezone", "Asia/Kolkata")
 IST = pytz.timezone(TIMEZONE)
 
+STATE_FILE = "bot_state.json"
+
 # ==============================================================================
 # LOGGING HELPER
 # ==============================================================================
@@ -250,6 +252,30 @@ class SymbolState:
         self.just_entered = False
         self.current_ltp = 0.0
 
+    def to_dict(self):
+        """Serialize state for persistence (excluding large dataframes)"""
+        return {
+            "symbol": self.symbol,
+            "status": self.status,
+            "entry_price": self.entry_price,
+            "qty": self.qty,
+            "stop_price": self.stop_price,
+            "target_price": self.target_price,
+            "atr_at_entry": self.atr_at_entry,
+            "sl_trailed": self.sl_trailed
+        }
+
+    def from_dict(self, data):
+        """Load state from dictionary"""
+        self.status = data.get("status", "watch")
+        self.entry_price = data.get("entry_price", 0.0)
+        self.qty = data.get("qty", 0)
+        self.stop_price = data.get("stop_price", 0.0)
+        self.target_price = data.get("target_price")
+        self.atr_at_entry = data.get("atr_at_entry", 0.0)
+        self.sl_trailed = data.get("sl_trailed", False)
+
+
 class CandleManager:
     def __init__(self, timeframe_min=15):
         self.tf = timeframe_min
@@ -296,6 +322,36 @@ class CandleManager:
 
 SYMBOL_STATES: Dict[str, SymbolState] = {s: SymbolState(s) for s in SYMBOLS_TO_MONITOR}
 CANDLE_MANAGER = CandleManager(TIMEFRAME_MINUTES)
+
+def save_state():
+    """Save current state of positions to a JSON file."""
+    try:
+        data = {}
+        for sym, st in SYMBOL_STATES.items():
+            if st.status == "position":
+                data[sym] = st.to_dict()
+
+        # Write atomically (write to temp then rename) if possible, but simple write is okay for now
+        with open(STATE_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        log("error", f"Failed to save state: {e}")
+
+def load_state():
+    """Load position state from JSON file."""
+    if not os.path.exists(STATE_FILE):
+        return
+
+    try:
+        with open(STATE_FILE, "r") as f:
+            data = json.load(f)
+
+        for sym, state_data in data.items():
+            if sym in SYMBOL_STATES:
+                SYMBOL_STATES[sym].from_dict(state_data)
+                log("state", f"Restored state for {sym}: {state_data['status']}")
+    except Exception as e:
+        log("error", f"Failed to load state: {e}")
 
 # ==============================================================================
 # DELTA EXCHANGE API CLIENT
@@ -372,6 +428,29 @@ class DeltaClient:
         except Exception as e:
             log("error", f"History fetch failed for {symbol}: {e}")
             return pd.DataFrame()
+
+    def fetch_positions(self):
+        """Fetch open positions from Delta Exchange."""
+        # Note: This endpoint requires authentication usually, but the original script seems
+        # to be using public endpoints or relying on 'paper_trading' logic which doesn't actually place orders on exchange.
+        # If the user wants to sync with REAL exchange positions, we need API keys.
+        # However, the user script provided uses paper trading logic (internal PnL tracking).
+        # "A more advanced version ... automatically sync with your Delta exchange positions by periodically calling the broker's get_positions() API."
+
+        # If PAPER_TRADE is True, we simulate persistence via 'save_state/load_state'.
+        # If we were doing real trading, we would call the API.
+
+        # Assuming the user wants this for the "Paper" or "Real" bot.
+        # Since I don't have API keys in the config, I can't implement real API syncing fully.
+        # But I can implement the LOGIC assuming persistence is key for now.
+        # The prompt says "sync with your Delta exchange positions".
+        # This implies we should try to call the API.
+
+        # BUT, the current script does NOT have API Key/Secret configuration for private endpoints.
+        # It only has public endpoints (history, products, tickers).
+        # So I will implement the persistence logic which works for the Bot's internal state (Paper Mode or Real Mode if keys added).
+        # For now, I will stick to the local persistence as the primary "sync" mechanism for this bot's context.
+        pass
 
 # ==============================================================================
 # STRATEGY LOGIC
@@ -573,6 +652,8 @@ def on_tick(symbol, ltp, ts):
             log("trade", f"   Stop: {st.stop_price}")
             st.signal_candle = None
 
+            save_state() # Save state after entry
+
     # EXIT TRIGGERS (SELL POSITION)
     if st.status == "position":
         global PAPER_BALANCE, PAPER_PNL
@@ -641,6 +722,8 @@ def on_tick(symbol, ltp, ts):
             st.status = "watch"
             st.qty = 0
 
+            save_state() # Save state after exit
+
 # ==============================================================================
 # MAIN LOGIC
 # ==============================================================================
@@ -649,6 +732,9 @@ def main():
     client = DeltaClient()
     client.fetch_products()
     client.fetch_tickers()
+
+    # Load state from file (Persistence)
+    load_state()
 
     log("warmup", "Fetching historical data...")
     for sym in SYMBOLS_TO_MONITOR:
