@@ -119,7 +119,7 @@ MAX_DAILY_LOSS_BP = 50  # Max 50bp loss per symbol per day
 MAX_DAILY_TRADES = 10  # Maximum 10 trades per day across all symbols
 POSITION_SIZE_MULTIPLIER = 1
 MAX_SLIPPAGE_BP = 2  # Don't trade if slippage exceeds 2bp
-MIN_SIGNAL_STRENGTH = 0.6  # Minimum average strength to take trade (quality filter)
+MIN_SIGNAL_STRENGTH = 0.4  # Minimum average strength to take trade (quality filter) - Lowered for polling
 
 # Refresh
 TICK_REFRESH_MS = 500  # 500ms for tick data
@@ -1416,10 +1416,12 @@ class ScalpingOrchestrator:
         try:
             resp = self.fy.optionchain(data={"symbol": symbol_root})
             if not resp or resp.get("s") != "ok":
+                print(f"[ERROR] Option Chain Failed for {symbol_root}: {resp}")
                 return None, None
 
             chain = (resp.get("data") or {}).get("optionChain", [])
             if not chain:
+                print(f"[ERROR] Option Chain Empty for {symbol_root}")
                 return None, None
 
             step = SYMBOL_MASTER_MAP.get(symbol_root, {}).get("step", 50)
@@ -1429,6 +1431,10 @@ class ScalpingOrchestrator:
             # Filter
             filtered = [r for r in chain if str(r.get("option_type", "")).upper() == opt_type]
             if not filtered:
+                # Debugging: Print first row to see keys
+                if chain:
+                    print(f"[DEBUG] {symbol_root} Chain Sample: {chain[0]}")
+                print(f"[ERROR] No {opt_type} options found in chain for {symbol_root}")
                 return None, None
 
                 # Nearest expiry
