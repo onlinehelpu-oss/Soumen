@@ -661,6 +661,25 @@ def main():
 
     log("warmup", "Historical data loaded")
 
+    print("\n" + "=" * 70)
+    print("📊 CURRENT MARKET PRICES (LTP)")
+    print("=" * 70)
+    for sym in SYMBOLS_TO_MONITOR:
+        st = SYMBOL_STATES[sym]
+        if not st.data.empty:
+            last = st.data.iloc[-1]
+            chg = st.change_24h
+            icon = "📈" if chg >= 0 else "📉"
+            print(f"{sym:<12} | LTP: $ {last['close']:,.2f} | 24h Change: {icon} {chg:>+7.2f}% | Vol: {int(last.get('volume', 0)):,}")
+    print("=" * 70)
+    print(f"⏰ TIMEFRAME: {TIMEFRAME_MINUTES} minute candles")
+    print(f"   - Each candle represents {TIMEFRAME_MINUTES} minutes of price action")
+    print(f"   - New candle completes every {TIMEFRAME_MINUTES} minutes")
+    print(f"   - Strategy: Slow({ENTRY_SLOW_EMA}) EMA & Supertrend({SUPERTREND_PERIOD}, {SUPERTREND_MULTIPLIER}) SELL")
+    print(f"   - Trade Allocation: ${TRADE_ALLOCATION} per trade")
+    print(f"   - Server: {BASE_URL}")
+    print("=" * 70 + "\n")
+
     # WebSocket
     log("main", "Starting WebSocket connection...")
 
