@@ -1414,7 +1414,16 @@ class ScalpingOrchestrator:
         Optional[str], Optional[str]]:
         """Resolve nearest ATM option symbol"""
         try:
-            resp = self.fy.optionchain(data={"symbol": symbol_root})
+            # Use the mapped root (e.g., "NSE:NIFTY50-INDEX" -> "NIFTY50-INDEX")
+            # Fyers Option Chain API expects symbol in format "NSE:NIFTY50-INDEX" but sometimes fails with certain prefixes.
+            # However, experience suggests passing the symbol as is usually works, but let's try strict formatting if needed.
+            # Actually, standard practice for Fyers Option Chain is to pass the full symbol e.g., "NSE:NIFTY50-INDEX".
+            # If that returns empty, it might be an API specific issue or the symbol format.
+            # Let's try to ensure we are passing exactly what we have in SYMBOLS list.
+
+            # The issue is likely that "data" key is missing or None.
+
+            resp = self.fy.optionchain(data={"symbol": symbol_root, "strikecount": 10})
             if not resp or resp.get("s") != "ok":
                 print(f"[ERROR] Option Chain Failed for {symbol_root}: {resp}")
                 return None, None
