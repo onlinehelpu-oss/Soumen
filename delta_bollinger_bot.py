@@ -86,6 +86,7 @@ PAPER_CFG = CONFIG.get("paper_trading", {})
 PAPER_TRADE = PAPER_CFG.get("enabled", True)
 MAX_CONCURRENT_POS = PAPER_CFG.get("max_concurrent_pos", 3)
 PAPER_BALANCE = PAPER_CFG.get("balance", 10000.0)  # Starting Balance in USD
+ORDER_ALLOC_USD = PAPER_CFG.get("order_alloc_usd", 275.0) # Amount per trade in USD
 TAKER_FEE_PCT = PAPER_CFG.get("taker_fee_pct", 0.05) / 100.0
 MAKER_FEE_PCT = PAPER_CFG.get("maker_fee_pct", 0.02) / 100.0
 PAPER_PNL = 0.0
@@ -629,7 +630,7 @@ def on_tick(symbol, ltp, ts):
         trigger = st.signal_candle["high"]
         if ltp > trigger:
             st.entry_price = ltp
-            alloc = 1000.0
+            alloc = ORDER_ALLOC_USD
 
             if st.is_inverse:
                 st.qty = alloc / st.contract_value if st.contract_value > 0 else 0
