@@ -219,8 +219,6 @@ class SymbolState:
         self.entry_price = 0.0
         self.qty = 0
         self.stop_price = 0.0
-        self.target_price = None
-        self.potential_target_price = None
 
         # Trailing
         self.atr_at_entry = 0.0
@@ -508,44 +506,6 @@ class DeltaClient:
 # ==============================================================================
 # STRATEGY LOGIC (Bollinger Band)
 # ==============================================================================
-def compute_prev_swing_high_for_entry(state, lookback, reference_price):
-    try:
-        df = state.data
-        if df.empty: return None
-
-        if state.signal_candle:
-            sig_ts = state.signal_candle["ts"]
-            df_up_to = df.loc[:sig_ts]
-        else:
-            df_up_to = df
-
-        prior = df_up_to.iloc[:-1].tail(lookback).copy()
-        if prior.empty: return None
-
-        highs = prior["high"].values
-        if len(highs) < 5: return prior["high"].max()
-
-        pivot_width = 2
-        peaks = []
-        for i in range(pivot_width, len(highs) - pivot_width):
-            current = highs[i]
-            is_peak = True
-            for j in range(1, pivot_width + 1):
-                if highs[i - j] >= current or highs[i + j] >= current:
-                    is_peak = False
-                    break
-            if is_peak: peaks.append(current)
-
-        if reference_price is not None:
-            valid_peaks = [p for p in peaks if p > reference_price]
-            if valid_peaks: return valid_peaks[-1]
-
-        return prior["high"].max()
-    except Exception as e:
-        log("error", f"Swing high error: {e}")
-        return None
-
-
 def compute_swing_low_for_signal(state, lookback):
     try:
         if state.signal_candle:
@@ -592,12 +552,6 @@ def evaluate_on_new_candle(st: SymbolState):
             # Trigger = Break High of Signal Candle
             trigger_price = curr_high
 
-            # Target (Optional in prompt, logic from code-1 uses Swing High or similar.
-            # Prompt says "target: if any candle closed above upper bolinger band then exit", so fixed target is less relevant but code-1 sets one.
-            # I will keep calculating it but primary exit is BB.
-            target = compute_prev_swing_high_for_entry(st, SWING_HIGH_LOOKBACK, curr_high)
-
-            st.potential_target_price = target
             st.signal_candle = {
                 "ts": curr.name,
                 "high": curr_high,
@@ -687,7 +641,6 @@ def on_tick(symbol, ltp, ts):
 
             log("trade", f"🚀 [PAPER] ENTER BUY {symbol} @ {ltp} (Trigger {trigger}) | Qty: {st.qty} Contracts")
             st.status = "position"
-            st.target_price = st.potential_target_price
 
             # Stop Loss
             if SL_MODE == "signal_low":
@@ -700,7 +653,7 @@ def on_tick(symbol, ltp, ts):
             if not st.data.empty:
                 st.atr_at_entry = st.data.iloc[-1]["atr"]
 
-            log("trade", f"   Target: {st.target_price} | Stop: {st.stop_price}")
+            log("trade", f"   Stop: {st.stop_price}")
             st.signal_candle = None
 
     # EXIT TRIGGERS
@@ -708,19 +661,6 @@ def on_tick(symbol, ltp, ts):
         global PAPER_BALANCE, PAPER_PNL
         exit_price = 0.0
         reason = ""
-
-        # Target (Optional / Safety)
-        if st.target_price and ltp >= st.target_price:
-            # We don't necessarily exit on target anymore, purely BB exit?
-            # Prompt: "target : if any candle closed above upper bolinger band then exit."
-            # It doesn't explicitly remove the potential target calculation, but implies BB is the main target mechanism.
-            # I'll keep this as a "Take Profit" if defined, but relying on BB.
-            # Actually, user said "target : if any candle closed above upper bolinger band then exit."
-            # This sounds like the ONLY target condition.
-            # I will disable the fixed price target exit unless user re-enables it.
-            # But wait, `evaluate_on_new_candle` sets `st.potential_target_price`.
-            # I will COMMENT OUT this fixed target exit to strictly follow "if closed above BB".
-            pass
 
         # Stop Loss (LTP)
         if st.stop_price and ltp <= st.stop_price:
@@ -773,7 +713,6 @@ def on_tick(symbol, ltp, ts):
             st.status = "watch"
             st.qty = 0
             st.stop_price = 0.0
-            st.target_price = None
 
         # Trailing Stop
         if st.status == "position" and TRAIL_ATR_MULT and st.atr_at_entry > 0 and not st.sl_trailed:
