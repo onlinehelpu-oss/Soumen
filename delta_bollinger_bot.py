@@ -380,6 +380,33 @@ class DeltaClient:
         except Exception as e:
             log("error", f"Error fetching products: {e}")
 
+    def fetch_tickers(self):
+        log("delta", f"Fetching tickers for 24h change data...")
+        try:
+            url = f"{BASE_URL}/v2/tickers"
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("success"):
+                count = 0
+                for t in data.get("result", []):
+                    sym = t.get("symbol")
+                    change_24h_str = t.get("ltp_change_24h")
+
+                    if sym in SYMBOLS_TO_MONITOR and change_24h_str is not None:
+                        st = SYMBOL_STATES.get(sym)
+                        if st:
+                            try:
+                                st.change_24h = float(change_24h_str)
+                                count += 1
+                            except ValueError:
+                                pass
+                log("delta", f"Updated 24h change for {count} symbols.")
+            else:
+                log("error", "Failed to fetch tickers: " + str(data))
+        except Exception as e:
+            log("error", f"Error fetching tickers: {e}")
+
     def fetch_history(self, symbol, timeframe_minutes, num_candles):
         """
         Fetches historical candles. Handles unsupported resolutions by resampling.
@@ -776,6 +803,9 @@ def main():
             log("warmup", f"Loaded {len(df)} candles for {sym}")
 
     log("warmup", "Historical data loaded")
+
+    # Fetch 24h change before printing market table
+    client.fetch_tickers()
 
     print("\n" + "=" * 70)
     print("📊 CURRENT MARKET PRICES (LTP)")
