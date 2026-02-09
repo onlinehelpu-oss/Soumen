@@ -87,6 +87,7 @@ PAPER_CFG = CONFIG.get("paper_trading", {})
 PAPER_TRADE = PAPER_CFG.get("enabled", True)
 MAX_CONCURRENT_POS = PAPER_CFG.get("max_concurrent_pos", 3)
 PAPER_BALANCE = PAPER_CFG.get("balance", 10000.0)  # Starting Balance in USD
+TRADE_ALLOCATION = PAPER_CFG.get("trade_allocation", 275.0)  # Per Trade Allocation in USD
 TAKER_FEE_PCT = PAPER_CFG.get("taker_fee_pct", 0.05) / 100.0
 MAKER_FEE_PCT = PAPER_CFG.get("maker_fee_pct", 0.02) / 100.0
 PAPER_PNL = 0.0
@@ -621,7 +622,7 @@ def on_tick(symbol, ltp, ts):
         if ltp > trigger:
             st.entry_price = ltp
             # Let's say $1000 alloc per trade
-            alloc = 1000.0
+            alloc = TRADE_ALLOCATION
 
             # Calculate Quantity based on Product Type
             if st.is_inverse:
@@ -774,6 +775,7 @@ def main():
     print(f"   - Each candle represents {TIMEFRAME_MINUTES} minutes of price action")
     print(f"   - New candle completes every {TIMEFRAME_MINUTES} minutes")
     print(f"   - Strategy: Fast({ENTRY_FAST_EMA}) / Slow({ENTRY_SLOW_EMA}) EMA Crossover")
+    print(f"   - Trade Allocation: ${TRADE_ALLOCATION} per trade")
     print(f"   - Server: {BASE_URL}")
     print("=" * 70 + "\n")
 
