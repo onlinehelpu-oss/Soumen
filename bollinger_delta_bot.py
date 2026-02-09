@@ -226,6 +226,7 @@ class SymbolState:
         self.entry_time = 0.0
         self.just_entered = False
         self.current_ltp = 0.0
+        self.change_24h = 0.0  # Percentage
 
 
 class CandleManager:
@@ -689,10 +690,16 @@ def on_tick(symbol, ltp, ts):
             exit_price = ltp
             reason = "STOP LOSS HIT"
 
-        # BB Exit Trigger (from evaluate_on_new_candle)
+        # BB Upper Touch Exit
+        # Check current Upper BB (from latest partial candle calculation)
+        elif not st.data.empty and ltp >= st.data.iloc[-1].get("upper_bb", float('inf')):
+             exit_price = ltp
+             reason = "BB UPPER TOUCH"
+
+        # BB Exit Trigger (from evaluate_on_new_candle - Close Basis)
         elif st.force_exit:
             exit_price = ltp
-            reason = "BB UPPER EXIT"
+            reason = "BB UPPER EXIT (CLOSE)"
             st.force_exit = False # Reset flag
 
         if exit_price > 0:
@@ -805,7 +812,14 @@ def main():
                 ltp = data.get("close") or data.get("mark_price")
                 ts = data.get("timestamp") or time.time()
 
+                # Try to get 24h change
+                open_24h = float(data.get("open_24h") or 0)
+
                 if sym and ltp:
+                    st = SYMBOL_STATES.get(sym)
+                    if st and open_24h > 0:
+                        st.change_24h = ((float(ltp) - open_24h) / open_24h) * 100.0
+
                     if not ts:
                         ts = time.time()
                     else:
@@ -864,7 +878,12 @@ def main():
 
                     display_ltp = st.current_ltp if st.current_ltp > 0 else last['close']
 
-                    print(f"[heartbeat]   {candle_color} {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | Status: {st.status}")
+                    # 24h Change Icon
+                    chg = st.change_24h
+                    chg_icon = "📈" if chg >= 0 else "📉"
+                    chg_str = f"{chg:+.2f}%"
+
+                    print(f"[heartbeat]   {candle_color} {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | 24h: {chg_icon} {chg_str:<7} | Status: {st.status}")
 
             time.sleep(TIMEFRAME_MINUTES * 60)
 
