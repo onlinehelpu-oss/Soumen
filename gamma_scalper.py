@@ -499,6 +499,24 @@ class OrderFlowAnalyzer:
         sell_volume = sum(t.bid_qty for t in recent if t.bid_qty)
         total = buy_volume + sell_volume
 
+        # Fallback: Tick Rule (Level 1 data) for Indices/Equity lacking L2
+        if total == 0:
+            for i in range(1, len(recent)):
+                curr = recent[i]
+                prev = recent[i-1]
+
+                # Calculate volume delta (since volume is cumulative)
+                tick_vol = max(0, curr.volume - prev.volume)
+
+                if tick_vol > 0:
+                    if curr.ltp > prev.ltp:
+                        buy_volume += tick_vol
+                    elif curr.ltp < prev.ltp:
+                        sell_volume += tick_vol
+                    # If unchanged, we could use previous direction, but for simplicity ignore
+
+            total = buy_volume + sell_volume
+
         if total == 0:
             return None
 
