@@ -935,14 +935,23 @@ def main():
         for sym in SYMBOLS:
              st = SYMBOL_STATES[sym]
              chg = st.ltp_change_24h
-             icon = "🟢" if chg >= 0 else "🔴"
+
+             # Calculate Trend Icon based on EMA crossover
+             # Default to Neutral/Green if no data
+             trend_icon = "🟢"
+             if not st.data.empty:
+                 last = st.data.iloc[-1]
+                 fast = float(last.get("ema_fast_entry", 0))
+                 slow = float(last.get("ema_slow_entry", 0))
+                 trend_icon = "🟢" if fast > slow else "🔴"
+
              # Use close or cached ltp
              ltp = 0.0
              if not st.data.empty:
                  ltp = st.data.iloc[-1]["close"]
 
              status = st.status
-             print(f"[heartbeat]   {icon} {sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {'📈' if chg>=0 else '📉'} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f} | Status: {status}")
+             print(f"[heartbeat]   {trend_icon} {sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {'📈' if chg>=0 else '📉'} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f} | Status: {status}")
 
 if __name__ == "__main__":
     main()
