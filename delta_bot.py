@@ -35,50 +35,8 @@ def load_config():
                     return json.load(f)
 
         # If loop finishes without return, file not found
-        print("⚠️ config.json not found.")
-
-        # Create default config
-        default_config = {
-          "base_url": "https://api.india.delta.exchange",
-          "ws_url": "wss://socket.india.delta.exchange",
-          "api_key": "",
-          "api_secret": "",
-          "symbols": ["BTCUSD", "ETHUSD", "SOLUSD"],
-          "timeframe_minutes": 5,
-          "lookback_candles": 1000,
-          "strategy": {
-            "entry_slow_ema": 50,
-            "supertrend_period": 10,
-            "supertrend_multiplier": 3.0,
-            "ema_buffer": 0.0,
-            "require_green_signal": False,
-            "min_range_pct": 0.0,
-            "sl_mode": "signal_high",
-            "swing_lookback": 5,
-            "swing_high_lookback": 100,
-            "trail_atr_mult": 1.0
-          },
-          "paper_trading": {
-            "enabled": True,
-            "max_concurrent_pos": 3,
-            "balance": 10000.0,
-            "trade_allocation": 275.0,
-            "taker_fee_pct": 0.05,
-            "maker_fee_pct": 0.02
-          },
-          "timezone": "Asia/Kolkata"
-        }
-
-        try:
-            save_path = "config.json"
-            with open(save_path, "w") as f:
-                json.dump(default_config, f, indent=2)
-            print(f"✅ Created default configuration file at: {os.path.abspath(save_path)}")
-            print("👉 ACTION REQUIRED: Please edit 'config.json' to add your API Key and Secret for position syncing.")
-            return default_config
-        except Exception as create_err:
-            print(f"⚠️ Failed to create default config: {create_err}. Using internal defaults.")
-            return {}
+        print("⚠️ config.json not found. Using default settings.")
+        return {}
 
     except Exception as e:
         print(f"⚠️ Error parsing config.json: {e}. Using defaults.")
@@ -851,12 +809,6 @@ def main():
 
     # Sync with exchange (if API keys configured)
     client.fetch_positions()
-
-    # Mode Logging
-    if API_KEY and API_SECRET:
-        log("info", "✅ Bot Mode: FULL SYNC (Tracking & Exchange Verification Enabled)")
-    else:
-        log("info", "⚠️ Bot Mode: LOCAL TRACKING ONLY (Cannot verify positions with Exchange)")
 
     # Check for "Blind" Position Tracking (Active local position but no API Sync)
     active_positions = [s for s, st in SYMBOL_STATES.items() if st.status == "position"]
