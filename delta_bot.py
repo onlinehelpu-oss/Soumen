@@ -49,9 +49,7 @@ WS_URL = CONFIG.get("ws_url", "wss://socket.india.delta.exchange")
 API_KEY = CONFIG.get("api_key", "")
 API_SECRET = CONFIG.get("api_secret", "")
 
-# Force override symbols to match user requirement (ignoring stale config.json)
-SYMBOLS_TO_MONITOR = ["BTCUSD", "PIPPINUSD", "YALAUSD"]
-# SYMBOLS_TO_MONITOR = CONFIG.get("symbols", ["BTCUSD", "PIPPINUSD", "YALAUSD"])
+SYMBOLS_TO_MONITOR = CONFIG.get("symbols", ["BTCUSD", "PIPPINUSD", "YALAUSD"])
 
 TIMEFRAME_MINUTES = CONFIG.get("timeframe_minutes", 5)
 
@@ -70,10 +68,7 @@ LOOKBACK_CANDLES = CONFIG.get("lookback_candles", 1000)
 
 STRATEGY = CONFIG.get("strategy", {})
 # REMOVED FAST EMA
-# Force override Slow EMA to 288 (ignoring stale config.json)
-ENTRY_SLOW_EMA = 288
-# ENTRY_SLOW_EMA = STRATEGY.get("entry_slow_ema", 50)
-
+ENTRY_SLOW_EMA = STRATEGY.get("entry_slow_ema", 50)
 SUPERTREND_PERIOD = STRATEGY.get("supertrend_period", 10)
 SUPERTREND_MULTIPLIER = STRATEGY.get("supertrend_multiplier", 3.0)
 

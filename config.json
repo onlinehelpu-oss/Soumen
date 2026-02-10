@@ -8,10 +8,10 @@
     "PIPPINUSD",
     "YALAUSD"
   ],
-  "timeframe_minutes": 5,
+  "timeframe_minutes": 15,
   "lookback_candles": 1000,
   "strategy": {
-    "entry_slow_ema": 50,
+    "entry_slow_ema": 288,
     "supertrend_period": 10,
     "supertrend_multiplier": 3.0,
     "ema_buffer": 0.0,
@@ -26,7 +26,7 @@
     "enabled": true,
     "max_concurrent_pos": 3,
     "balance": 10000.0,
-    "trade_allocation": 275.0,
+    "trade_allocation": 280.0,
     "taker_fee_pct": 0.05,
     "maker_fee_pct": 0.02
   },
