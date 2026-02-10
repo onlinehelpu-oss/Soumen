@@ -36,7 +36,8 @@ CONFIG = load_config()
 BASE_URL = CONFIG.get("base_url", "https://api.india.delta.exchange")
 WS_URL = CONFIG.get("ws_url", "wss://socket.india.delta.exchange")
 
-SYMBOLS_TO_MONITOR = CONFIG.get("symbols", ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "BNBUSD",
+# Force using the full list, ignoring config.json 'symbols' key to ensure all are monitored
+SYMBOLS_TO_MONITOR = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "BNBUSD",
 "DOGEUSD", "ADAUSD", "DOTUSD", "AVAXUSD", "LINKUSD",
 "LTCUSD", "BCHUSD", "XMRUSD", "ATOMUSD", "TRXUSD",
 "NEARUSD", "FILUSD", "APTUSD", "INJUSD", "STXUSD",
@@ -45,7 +46,7 @@ SYMBOLS_TO_MONITOR = CONFIG.get("symbols", ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUS
 "ENSUSD", "LDOUSD", "GALAUSD", "MANAUSD", "SANDUSD",
 "CAKEUSD", "DYDXUSD", "RUNEUSD", "ZECUSD", "ZROUSD",
 "API3USD", "KSMUSD", "SKLUSD", "IOTAUSD", "JUPUSD",
-"WLDUSD", "ONDOUSD", "SEIUSD", "ARBUSD", "ENSUSD"])
+"WLDUSD", "ONDOUSD", "SEIUSD", "ARBUSD", "ENSUSD"]
 
 # TIMEFRAME CONFIGURATION
 # User provides 'timeframe_minutes' (e.g., 1, 5, 15). We derive API resolution string.
