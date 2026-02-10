@@ -11,6 +11,8 @@ import pytz
 import websocket
 import sys
 import traceback
+import hmac
+import hashlib
 from datetime import datetime as dt, timedelta
 from typing import Dict, Optional, List
 
@@ -330,6 +332,51 @@ class CandleManager:
 SYMBOL_STATES: Dict[str, SymbolState] = {s: SymbolState(s) for s in SYMBOLS_TO_MONITOR}
 CANDLE_MANAGER = CandleManager(TIMEFRAME_MINUTES)
 
+BOT_STATE_FILE = "bot_state.json"
+
+def save_bot_state():
+    """Saves the current bot position state to a JSON file for persistence."""
+    state_dump = {}
+    for sym, st in SYMBOL_STATES.items():
+        if st.status == "position":
+            state_dump[sym] = {
+                "entry_price": st.entry_price,
+                "qty": st.qty,
+                "stop_price": st.stop_price,
+                "atr_at_entry": st.atr_at_entry,
+                "sl_trailed": st.sl_trailed
+            }
+
+    try:
+        with open(BOT_STATE_FILE, "w") as f:
+            json.dump(state_dump, f, indent=4)
+    except Exception as e:
+        log("error", f"Failed to save bot state: {e}")
+
+def load_bot_state():
+    """Loads bot position state from JSON file."""
+    try:
+        import os
+        if not os.path.exists(BOT_STATE_FILE):
+            return
+
+        with open(BOT_STATE_FILE, "r") as f:
+            data = json.load(f)
+
+        for sym, details in data.items():
+            if sym in SYMBOL_STATES:
+                st = SYMBOL_STATES[sym]
+                st.status = "position"
+                st.entry_price = details.get("entry_price", 0.0)
+                st.qty = details.get("qty", 0)
+                st.stop_price = details.get("stop_price", 0.0)
+                st.atr_at_entry = details.get("atr_at_entry", 0.0)
+                st.sl_trailed = details.get("sl_trailed", False)
+                log("init", f"Restored position for {sym}: Entry {st.entry_price}, Qty {st.qty}")
+
+    except Exception as e:
+        log("error", f"Failed to load bot state: {e}")
+
 
 # ==============================================================================
 # DELTA EXCHANGE API CLIENT
@@ -338,6 +385,60 @@ class DeltaClient:
     def __init__(self):
         self.products = {}
         self.id_to_symbol = {}
+        self.api_key = CONFIG.get("api_key", "")
+        self.api_secret = CONFIG.get("api_secret", "")
+
+    def _generate_signature(self, method, endpoint, payload=""):
+        timestamp = str(int(time.time()))
+        signature_data = method + timestamp + endpoint + payload
+        signature = hmac.new(
+            self.api_secret.encode("utf-8"),
+            signature_data.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        return signature, timestamp
+
+    def _get_headers(self, method, endpoint, payload=""):
+        if not self.api_key or not self.api_secret:
+            return {}
+        signature, timestamp = self._generate_signature(method, endpoint, payload)
+        return {
+            "api-key": self.api_key,
+            "timestamp": timestamp,
+            "signature": signature,
+            "Content-Type": "application/json",
+        }
+
+    def get_positions(self):
+        """
+        Fetches open positions from Delta Exchange.
+        Returns a list of position dictionaries.
+        """
+        if not self.api_key or not self.api_secret:
+            # If no API keys, return empty list (Paper Trading logic preserved)
+            return []
+
+        endpoint = "/v2/orders/position"
+        try:
+            headers = self._get_headers("GET", endpoint)
+            url = f"{BASE_URL}{endpoint}"
+            resp = requests.get(url, headers=headers, timeout=10)
+
+            if resp.status_code == 401:
+                log("error", "Authentication Failed: Check API Key and Secret.")
+                return []
+
+            resp.raise_for_status()
+            data = resp.json()
+
+            if data.get("success"):
+                return data.get("result", [])
+            else:
+                log("error", f"Failed to fetch positions: {data}")
+                return []
+        except Exception as e:
+            log("error", f"Error fetching positions: {e}")
+            return []
 
     def fetch_products(self):
         log("delta", f"Fetching product list from {BASE_URL}...")
@@ -378,6 +479,40 @@ class DeltaClient:
                 log("error", "Failed to fetch products: " + str(data))
         except Exception as e:
             log("error", f"Error fetching products: {e}")
+
+    def sync_bot_positions(self):
+        """
+        Syncs bot's internal state with actual exchange positions.
+        - If bot has a position but exchange says 0/Closed -> Mark as Closed (Manual Close).
+        - If bot has a position and exchange confirms -> Update Size/Entry if needed.
+        - Ignores positions on exchange that the bot did not initiate (not in SYMBOL_STATES as 'position').
+        """
+        if not self.api_key:
+            return  # Skip if no API key (Paper Mode)
+
+        positions = self.get_positions()
+        # Convert list to dict for lookup: symbol -> position_obj
+        pos_map = {p["symbol"]: p for p in positions if int(p.get("size", 0)) > 0}
+
+        for sym, st in SYMBOL_STATES.items():
+            if st.status == "position":
+                # Check if it exists on exchange
+                if sym not in pos_map:
+                    # Bot thinks we have a position, but Exchange says NO.
+                    # Means it was closed manually or liquidated.
+                    log("sync", f"⚠️ Position for {sym} missing on exchange. Assuming Manual Close.")
+                    st.status = "watch"
+                    st.qty = 0
+                    st.stop_price = 0.0
+                    save_bot_state()  # Update file
+                else:
+                    # Position exists. Update details if needed.
+                    p = pos_map[sym]
+                    actual_size = abs(int(p.get("size", 0)))
+                    if actual_size != st.qty:
+                         log("sync", f"ℹ️ Adjusting size for {sym}: {st.qty} -> {actual_size}")
+                         st.qty = actual_size
+                         save_bot_state()
 
     def fetch_tickers(self):
         log("delta", f"Fetching tickers for 24h change data...")
@@ -642,6 +777,7 @@ def on_tick(symbol, ltp, ts):
 
             log("trade", f"🚀 [PAPER] ENTER BUY {symbol} @ {ltp} (Trigger {trigger}) | Qty: {st.qty} Contracts")
             st.status = "position"
+            save_bot_state() # Persist entry
 
             # Stop Loss
             if SL_MODE == "signal_low":
@@ -714,6 +850,7 @@ def on_tick(symbol, ltp, ts):
             st.status = "watch"
             st.qty = 0
             st.stop_price = 0.0
+            save_bot_state() # Persist exit
 
         # Trailing Stop
         if st.status == "position" and TRAIL_ATR_MULT and st.atr_at_entry > 0 and not st.sl_trailed:
@@ -721,6 +858,7 @@ def on_tick(symbol, ltp, ts):
             if ltp >= (st.entry_price + dist):
                 st.stop_price = st.entry_price
                 st.sl_trailed = True
+                save_bot_state() # Persist TS
                 log("trade", f"🛡️ TRAILING STOP moved to Breakeven {st.entry_price}")
 
 
@@ -731,6 +869,12 @@ def main():
     select_best_server()
     client = DeltaClient()
     client.fetch_products()
+
+    # Load persistent state
+    load_bot_state()
+
+    # Sync with exchange if keys present
+    client.sync_bot_positions()
 
     # Warmup
     log("warmup", "Fetching historical data...")
@@ -842,8 +986,10 @@ def main():
         time.sleep(TIMEFRAME_MINUTES * 60)
 
         while True:
+            # Sync positions before heartbeat
+            client.sync_bot_positions()
+
             log("heartbeat", f"Bot active. Monitoring {len(SYMBOLS_TO_MONITOR)} symbols...")
-            log("heartbeat", f"📊 Current Market Prices:")
             for sym in SYMBOLS_TO_MONITOR:
                 st = SYMBOL_STATES[sym]
                 if not st.data.empty:
@@ -852,16 +998,15 @@ def main():
                     # Candle color (last completed candle)
                     open_price = last.get("open", 0)
                     close_price = last.get("close", 0)
-                    candle_color = "🟢" if close_price > open_price else "🔴"
+                    candle_color = "🟢" if close_price >= open_price else "🔴"
 
-                    # Trend based on Price vs Middle BB
-                    ma = last.get("ma", 0)
-                    trend = "↑" if close_price > ma else "↓"
+                    # 24h Trend Icon
+                    trend_icon = "📈" if st.change_24h >= 0 else "📉"
 
                     display_ltp = st.current_ltp if st.current_ltp > 0 else last['close']
 
                     print(
-                        f"[heartbeat]   {candle_color} {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | 24h: {st.change_24h:+.2f}% | Status: {st.status}")
+                        f"[heartbeat]   {candle_color} {sym:<12} | LTP: $ {display_ltp:,.2f} | 24h Change: {trend_icon} {st.change_24h:+.2f}% | Vol: {int(last.get('volume', 0)):,} | Status: {st.status}")
 
             time.sleep(TIMEFRAME_MINUTES * 60)
 
