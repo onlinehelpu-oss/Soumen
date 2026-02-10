@@ -921,8 +921,11 @@ def main():
                     # Log
                     chg = st.change_24h
                     icon = "📈" if chg >= 0 else "📉"
+                    vol_val = last.get('volume', 0)
+                    if pd.isna(vol_val): vol_val = 0
+                    vol = int(vol_val)
                     print(
-                        f"[heartbeat]   {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | 24h: {icon} {chg:>+6.2f}% | Status: {st.status}")
+                        f"[heartbeat]   {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | 24h Change: {icon} {chg:>+7.2f}% | Vol: {vol:,.0f} | Status: {st.status}")
 
             # Sleep based on strategy timeframe
             time.sleep(TIMEFRAME_MINUTES * 60)
