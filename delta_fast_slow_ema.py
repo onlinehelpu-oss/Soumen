@@ -47,8 +47,8 @@ DEFAULT_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "BNBUSD",
 "API3USD", "KSMUSD", "SKLUSD", "IOTAUSD", "JUPUSD",
 "WLDUSD", "ONDOUSD", "SEIUSD", "ARBUSD", "ENSUSD"]
 
-# Force using the full list, ignoring config.json 'symbols' key to ensure all are monitored as per user request
-SYMBOLS_TO_MONITOR = DEFAULT_SYMBOLS
+# Configurable symbols (via config.json), fallback to default list if not provided
+SYMBOLS_TO_MONITOR = CONFIG.get("symbols", DEFAULT_SYMBOLS)
 
 # TIMEFRAME CONFIGURATION
 # User provides 'timeframe_minutes' (e.g., 1, 5, 15). We derive API resolution string.
@@ -424,10 +424,10 @@ class DeltaClient:
                 return data.get("result", [])
             else:
                 log("error", f"Failed to fetch positions: {data}")
-                return []
+                return None  # Return None on failure to distinguish from 0 positions
         except Exception as e:
             log("error", f"Error fetching positions: {e}")
-            return []
+            return None  # Return None on error
 
     def fetch_products(self):
         log("delta", f"Fetching product list from {BASE_URL}...")
@@ -958,25 +958,27 @@ def main():
 
                     if has_active_bot_positions:
                         open_positions = client.fetch_positions()
-                        # Create a set of symbols that currently have open positions in broker
-                        broker_pos_map = {}
-                        if isinstance(open_positions, list):
-                            for p in open_positions:
-                                psym = p.get("product_symbol") or p.get("symbol")
-                                size = float(p.get("size", 0))
-                                if size != 0:
-                                    broker_pos_map[psym] = size
 
-                        # Check our internal states
-                        for sym, st in SYMBOL_STATES.items():
-                            if st.status == "position":
-                                # We think we have a position. Check broker.
-                                if sym not in broker_pos_map:
-                                    log("sync", f"⚠️ Position for {sym} missing on broker (Manual Close?). Resetting to WATCH.")
-                                    st.status = "watch"
-                                    st.qty = 0
-                                    st.bot_order_id = None
-                                    POSITION_MANAGER.save_state()
+                        if open_positions is not None:
+                            # Create a set of symbols that currently have open positions in broker
+                            broker_pos_map = {}
+                            if isinstance(open_positions, list):
+                                for p in open_positions:
+                                    psym = p.get("product_symbol") or p.get("symbol")
+                                    size = float(p.get("size", 0))
+                                    if size != 0:
+                                        broker_pos_map[psym] = size
+
+                            # Check our internal states
+                            for sym, st in SYMBOL_STATES.items():
+                                if st.status == "position":
+                                    # We think we have a position. Check broker.
+                                    if sym not in broker_pos_map:
+                                        log("sync", f"⚠️ Position for {sym} missing on broker (Manual Close?). Resetting to WATCH.")
+                                        st.status = "watch"
+                                        st.qty = 0
+                                        st.bot_order_id = None
+                                        POSITION_MANAGER.save_state()
                 except Exception as e:
                     log("error", f"Sync error: {e}")
 
