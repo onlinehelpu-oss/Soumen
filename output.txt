@@ -1,0 +1,57 @@
+Loading configuration from: /app/delta_ema_config.json
+Loaded config: {
+  "timeframe_minutes": 5,
+  "lookback_candles": 1000,
+  "strategy": {
+    "exit_ema": 50,
+    "entry_fast_ema": 20,
+    "entry_slow_ema": 50,
+    "ema_buffer": 0.0,
+    "require_green_signal": true,
+    "min_range_pct": 0.0,
+    "sl_mode": "signal_low",
+    "swing_lookback": 5,
+    "swing_high_lookback": 100,
+    "trail_atr_mult": 1.0
+  },
+  "paper_trading": {
+    "enabled": true,
+    "balance": 10000.0,
+    "trade_allocation": 275.0,
+    "taker_fee_pct": 0.05,
+    "maker_fee_pct": 0.02
+  },
+  "timezone": "Asia/Kolkata",
+  "symbols": [
+    "BTCUSD",
+    "ETHUSD",
+    "SOLUSD",
+    "XRPUSD",
+    "BNBUSD",
+    "DOGEUSD",
+    "ADAUSD",
+    "DOTUSD",
+    "AVAXUSD",
+    "LINKUSD"
+  ]
+}
+[2026-02-10 15:34:13] [init] Checking server connectivity...
+[2026-02-10 15:34:14] [init]   - India: 154.0ms
+[2026-02-10 15:34:14] [init] India server is healthy. Selecting India.
+[2026-02-10 15:34:14] [delta] Fetching product list from https://api.india.delta.exchange...
+[2026-02-10 15:34:14] [delta] Mapped DOGEUSD -> ID 14745 | Val: 100.0 | Inv: False
+[2026-02-10 15:34:14] [delta] Mapped BTCUSD -> ID 27 | Val: 0.001 | Inv: False
+[2026-02-10 15:34:14] [delta] Mapped LINKUSD -> ID 15041 | Val: 1.0 | Inv: False
+[2026-02-10 15:34:14] [delta] Mapped AVAXUSD -> ID 14830 | Val: 1.0 | Inv: False
+[2026-02-10 15:34:14] [delta] Mapped ETHUSD -> ID 3136 | Val: 0.01 | Inv: False
+[2026-02-10 15:34:14] [delta] Mapped XRPUSD -> ID 14969 | Val: 1.0 | Inv: False
+[2026-02-10 15:34:14] [delta] Mapped ADAUSD -> ID 16614 | Val: 1.0 | Inv: False
+[2026-02-10 15:34:14] [delta] Mapped BNBUSD -> ID 15042 | Val: 0.1 | Inv: False
+[2026-02-10 15:34:14] [delta] Mapped DOTUSD -> ID 15304 | Val: 1.0 | Inv: False
+[2026-02-10 15:34:14] [delta] Mapped SOLUSD -> ID 14823 | Val: 1.0 | Inv: False
+[2026-02-10 15:34:14] [delta] Fetching 24h ticker data from https://api.india.delta.exchange...
+[2026-02-10 15:34:14] [warmup] Fetching historical data...
+[2026-02-10 15:34:15] [warmup] Loaded 1050 candles for BTCUSD
+[2026-02-10 15:34:15] [warmup] Loaded 1050 candles for ETHUSD
+[2026-02-10 15:34:16] [warmup] Loaded 1050 candles for SOLUSD
+[2026-02-10 15:34:16] [warmup] Loaded 1050 candles for XRPUSD

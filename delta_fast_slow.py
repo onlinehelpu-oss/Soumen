@@ -586,6 +586,33 @@ def evaluate_on_new_candle(st: SymbolState):
             log("signal", f"🟠 EXIT SIGNAL {st.symbol} | Low: {curr_low} | Wait for break < Low")
 
 
+def print_status_row(st, tag="update"):
+    try:
+        if st.data.empty: return
+        last = st.data.iloc[-1]
+
+        # Determine trend based on fast/slow
+        fast = last.get("ema_fast_entry", 0)
+        slow = last.get("ema_slow_entry", 0)
+        trend = "🟢" if fast > slow else "🔴"
+
+        # Use real-time LTP if available, else last close
+        display_ltp = st.current_ltp if st.current_ltp > 0 else last['close']
+
+        # Log
+        chg = st.change_24h
+        icon = "📈" if chg >= 0 else "📉"
+
+        vol_val = last.get('volume', 0)
+        if pd.isna(vol_val): vol_val = 0
+        vol = int(vol_val)
+
+        print(f"[{tag}]   {trend} {st.symbol:<12} | LTP: $ {display_ltp:,.2f} | 24h Change: {icon} {chg:>+7.2f}% | Vol: {vol:,.0f} | Status: {st.status}")
+        sys.stdout.flush()
+    except Exception as e:
+        print(f"[error] Failed to print status row: {e}")
+
+
 def on_tick(symbol, ltp, ts):
     st = SYMBOL_STATES.get(symbol)
     if not st: return
@@ -683,6 +710,7 @@ def on_tick(symbol, ltp, ts):
                 st.atr_at_entry = st.data.iloc[-1]["atr"]
 
             log("trade", f"   Target: {st.target_price} | Stop: {st.stop_price}")
+            print_status_row(st, tag="trade")
             st.signal_candle = None
 
     # EXIT TRIGGERS
@@ -756,6 +784,7 @@ def on_tick(symbol, ltp, ts):
             st.qty = 0
             st.exit_pending = False
             st.exit_signal_candle = None
+            print_status_row(st, tag="trade")
 
         # Trailing Stop
         if st.status == "position" and TRAIL_ATR_MULT and st.atr_at_entry > 0 and not st.sl_trailed:
@@ -908,24 +937,7 @@ def main():
             log("heartbeat", f"📊 Current Market Prices:")
             for sym in SYMBOLS_TO_MONITOR:
                 st = SYMBOL_STATES[sym]
-                if not st.data.empty:
-                    last = st.data.iloc[-1]
-                    # Determine trend based on fast/slow
-                    fast = last.get("ema_fast_entry", 0)
-                    slow = last.get("ema_slow_entry", 0)
-                    trend = "🟢" if fast > slow else "🔴"
-
-                    # Use real-time LTP if available, else last close
-                    display_ltp = st.current_ltp if st.current_ltp > 0 else last['close']
-
-                    # Log
-                    chg = st.change_24h
-                    icon = "📈" if chg >= 0 else "📉"
-                    vol_val = last.get('volume', 0)
-                    if pd.isna(vol_val): vol_val = 0
-                    vol = int(vol_val)
-                    print(
-                        f"[heartbeat]   {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | 24h Change: {icon} {chg:>+7.2f}% | Vol: {vol:,.0f} | Status: {st.status}")
+                print_status_row(st, tag="heartbeat")
 
             # Sleep based on strategy timeframe
             time.sleep(TIMEFRAME_MINUTES * 60)
