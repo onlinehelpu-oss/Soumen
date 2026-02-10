@@ -4,14 +4,9 @@
   "api_key": "",
   "api_secret": "",
   "symbols": [
-    "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "BNBUSD", "DOGEUSD", "ADAUSD",
-    "DOTUSD", "AVAXUSD", "LINKUSD", "LTCUSD", "BCHUSD", "XMRUSD", "ATOMUSD",
-    "TRXUSD", "NEARUSD", "FILUSD", "APTUSD", "INJUSD", "STXUSD", "ARBUSD",
-    "OPUSD", "AAVEUSD", "UNIUSD", "SUIUSD", "HBARUSD", "ETCUSD", "ALGOUSD",
-    "POLUSD", "TIAUSD", "ENSUSD", "LDOUSD", "GALAUSD", "MANAUSD", "SANDUSD",
-    "CAKEUSD", "DYDXUSD", "RUNEUSD", "ZECUSD", "ZROUSD", "API3USD", "KSMUSD",
-    "SKLUSD", "IOTAUSD", "JUPUSD", "WLDUSD", "ONDOUSD", "SEIUSD", "ARBUSD",
-    "ENSUSD"
+    "BTCUSD",
+    "ETHUSD",
+    "SOLUSD"
   ],
   "timeframe_minutes": 5,
   "lookback_candles": 1000,
