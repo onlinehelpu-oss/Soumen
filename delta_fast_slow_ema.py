@@ -36,8 +36,7 @@ CONFIG = load_config()
 BASE_URL = CONFIG.get("base_url", "https://api.india.delta.exchange")
 WS_URL = CONFIG.get("ws_url", "wss://socket.india.delta.exchange")
 
-# Force using the full list, ignoring config.json 'symbols' key to ensure all are monitored
-SYMBOLS_TO_MONITOR = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "BNBUSD",
+DEFAULT_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "BNBUSD",
 "DOGEUSD", "ADAUSD", "DOTUSD", "AVAXUSD", "LINKUSD",
 "LTCUSD", "BCHUSD", "XMRUSD", "ATOMUSD", "TRXUSD",
 "NEARUSD", "FILUSD", "APTUSD", "INJUSD", "STXUSD",
@@ -48,9 +47,12 @@ SYMBOLS_TO_MONITOR = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "BNBUSD",
 "API3USD", "KSMUSD", "SKLUSD", "IOTAUSD", "JUPUSD",
 "WLDUSD", "ONDOUSD", "SEIUSD", "ARBUSD", "ENSUSD"]
 
+# Force using the full list, ignoring config.json 'symbols' key to ensure all are monitored as per user request
+SYMBOLS_TO_MONITOR = DEFAULT_SYMBOLS
+
 # TIMEFRAME CONFIGURATION
 # User provides 'timeframe_minutes' (e.g., 1, 5, 15). We derive API resolution string.
-TIMEFRAME_MINUTES = CONFIG.get("timeframe_minutes", 60)
+TIMEFRAME_MINUTES = CONFIG.get("timeframe_minutes", 15)
 
 
 def get_resolution_str(minutes):
@@ -72,8 +74,8 @@ LOOKBACK_CANDLES = CONFIG.get("lookback_candles", 1000)
 # Strategy Params
 STRATEGY = CONFIG.get("strategy", {})
 EXIT_EMA = STRATEGY.get("exit_ema", 50)
-ENTRY_FAST_EMA = STRATEGY.get("entry_fast_ema", 50)
-ENTRY_SLOW_EMA = STRATEGY.get("entry_slow_ema", 288)
+ENTRY_FAST_EMA = STRATEGY.get("entry_fast_ema", 20)
+ENTRY_SLOW_EMA = STRATEGY.get("entry_slow_ema", 50)
 
 EMA_BUFFER = STRATEGY.get("ema_buffer", 0.0)
 REQUIRE_GREEN_SIGNAL = STRATEGY.get("require_green_signal", True)
@@ -1002,7 +1004,8 @@ def main():
                         print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | 24h: {icon} {chg:>+7.2f}% | Vol: {int(last.get('volume', 0)):,} | Status: {st.status}")
 
             # Sleep based on strategy timeframe
-            time.sleep(TIMEFRAME_MINUTES * 60)
+            # time.sleep(TIMEFRAME_MINUTES * 60)
+            time.sleep(10) # fast loop for heartbeat check
 
     except KeyboardInterrupt:
         print("\nExiting...")
