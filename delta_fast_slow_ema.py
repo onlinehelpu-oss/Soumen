@@ -18,9 +18,10 @@ from typing import Dict, Optional, List
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
+import os
+
 def load_config():
     try:
-        import os
         config_path = os.path.join(os.path.dirname(__file__), "config.json")
         with open(config_path, "r") as f:
             return json.load(f)
@@ -238,6 +239,57 @@ class SymbolState:
         self.entry_time = 0.0
         self.just_entered = False
         self.current_ltp = 0.0
+        self.bot_order_id = None  # To track positions made by this bot
+
+    def to_dict(self):
+        return {
+            "symbol": self.symbol,
+            "status": self.status,
+            "entry_price": self.entry_price,
+            "qty": self.qty,
+            "stop_price": self.stop_price,
+            "target_price": self.target_price,
+            "bot_order_id": self.bot_order_id
+        }
+
+    def from_dict(self, data):
+        self.status = data.get("status", "watch")
+        self.entry_price = data.get("entry_price", 0.0)
+        self.qty = data.get("qty", 0)
+        self.stop_price = data.get("stop_price", 0.0)
+        self.target_price = data.get("target_price")
+        self.bot_order_id = data.get("bot_order_id")
+
+
+class PositionManager:
+    def __init__(self, filename="bot_state.json"):
+        self.filename = os.path.join(os.path.dirname(__file__), filename)
+
+    def save_state(self):
+        try:
+            state_data = {}
+            for sym, st in SYMBOL_STATES.items():
+                if st.status == "position":
+                    state_data[sym] = st.to_dict()
+            with open(self.filename, "w") as f:
+                json.dump(state_data, f, indent=4)
+        except Exception as e:
+            log("error", f"Failed to save state: {e}")
+
+    def load_state(self):
+        try:
+            if not os.path.exists(self.filename):
+                return
+            with open(self.filename, "r") as f:
+                state_data = json.load(f)
+
+            for sym, data in state_data.items():
+                if sym in SYMBOL_STATES:
+                    st = SYMBOL_STATES[sym]
+                    st.from_dict(data)
+                    log("state", f"Restored state for {sym}: {st.status} | Entry: {st.entry_price}")
+        except Exception as e:
+            log("error", f"Failed to load state: {e}")
 
 
 class CandleManager:
@@ -325,6 +377,7 @@ class CandleManager:
 # ==============================================================================
 SYMBOL_STATES: Dict[str, SymbolState] = {s: SymbolState(s) for s in SYMBOLS_TO_MONITOR}
 CANDLE_MANAGER = CandleManager(TIMEFRAME_MINUTES)
+POSITION_MANAGER = PositionManager()
 
 
 # ==============================================================================
@@ -356,6 +409,22 @@ class DeltaClient:
                 log("error", "Failed to fetch tickers: " + str(data))
         except Exception as e:
             log("error", f"Error fetching tickers: {e}")
+
+    def fetch_positions(self):
+        # log("delta", "Syncing positions with broker...")
+        try:
+            url = f"{BASE_URL}/v2/positions"
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("success"):
+                return data.get("result", [])
+            else:
+                log("error", f"Failed to fetch positions: {data}")
+                return []
+        except Exception as e:
+            log("error", f"Error fetching positions: {e}")
+            return []
 
     def fetch_products(self):
         log("delta", f"Fetching product list from {BASE_URL}...")
@@ -659,6 +728,7 @@ def on_tick(symbol, ltp, ts):
 
             log("trade", f"   Target: {st.target_price} | Stop: {st.stop_price}")
             st.signal_candle = None
+            POSITION_MANAGER.save_state()
 
     # EXIT TRIGGERS
     if st.status == "position":
@@ -728,6 +798,8 @@ def on_tick(symbol, ltp, ts):
 
             st.status = "watch"
             st.qty = 0
+            st.bot_order_id = None
+            POSITION_MANAGER.save_state()
 
         # Trailing Stop
         if st.status == "position" and TRAIL_ATR_MULT and st.atr_at_entry > 0 and not st.sl_trailed:
@@ -746,6 +818,9 @@ def main():
     client = DeltaClient()
     client.fetch_products()
     client.fetch_tickers()
+
+    # Load State from Disk
+    POSITION_MANAGER.load_state()
 
     # Warmup
     log("warmup", "Fetching historical data...")
@@ -859,27 +934,64 @@ def main():
 
     try:
         # Initial sleep before first heartbeat (align to timeframe or just wait)
-        time.sleep(TIMEFRAME_MINUTES * 60)
+        time.sleep(60) # Start checking every minute for heartbeat/sync
+
+        last_heartbeat_ts = 0
+        HEARTBEAT_INTERVAL = TIMEFRAME_MINUTES * 60
 
         while True:
-            log("heartbeat", f"Bot active. Monitoring {len(SYMBOLS_TO_MONITOR)} symbols...")
-            log("heartbeat", f"📊 Current Market Prices:")
-            for sym in SYMBOLS_TO_MONITOR:
-                st = SYMBOL_STATES[sym]
-                if not st.data.empty:
-                    last = st.data.iloc[-1]
-                    # Determine trend based on fast/slow
-                    fast = last.get("ema_fast_entry", 0)
-                    slow = last.get("ema_slow_entry", 0)
-                    trend = "🟢" if fast > slow else "🔴"
+            # Periodic Sync with Broker (every 1 minute)
+            # Only sync if NOT paper trading, otherwise we wipe paper positions against empty broker account
+            if not PAPER_TRADE:
+                try:
+                    has_active_bot_positions = any(s.status == "position" for s in SYMBOL_STATES.values())
 
-                    # Use real-time LTP if available, else last close
-                    display_ltp = st.current_ltp if st.current_ltp > 0 else last['close']
+                    if has_active_bot_positions:
+                        open_positions = client.fetch_positions()
+                        # Create a set of symbols that currently have open positions in broker
+                        broker_pos_map = {}
+                        if isinstance(open_positions, list):
+                            for p in open_positions:
+                                psym = p.get("product_symbol") or p.get("symbol")
+                                size = float(p.get("size", 0))
+                                if size != 0:
+                                    broker_pos_map[psym] = size
 
-                    # Log
-                    chg = st.change_24h
-                    icon = "📈" if chg >= 0 else "📉"
-                    print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | 24h: {icon} {chg:>+6.2f}% | Status: {st.status}")
+                        # Check our internal states
+                        for sym, st in SYMBOL_STATES.items():
+                            if st.status == "position":
+                                # We think we have a position. Check broker.
+                                if sym not in broker_pos_map:
+                                    log("sync", f"⚠️ Position for {sym} missing on broker (Manual Close?). Resetting to WATCH.")
+                                    st.status = "watch"
+                                    st.qty = 0
+                                    st.bot_order_id = None
+                                    POSITION_MANAGER.save_state()
+                except Exception as e:
+                    log("error", f"Sync error: {e}")
+
+            # Heartbeat Logic
+            now = time.time()
+            if (now - last_heartbeat_ts) >= HEARTBEAT_INTERVAL:
+                last_heartbeat_ts = now
+                log("heartbeat", f"Bot active. Monitoring {len(SYMBOLS_TO_MONITOR)} symbols...")
+
+                for sym in SYMBOLS_TO_MONITOR:
+                    st = SYMBOL_STATES[sym]
+                    if not st.data.empty:
+                        last = st.data.iloc[-1]
+                        # Determine trend based on fast/slow
+                        fast = last.get("ema_fast_entry", 0)
+                        slow = last.get("ema_slow_entry", 0)
+                        trend = "🟢" if fast > slow else "🔴"
+
+                        # Use real-time LTP if available, else last close
+                        display_ltp = st.current_ltp if st.current_ltp > 0 else last['close']
+
+                        # Log
+                        chg = st.change_24h
+                        icon = "📈" if chg >= 0 else "📉"
+                        print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | 24h: {icon} {chg:>+7.2f}% | Vol: {int(last.get('volume', 0)):,} | Status: {st.status}")
 
             # Sleep based on strategy timeframe
             time.sleep(TIMEFRAME_MINUTES * 60)
