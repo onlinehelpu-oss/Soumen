@@ -911,7 +911,16 @@ def main():
 
                     chg = st.change_24h
                     icon = "📈" if chg >= 0 else "📉"
-                    vol = int(last.get('volume', 0))
+
+                    # Handle volume gracefully (can be NaN or None)
+                    vol_val = last.get('volume', 0)
+                    if pd.isna(vol_val):
+                        vol = 0
+                    else:
+                        try:
+                            vol = int(vol_val)
+                        except ValueError:
+                            vol = 0
 
                     print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | 24h Change: {icon} {chg:>+7.2f}% | Vol: {vol:,} | Status: {st.status}")
 
