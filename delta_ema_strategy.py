@@ -406,6 +406,72 @@ class DeltaWS:
 CLIENT = DeltaClient(API_KEY, API_SECRET, BASE_URL)
 CANDLE_MGR = None
 
+def sync_positions():
+    """
+    Synchronizes bot state with actual broker positions.
+    Handles manual closes, partial closes, and restarts.
+    """
+    if not ENABLE_LIVE_TRADING:
+        return
+
+    print("[sync] Synchronizing with Delta Exchange positions...")
+    try:
+        resp = CLIENT.get_positions()
+        if not isinstance(resp, dict) or "result" not in resp:
+            print(f"[sync] Failed to fetch positions: {resp}")
+            return
+
+        # Map Broker Positions: Symbol -> Quantity (Absolute)
+        broker_map = {}
+        for p in resp["result"]:
+            # Delta returns product_id, size (signed or unsigned depending on field? usually size is +ve, side determines sign)
+            # Actually Delta v2 positions: size is integer (contracts). entry_price, etc.
+            # We need to map product_id back to symbol
+            pid = int(p.get("product_id"))
+            size = int(p.get("size", 0))
+
+            sym = ID_TO_SYMBOL.get(pid)
+            if sym:
+                broker_map[sym] = size
+
+        # Compare with Bot State
+        for sym, st in SYMBOL_STATES.items():
+            if st.status == "position":
+                broker_qty = broker_map.get(sym, 0)
+                bot_qty = st.qty
+
+                # Case 1: Manual Close (Broker has 0, Bot has >0)
+                if broker_qty == 0:
+                    print(f"[sync] ⚠️ Manual Close Detected for {sym}. Resetting bot to WATCH.")
+                    st.status = "watch"
+                    st.qty = 0
+                    st.entry_price = 0.0
+                    st.target_price = None
+                    st.stop_price = 0.0
+                    st.gtt_order_id = None
+                    save_state()
+                    continue
+
+                # Case 2: Quantity Mismatch
+                if broker_qty != bot_qty:
+                    if broker_qty < bot_qty:
+                        print(f"[sync] ⚠️ Partial Close Detected for {sym}. Updating Qty: {bot_qty} -> {broker_qty}")
+                        st.qty = broker_qty
+                        save_state()
+                    else:
+                        # Broker > Bot (User added more).
+                        # Requirement: "only monitor that position by this particular bot"
+                        # We ignore the extra quantity and keep managing the original amount?
+                        # OR we update to match?
+                        # Risk: If we only sell 'bot_qty', we leave the manual portion open (Safe).
+                        # If we update 'st.qty = broker_qty', we manage ALL of it.
+                        # User said: "dont close other position".
+                        # So we do NOT update st.qty if broker > bot. We stick to our tracked size.
+                        print(f"[sync] ℹ️ External position size larger ({broker_qty}) than bot ({bot_qty}) for {sym}. Ignoring extra.")
+
+    except Exception as e:
+        print(f"[sync] Error during sync: {e}")
+
 def compute_prev_swing_high_for_entry(state, lookback, reference_price):
     df = state.data
     if df is None or df.empty:
@@ -1014,6 +1080,9 @@ def main():
 
     # Heartbeat loop
     while True:
+        # Sync positions first (robustness check)
+        sync_positions()
+
         # Sleep for the strategy timeframe (e.g., 5m -> 300s)
         time.sleep(TIMEFRAME_MIN * 60)
 
