@@ -347,6 +347,7 @@ class CandleManager:
 
 SYMBOL_STATES: Dict[str, SymbolState] = {s: SymbolState(s) for s in SYMBOLS_TO_MONITOR}
 CANDLE_MANAGER = CandleManager(TIMEFRAME_MINUTES)
+GLOBAL_CLIENT = None  # To be set in main()
 
 def save_state():
     """Save current state of positions to a JSON file."""
@@ -529,6 +530,53 @@ class DeltaClient:
         except Exception as e:
             log("error", f"Error syncing positions: {e}")
 
+    def place_order(self, symbol, size, side):
+        """
+        Place a Market Order on Delta Exchange.
+        side: 'buy' or 'sell'
+        """
+        if not API_KEY or not API_SECRET:
+            log("error", "Cannot place order: API Key/Secret missing.")
+            return None
+
+        product_id = self.products.get(symbol)
+        if not product_id:
+            log("error", f"Cannot place order: Product ID for {symbol} not found.")
+            return None
+
+        log("trade", f"🚀 Placing LIVE {side.upper()} Order for {symbol} | Size: {size}")
+
+        try:
+            path = "/v2/orders"
+            url = f"{BASE_URL}{path}"
+
+            payload = {
+                "product_id": int(product_id),
+                "size": int(size),
+                "side": side.lower(),
+                "order_type": "market_order"
+            }
+            payload_str = json.dumps(payload)
+
+            headers = self._generate_signature("POST", path, payload_str)
+            headers["Content-Type"] = "application/json"
+
+            resp = requests.post(url, headers=headers, data=payload_str, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+
+            if data.get("success"):
+                order = data.get("result", {})
+                log("trade", f"✅ Order Placed Successfully! ID: {order.get('id')} | Status: {order.get('status')}")
+                return order
+            else:
+                log("error", f"❌ Order Placement Failed: {data.get('error')}")
+                return None
+
+        except Exception as e:
+            log("error", f"❌ Exception placing order: {e}")
+            return None
+
 
 # ==============================================================================
 # STRATEGY LOGIC
@@ -702,19 +750,35 @@ def on_tick(symbol, ltp, ts):
             st.entry_price = ltp
             alloc = TRADE_ALLOCATION
 
-            # Calculate Qty (Negative for Short? Or just maintain side?)
-            # Usually quantity is positive, side is Sell.
-            # Delta API uses side=-1 for Sell.
-            # For paper trading, we track side.
-
+            # Calculate Qty
             if st.is_inverse:
                 st.qty = int(alloc / st.contract_value) if st.contract_value > 0 else 0
             else:
                 denom = st.contract_value * ltp
                 st.qty = int(alloc / denom) if denom > 0 else 0
 
-            log("trade", f"🚀 [PAPER] ENTER SELL {symbol} @ {ltp} (Trigger {trigger}) | Qty: {st.qty}")
-            st.status = "position"
+            order_success = False
+
+            if not PAPER_TRADE and GLOBAL_CLIENT:
+                # LIVE TRADING
+                order = GLOBAL_CLIENT.place_order(symbol, st.qty, "sell")
+                if order:
+                    order_success = True
+                    st.status = "position"
+                    # Capture entry price from order fill if possible, or use current LTP
+                    # Delta returns order object, but it might not be filled immediately.
+                    # For simplicity in this strategy, we assume fill at LTP or use order price if limit.
+                    # Market order fill price is not in response usually until filled.
+                    st.entry_price = ltp
+            else:
+                # PAPER TRADING
+                log("trade", f"🚀 [PAPER] ENTER SELL {symbol} @ {ltp} (Trigger {trigger}) | Qty: {st.qty}")
+                st.status = "position"
+                order_success = True
+
+            if not order_success:
+                log("error", f"⛔ Entry failed for {symbol}. Staying in Watch mode.")
+                return
 
             # Stop Loss (Signal High)
             if SL_MODE == "signal_high":
@@ -757,55 +821,61 @@ def on_tick(symbol, ltp, ts):
             reason = "STOP LOSS HIT"
 
         if exit_price > 0:
-            # PnL Calculation (Short Strategy)
+            order_success = False
 
-            gross_pnl = 0.0
-            total_fee = 0.0
-
-            if st.is_inverse:
-                # Inverse Short PnL (in BTC/ETH terms) = Qty * Val * (1/Exit - 1/Entry)
-                # Gross PnL (USD) approx = PnL_Coin * ExitPrice
-                if st.entry_price > 0 and exit_price > 0:
-                    pnl_coin = st.qty * st.contract_value * (1/exit_price - 1/st.entry_price)
-                    gross_pnl = pnl_coin * exit_price
-
-                    # Fees are paid in Coin
-                    # Entry Fee (Coin) = (Qty * Val / Entry) * TakerFee
-                    # Exit Fee (Coin) = (Qty * Val / Exit) * TakerFee
-                    entry_fee_coin = (st.qty * st.contract_value / st.entry_price) * TAKER_FEE_PCT
-                    exit_fee_coin = (st.qty * st.contract_value / exit_price) * TAKER_FEE_PCT
-
-                    total_fee_coin = entry_fee_coin + exit_fee_coin
-                    total_fee = total_fee_coin * exit_price # Approx USD value of fees
+            if not PAPER_TRADE and GLOBAL_CLIENT:
+                # LIVE TRADING (Buy to cover)
+                order = GLOBAL_CLIENT.place_order(symbol, st.qty, "buy")
+                if order:
+                    order_success = True
+                    log("trade", f"✅ [LIVE] {reason} {symbol} EXITED @ {exit_price}")
             else:
-                # Linear Short PnL = (Entry - Exit) * Qty * Val
-                gross_pnl = (st.entry_price - exit_price) * st.qty * st.contract_value
+                # PAPER TRADING
+                order_success = True
 
-                # Fees
-                entry_notional = st.qty * st.contract_value * st.entry_price
-                exit_notional = st.qty * st.contract_value * exit_price
-                total_fee = (entry_notional + exit_notional) * TAKER_FEE_PCT
+                # PnL Calculation (Short Strategy) - ONLY FOR PAPER LOGS
+                gross_pnl = 0.0
+                total_fee = 0.0
 
-            net_pnl = gross_pnl - total_fee
+                if st.is_inverse:
+                    # Inverse Short PnL (in BTC/ETH terms) = Qty * Val * (1/Exit - 1/Entry)
+                    if st.entry_price > 0 and exit_price > 0:
+                        pnl_coin = st.qty * st.contract_value * (1/exit_price - 1/st.entry_price)
+                        gross_pnl = pnl_coin * exit_price
 
-            PAPER_BALANCE += net_pnl
-            PAPER_PNL += net_pnl
-            icon = "✅" if net_pnl >= 0 else "❌"
+                        entry_fee_coin = (st.qty * st.contract_value / st.entry_price) * TAKER_FEE_PCT
+                        exit_fee_coin = (st.qty * st.contract_value / exit_price) * TAKER_FEE_PCT
+                        total_fee_coin = entry_fee_coin + exit_fee_coin
+                        total_fee = total_fee_coin * exit_price
+                else:
+                    # Linear Short PnL = (Entry - Exit) * Qty * Val
+                    gross_pnl = (st.entry_price - exit_price) * st.qty * st.contract_value
+                    entry_notional = st.qty * st.contract_value * st.entry_price
+                    exit_notional = st.qty * st.contract_value * exit_price
+                    total_fee = (entry_notional + exit_notional) * TAKER_FEE_PCT
 
-            log("trade", f"{icon} [PAPER] {reason} {symbol} @ {exit_price} | PnL: ${net_pnl:.2f} (Gross: ${gross_pnl:.2f}, Fees: ${total_fee:.2f})")
-            log("trade", f"   Account Balance: ${PAPER_BALANCE:.2f}")
+                net_pnl = gross_pnl - total_fee
+                PAPER_BALANCE += net_pnl
+                PAPER_PNL += net_pnl
+                icon = "✅" if net_pnl >= 0 else "❌"
 
-            st.status = "watch"
-            st.qty = 0
+                log("trade", f"{icon} [PAPER] {reason} {symbol} @ {exit_price} | PnL: ${net_pnl:.2f} (Gross: ${gross_pnl:.2f}, Fees: ${total_fee:.2f})")
+                log("trade", f"   Account Balance: ${PAPER_BALANCE:.2f}")
 
-            save_state() # Save state after exit
+            if order_success:
+                st.status = "watch"
+                st.qty = 0
+                save_state()
 
 # ==============================================================================
 # MAIN LOGIC
 # ==============================================================================
 def main():
+    global GLOBAL_CLIENT
     select_best_server()
     client = DeltaClient()
+    GLOBAL_CLIENT = client
+
     client.fetch_products()
     client.fetch_tickers()
 
