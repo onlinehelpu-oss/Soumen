@@ -1,0 +1,93 @@
+Loading configuration from: /app/config.json
+Loaded config: {
+  "timeframe_minutes": 5,
+  "lookback_candles": 1000,
+  "strategy": {
+    "exit_ema": 50,
+    "entry_fast_ema": 20,
+    "entry_slow_ema": 50,
+    "ema_buffer": 0.0,
+    "require_green_signal": true,
+    "min_range_pct": 0.0,
+    "sl_mode": "signal_low",
+    "swing_lookback": 5,
+    "swing_high_lookback": 100,
+    "trail_atr_mult": 1.0
+  },
+  "paper_trading": {
+    "enabled": true,
+    "balance": 10000.0,
+    "trade_allocation": 275.0,
+    "taker_fee_pct": 0.05,
+    "maker_fee_pct": 0.02
+  },
+  "timezone": "Asia/Kolkata",
+  "symbols": [
+    "BTCUSD",
+    "ETHUSD",
+    "SOLUSD",
+    "XRPUSD",
+    "BNBUSD",
+    "DOGEUSD",
+    "ADAUSD",
+    "DOTUSD",
+    "AVAXUSD",
+    "LINKUSD"
+  ]
+}
+[2026-02-10 14:13:09] [init] Checking server connectivity...
+[2026-02-10 14:13:09] [init]   - India: 109.1ms
+[2026-02-10 14:13:09] [init] India server is healthy. Selecting India.
+[2026-02-10 14:13:09] [delta] Fetching product list from https://api.india.delta.exchange...
+[2026-02-10 14:13:09] [delta] Mapped ZROUSD -> ID 26457 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped ETCUSD -> ID 19615 | Val: 0.1 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped IOTAUSD -> ID 49170 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped KSMUSD -> ID 47611 | Val: 0.1 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped OPUSD -> ID 19618 | Val: 0.1 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped UNIUSD -> ID 15303 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped POLUSD -> ID 39943 | Val: 10.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped NEARUSD -> ID 16615 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped ZECUSD -> ID 98573 | Val: 0.1 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped GALAUSD -> ID 27912 | Val: 100.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped DOGEUSD -> ID 14745 | Val: 100.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped BTCUSD -> ID 27 | Val: 0.001 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped ONDOUSD -> ID 19300 | Val: 10.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped SANDUSD -> ID 47597 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped LDOUSD -> ID 19616 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped FILUSD -> ID 19617 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped DYDXUSD -> ID 21526 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped LINKUSD -> ID 15041 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped SUIUSD -> ID 17328 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped INJUSD -> ID 16622 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped STXUSD -> ID 20195 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped WLDUSD -> ID 17326 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped APTUSD -> ID 20196 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped HBARUSD -> ID 18288 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped AVAXUSD -> ID 14830 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped RUNEUSD -> ID 21522 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped CAKEUSD -> ID 62642 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped API3USD -> ID 68177 | Val: 10.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped LTCUSD -> ID 15040 | Val: 0.1 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped BCHUSD -> ID 15001 | Val: 0.01 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped TRXUSD -> ID 20193 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped MANAUSD -> ID 47596 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped AAVEUSD -> ID 19299 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped SEIUSD -> ID 17329 | Val: 10.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped ATOMUSD -> ID 16599 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped ETHUSD -> ID 3136 | Val: 0.01 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped TIAUSD -> ID 17330 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped XRPUSD -> ID 14969 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped SKLUSD -> ID 89749 | Val: 100.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped ADAUSD -> ID 16614 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped ALGOUSD -> ID 16617 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped ARBUSD -> ID 17331 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped BNBUSD -> ID 15042 | Val: 0.1 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped XMRUSD -> ID 116937 | Val: 0.01 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped ENSUSD -> ID 89750 | Val: 0.1 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped JUPUSD -> ID 57814 | Val: 10.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped DOTUSD -> ID 15304 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Mapped SOLUSD -> ID 14823 | Val: 1.0 | Inv: False
+[2026-02-10 14:13:09] [delta] Fetching 24h ticker data from https://api.india.delta.exchange...
+[2026-02-10 14:13:11] [warmup] Fetching historical data...
+[2026-02-10 14:13:11] [warmup] Loaded 1050 candles for BTCUSD
+[2026-02-10 14:13:12] [warmup] Loaded 1050 candles for ETHUSD

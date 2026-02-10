@@ -22,8 +22,11 @@ def load_config():
     try:
         import os
         config_path = os.path.join(os.path.dirname(__file__), "config.json")
+        print(f"Loading configuration from: {config_path}")
         with open(config_path, "r") as f:
-            return json.load(f)
+            cfg = json.load(f)
+            print(f"Loaded config: {json.dumps(cfg, indent=2)}")
+            return cfg
     except Exception as e:
         print(f"Error loading config.json: {e}. Using defaults.")
         return {}
@@ -787,6 +790,7 @@ def main():
     print(f"   - Trade Allocation: ${TRADE_ALLOCATION} per trade")
     print(f"   - Server: {BASE_URL}")
     print("=" * 70 + "\n")
+    sys.stdout.flush()
 
     # WebSocket
     log("main", "Starting WebSocket connection...")
