@@ -25,7 +25,11 @@ def load_config():
         print(f"Loading configuration from: {config_path}")
         with open(config_path, "r") as f:
             cfg = json.load(f)
-            print(f"Loaded config: {json.dumps(cfg, indent=2)}")
+            # Log config but mask sensitive keys
+            safe_cfg = cfg.copy()
+            if "api_key" in safe_cfg: safe_cfg["api_key"] = "***"
+            if "api_secret" in safe_cfg: safe_cfg["api_secret"] = "***"
+            print(f"Loaded config: {json.dumps(safe_cfg, indent=2)}")
             return cfg
     except Exception as e:
         print(f"Error loading config.json: {e}. Using defaults.")
@@ -51,8 +55,8 @@ DEFAULT_SYMBOLS = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "BNBUSD",
                    "WLDUSD", "ONDOUSD", "SEIUSD"]
 
 # Get from config only if not using defaults
-SYMBOLS_TO_MONITOR = CONFIG.get("symbols") if CONFIG.get("symbols") and len(
-    CONFIG.get("symbols", [])) > 10 else DEFAULT_SYMBOLS
+# Allow config symbols to override defaults regardless of length
+SYMBOLS_TO_MONITOR = CONFIG.get("symbols") if CONFIG.get("symbols") else DEFAULT_SYMBOLS
 
 # TIMEFRAME CONFIGURATION
 # User provides 'timeframe_minutes' (e.g., 1, 5, 15). We derive API resolution string.
@@ -78,8 +82,16 @@ LOOKBACK_CANDLES = CONFIG.get("lookback_candles", 1000)
 # Strategy Params
 STRATEGY = CONFIG.get("strategy", {})
 EXIT_EMA = STRATEGY.get("exit_ema", 50)
+
+# Ensure reasonable defaults if keys are missing in config
 ENTRY_FAST_EMA = STRATEGY.get("entry_fast_ema", 20)
 ENTRY_SLOW_EMA = STRATEGY.get("entry_slow_ema", 50)
+
+# Validation Warning
+if "entry_fast_ema" not in STRATEGY:
+    print(f"WARNING: 'entry_fast_ema' not found in config. Using default: {ENTRY_FAST_EMA}")
+if "entry_slow_ema" not in STRATEGY:
+    print(f"WARNING: 'entry_slow_ema' not found in config. Using default: {ENTRY_SLOW_EMA}")
 
 EMA_BUFFER = STRATEGY.get("ema_buffer", 0.0)
 REQUIRE_GREEN_SIGNAL = STRATEGY.get("require_green_signal", True)
