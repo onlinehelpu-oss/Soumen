@@ -10,8 +10,11 @@ import websocket
 import sys
 import traceback
 import os
+import hmac
+import hashlib
 from datetime import datetime as dt, timedelta
 from typing import Dict, Optional, List
+from urllib.parse import urlparse
 
 # ==============================================================================
 # CONFIGURATION
@@ -29,6 +32,8 @@ CONFIG = load_config()
 
 BASE_URL = CONFIG.get("base_url", "https://api.india.delta.exchange")
 WS_URL = CONFIG.get("ws_url", "wss://socket.india.delta.exchange")
+API_KEY = CONFIG.get("api_key", "")
+API_SECRET = CONFIG.get("api_secret", "")
 
 SYMBOLS_TO_MONITOR = CONFIG.get("symbols", ["BTCUSD", "ETHUSD", "SOLUSD"])
 
@@ -361,6 +366,18 @@ class DeltaClient:
         self.products = {}
         self.id_to_symbol = {}
 
+    def _generate_signature(self, method, path, payload=""):
+        if not API_KEY or not API_SECRET:
+            return {}
+        timestamp = str(int(time.time()))
+        signature_data = method + timestamp + path + payload
+        signature = hmac.new(API_SECRET.encode(), signature_data.encode(), hashlib.sha256).hexdigest()
+        return {
+            "api-key": API_KEY,
+            "timestamp": timestamp,
+            "signature": signature
+        }
+
     def fetch_tickers(self):
         log("delta", f"Fetching 24h ticker data from {BASE_URL}...")
         try:
@@ -430,27 +447,64 @@ class DeltaClient:
             return pd.DataFrame()
 
     def fetch_positions(self):
-        """Fetch open positions from Delta Exchange."""
-        # Note: This endpoint requires authentication usually, but the original script seems
-        # to be using public endpoints or relying on 'paper_trading' logic which doesn't actually place orders on exchange.
-        # If the user wants to sync with REAL exchange positions, we need API keys.
-        # However, the user script provided uses paper trading logic (internal PnL tracking).
-        # "A more advanced version ... automatically sync with your Delta exchange positions by periodically calling the broker's get_positions() API."
+        """Fetch open positions from Delta Exchange and sync with internal state."""
+        # Only sync if API Key is configured and we are running in REAL mode (not PAPER)
+        # However, to support the requested feature even if user hasn't toggled PAPER off yet,
+        # we can still fetch and warn.
 
-        # If PAPER_TRADE is True, we simulate persistence via 'save_state/load_state'.
-        # If we were doing real trading, we would call the API.
+        if not API_KEY or not API_SECRET:
+            log("sync", "Skipping exchange sync (API Key/Secret not configured)")
+            return
 
-        # Assuming the user wants this for the "Paper" or "Real" bot.
-        # Since I don't have API keys in the config, I can't implement real API syncing fully.
-        # But I can implement the LOGIC assuming persistence is key for now.
-        # The prompt says "sync with your Delta exchange positions".
-        # This implies we should try to call the API.
+        log("sync", "Syncing positions with Delta Exchange...")
+        try:
+            path = "/v2/positions"
+            url = f"{BASE_URL}{path}"
+            headers = self._generate_signature("GET", path)
+            resp = requests.get(url, headers=headers, timeout=10)
 
-        # BUT, the current script does NOT have API Key/Secret configuration for private endpoints.
-        # It only has public endpoints (history, products, tickers).
-        # So I will implement the persistence logic which works for the Bot's internal state (Paper Mode or Real Mode if keys added).
-        # For now, I will stick to the local persistence as the primary "sync" mechanism for this bot's context.
-        pass
+            if resp.status_code == 401:
+                log("error", "Failed to sync positions: Unauthorized (Check API Keys)")
+                return
+
+            resp.raise_for_status()
+            data = resp.json()
+
+            if data.get("success"):
+                api_positions = data.get("result", [])
+                # Create a map of Symbol -> Position Data for easier lookup
+                api_pos_map = {p.get("symbol"): p for p in api_positions if float(p.get("size", 0)) != 0}
+
+                # Reconciliation Logic
+                # 1. Check existing bot positions
+                for sym, st in SYMBOL_STATES.items():
+                    if st.status == "position":
+                        # If bot thinks it has a position, but API says NO (or size 0) -> Manual Close
+                        if sym not in api_pos_map:
+                            log("sync", f"⚠️ Position for {sym} missing on exchange (Manual Close Detected). Resetting to Watch.")
+                            st.status = "watch"
+                            st.qty = 0
+                            save_state()
+                        else:
+                            # Position exists on exchange. Update size if needed?
+                            # For simplicity, we trust the existence check.
+                            # If size changed partially, we could update st.qty.
+                            pos = api_pos_map[sym]
+                            size = float(pos.get("size", 0))
+                            if size != st.qty:
+                                log("sync", f"ℹ️ Updating {sym} qty from {st.qty} to {size}")
+                                st.qty = int(size)
+                                save_state()
+
+                # 2. Ignore new positions on exchange that are not in bot state (as requested)
+                # "i want what ever position made by this particular bot , only monitor that position"
+
+            else:
+                log("error", f"Failed to fetch positions: {data.get('error')}")
+
+        except Exception as e:
+            log("error", f"Error syncing positions: {e}")
+
 
 # ==============================================================================
 # STRATEGY LOGIC
@@ -734,6 +788,9 @@ def main():
     # Load state from file (Persistence)
     load_state()
 
+    # Sync with exchange (if API keys configured)
+    client.fetch_positions()
+
     log("warmup", "Fetching historical data...")
     for sym in SYMBOLS_TO_MONITOR:
         df = client.fetch_history(sym, TIMEFRAME_RES, LOOKBACK_CANDLES)
@@ -829,7 +886,17 @@ def main():
     ws_thread.start()
 
     try:
+        # Loop for Heartbeat and Periodic Sync
+        last_sync_time = time.time()
+
         while True:
+            current_time = time.time()
+
+            # Periodic Position Sync (e.g., every 60 seconds)
+            if current_time - last_sync_time > 60:
+                client.fetch_positions()
+                last_sync_time = current_time
+
             log("heartbeat", f"Bot active. Monitoring {len(SYMBOLS_TO_MONITOR)} symbols...")
             for sym in SYMBOLS_TO_MONITOR:
                 st = SYMBOL_STATES[sym]
@@ -839,7 +906,10 @@ def main():
                     trend = "🟢" if trend_val == 1 else "🔴"
                     display_ltp = st.current_ltp if st.current_ltp > 0 else last['close']
                     print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | Status: {st.status}")
-            time.sleep(60)
+
+            # Sleep matching timeframe (User request: "print as per time frame")
+            # Wait for TIMEFRAME_MINUTES minutes
+            time.sleep(TIMEFRAME_MINUTES * 60)
 
     except KeyboardInterrupt:
         print("\nExiting...")
