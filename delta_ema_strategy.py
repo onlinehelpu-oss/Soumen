@@ -61,8 +61,16 @@ import websocket
 API_KEY = "qnz5G7ullIHIIywNbojX6i2mEfWCKY"
 API_SECRET = "NM0zX5jmDDtLkqAX5qNTyWgLtW5XqTVHZceBl3yCD7FVy0K8r8Dqlxts9oy0"
 
-BASE_URL = "https://api.india.delta.exchange"
-WS_URL = "wss://socket.india.delta.exchange"
+# --- TRADING ENVIRONMENT ---
+USE_TESTNET = False  # Set True for Testnet
+ENABLE_LIVE_TRADING = True  # Set False for Paper Trading (Simulated Orders)
+
+if USE_TESTNET:
+    BASE_URL = "https://testnet-api.india.delta.exchange"
+    WS_URL = "wss://testnet-socket.india.delta.exchange"
+else:
+    BASE_URL = "https://api.india.delta.exchange"
+    WS_URL = "wss://socket.india.delta.exchange"
 
 # STRATEGY PARAMETERS
 TIMEFRAME_MIN = 5  # Default 5m as per log example
@@ -559,6 +567,22 @@ def decide_qty(symbol, price):
 def place_market_order_wrapper(symbol, qty, side):
     info = PRODUCT_MAP.get(symbol)
     if not info: return {"success": False}
+
+    if not ENABLE_LIVE_TRADING:
+        print(f"[sim] Simulated {side.upper()} Order for {qty} {symbol} placed successfully.")
+        # Return mock success response structure similar to Delta API
+        return {
+            "success": True,
+            "result": {
+                "id": f"sim-{int(time.time())}",
+                "product_id": info["id"],
+                "size": qty,
+                "side": side,
+                "order_type": "market_order",
+                "state": "closed",
+                "average_price": "0" # Will be updated with LTP in real logic
+            }
+        }
 
     try:
         resp = CLIENT.place_order(
