@@ -47,7 +47,8 @@ DEFAULT_SYMBOLS = [
     "ENSUSD", "LDOUSD", "GALAUSD", "MANAUSD", "SANDUSD",
     "CAKEUSD", "DYDXUSD", "RUNEUSD", "ZECUSD", "ZROUSD",
     "API3USD", "KSMUSD", "SKLUSD", "IOTAUSD", "JUPUSD",
-    "WLDUSD", "ONDOUSD", "SEIUSD", "ARBUSD", "ENSUSD"
+    "WLDUSD", "ONDOUSD", "SEIUSD", "ARBUSD", "ENSUSD",
+    "PIPPINUSD", "YALAUSD"
 ]
 
 # Configurable symbols (via config.json), fallback to default list if not provided
