@@ -52,7 +52,8 @@ DEFAULT_SYMBOLS = [
 ]
 
 # Configurable symbols (via config.json), fallback to default list if not provided
-SYMBOLS_TO_MONITOR = CONFIG.get("symbols", DEFAULT_SYMBOLS)
+# Changed from "symbols" to "monitored_symbols" to avoid conflicts with older config.json files
+SYMBOLS_TO_MONITOR = CONFIG.get("monitored_symbols", DEFAULT_SYMBOLS)
 
 # TIMEFRAME CONFIGURATION
 # User provides 'timeframe_minutes' (e.g., 1, 5, 15). We derive API resolution string.

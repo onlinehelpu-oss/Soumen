@@ -1,7 +1,7 @@
 {
   "base_url": "https://api.india.delta.exchange",
   "ws_url": "wss://socket.india.delta.exchange",
-  "symbols": [
+  "monitored_symbols": [
     "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "BNBUSD",
     "DOGEUSD", "ADAUSD", "DOTUSD", "AVAXUSD", "LINKUSD",
     "LTCUSD", "BCHUSD", "XMRUSD", "ATOMUSD", "TRXUSD",
