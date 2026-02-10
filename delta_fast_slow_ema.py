@@ -841,16 +841,23 @@ def main():
         st = SYMBOL_STATES[sym]
         if not st.data.empty:
             last = st.data.iloc[-1]
+
+            # Determine trend based on fast/slow
+            fast = last.get("ema_fast_entry", 0)
+            slow = last.get("ema_slow_entry", 0)
+            trend = "🟢" if fast > slow else "🔴"
+
             chg = st.change_24h
             icon = "📈" if chg >= 0 else "📉"
             print(
-                f"{sym:<12} | LTP: $ {last['close']:,.2f} | 24h Change: {icon} {chg:>+7.2f}% | Vol: {int(last.get('volume', 0)):,}")
+                f"{trend} {sym:<12} | LTP: $ {last['close']:,.2f} | 24h Change: {icon} {chg:>+7.2f}% | Vol: {int(last.get('volume', 0)):,} | Status: {st.status}")
     print("=" * 70)
     print(f"⏰ TIMEFRAME: {TIMEFRAME_MINUTES} minute candles")
     print(f"   - Each candle represents {TIMEFRAME_MINUTES} minutes of price action")
     print(f"   - New candle completes every {TIMEFRAME_MINUTES} minutes")
     print(f"   - Strategy: Fast({ENTRY_FAST_EMA}) / Slow({ENTRY_SLOW_EMA}) EMA Crossover")
     print(f"   - Trade Allocation: ${TRADE_ALLOCATION} per trade")
+    print(f"   - Paper Trading: {'ENABLED' if PAPER_TRADE else 'DISABLED (Live Mode)'}")
     print(f"   - Server: {BASE_URL}")
     print("=" * 70 + "\n")
 
