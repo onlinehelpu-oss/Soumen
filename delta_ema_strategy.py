@@ -464,7 +464,8 @@ def on_completed_candle(symbol, candle):
     else:
         # Check if index exists
         if ts in df.index:
-            df.loc[ts] = new_data
+            # Update specific columns to avoid overwriting others (like bool indicators) with NaN
+            df.loc[ts, list(new_data.keys())] = list(new_data.values())
         else:
             row = pd.DataFrame([new_data], index=[ts])
             df = pd.concat([df, row])
