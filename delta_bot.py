@@ -679,36 +679,34 @@ def on_tick(symbol, ltp, ts):
             reason = "STOP LOSS HIT"
 
         if exit_price > 0:
-            # PnL Calculation (Short)
-            # Profit = (Entry - Exit)
+            # PnL Calculation (Short Strategy)
 
             gross_pnl = 0.0
-            entry_notional = 0.0
-            exit_notional = 0.0
+            total_fee = 0.0
 
             if st.is_inverse:
-                # Inverse Short PnL = Notional_USD * (Entry - Exit) / Exit ???
-                # No. Inverse PnL (in BTC) = Qty * Val * (1/Entry - 1/Exit)
-                # PnL in USD = PnL_BTC * ExitPrice = Qty * Val * (1/Entry - 1/Exit) * Exit
-                # = Qty * Val * (Exit/Entry - 1) * -1 (for short) -> complicated.
-                # Simplified: (Entry - Exit) / Entry * Notional (Approx)
+                # Inverse Short PnL (in BTC/ETH terms) = Qty * Val * (1/Exit - 1/Entry)
+                # Gross PnL (USD) approx = PnL_Coin * ExitPrice
+                if st.entry_price > 0 and exit_price > 0:
+                    pnl_coin = st.qty * st.contract_value * (1/exit_price - 1/st.entry_price)
+                    gross_pnl = pnl_coin * exit_price
 
-                notional_usd = st.qty * st.contract_value
-                entry_notional = notional_usd
-                exit_notional = notional_usd
+                    # Fees are paid in Coin
+                    # Entry Fee (Coin) = (Qty * Val / Entry) * TakerFee
+                    # Exit Fee (Coin) = (Qty * Val / Exit) * TakerFee
+                    entry_fee_coin = (st.qty * st.contract_value / st.entry_price) * TAKER_FEE_PCT
+                    exit_fee_coin = (st.qty * st.contract_value / exit_price) * TAKER_FEE_PCT
 
-                if st.entry_price > 0:
-                    gross_pnl = notional_usd * (st.entry_price - exit_price) / st.entry_price
+                    total_fee_coin = entry_fee_coin + exit_fee_coin
+                    total_fee = total_fee_coin * exit_price # Approx USD value of fees
             else:
                 # Linear Short PnL = (Entry - Exit) * Qty * Val
-                entry_notional = st.qty * st.contract_value * st.entry_price
-                exit_notional = st.qty * st.contract_value * exit_price
-
                 gross_pnl = (st.entry_price - exit_price) * st.qty * st.contract_value
 
-            entry_fee = entry_notional * TAKER_FEE_PCT
-            exit_fee = exit_notional * TAKER_FEE_PCT
-            total_fee = entry_fee + exit_fee
+                # Fees
+                entry_notional = st.qty * st.contract_value * st.entry_price
+                exit_notional = st.qty * st.contract_value * exit_price
+                total_fee = (entry_notional + exit_notional) * TAKER_FEE_PCT
 
             net_pnl = gross_pnl - total_fee
 
@@ -716,7 +714,7 @@ def on_tick(symbol, ltp, ts):
             PAPER_PNL += net_pnl
             icon = "✅" if net_pnl >= 0 else "❌"
 
-            log("trade", f"{icon} [PAPER] {reason} {symbol} @ {exit_price} | PnL: ${net_pnl:.2f}")
+            log("trade", f"{icon} [PAPER] {reason} {symbol} @ {exit_price} | PnL: ${net_pnl:.2f} (Gross: ${gross_pnl:.2f}, Fees: ${total_fee:.2f})")
             log("trade", f"   Account Balance: ${PAPER_BALANCE:.2f}")
 
             st.status = "watch"
