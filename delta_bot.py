@@ -233,6 +233,7 @@ class SymbolState:
         self.contract_value = 1.0
         self.is_inverse = False
         self.change_24h = 0.0
+        self.vol_24h = 0  # 24h Volume (in contracts)
 
         self.signal_candle = None
         self.signal_close_ts = None
@@ -392,6 +393,10 @@ class DeltaClient:
                         try:
                             change = float(t.get("ltp_change_24h", 0.0))
                             SYMBOL_STATES[sym].change_24h = change
+
+                            # Parse volume (size = 24h volume in contracts usually)
+                            vol = t.get("size") or t.get("volume") or 0
+                            SYMBOL_STATES[sym].vol_24h = int(vol)
                         except: pass
         except Exception as e:
             log("error", f"Error fetching tickers: {e}")
@@ -811,7 +816,8 @@ def main():
             last = st.data.iloc[-1]
             chg = st.change_24h
             icon = "📈" if chg >= 0 else "📉"
-            print(f"{sym:<12} | LTP: $ {last['close']:,.2f} | 24h Change: {icon} {chg:>+7.2f}% | Vol: {int(last.get('volume', 0)):,}")
+            vol = st.vol_24h
+            print(f"{sym:<12} | LTP: $ {last['close']:,.2f} | 24h Change: {icon} {chg:>+7.2f}% | Vol: {vol:,}")
     print("=" * 70)
     print(f"⏰ TIMEFRAME: {TIMEFRAME_MINUTES} minute candles")
     print(f"   - Each candle represents {TIMEFRAME_MINUTES} minutes of price action")
@@ -911,16 +917,7 @@ def main():
 
                     chg = st.change_24h
                     icon = "📈" if chg >= 0 else "📉"
-
-                    # Handle volume gracefully (can be NaN or None)
-                    vol_val = last.get('volume', 0)
-                    if pd.isna(vol_val):
-                        vol = 0
-                    else:
-                        try:
-                            vol = int(vol_val)
-                        except ValueError:
-                            vol = 0
+                    vol = st.vol_24h
 
                     print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | 24h Change: {icon} {chg:>+7.2f}% | Vol: {vol:,} | Status: {st.status}")
 
