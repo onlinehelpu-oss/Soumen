@@ -477,6 +477,7 @@ def on_completed_candle(symbol, candle):
     st.data = compute_indicators(df)
     st.last_candle_ts = ts
 
+    # print(f"[candle] {symbol} {TIMEFRAME_MIN}m Candle Closed | Close: {candle['close']} | Evaluating Signals...")
     evaluate_on_new_candle(st)
 
 def evaluate_on_new_candle(st):
