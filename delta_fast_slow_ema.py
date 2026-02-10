@@ -115,6 +115,20 @@ def log(tag, message):
     print(f"[{timestamp}] [{tag}] {message}")
 
 
+def format_price(price):
+    if price is None:
+        return "0.00"
+    if price == 0:
+        return "0.00"
+    if abs(price) < 0.0001:
+        return f"{price:.8f}"
+    if abs(price) < 0.01:
+        return f"{price:.6f}"
+    if abs(price) < 1.0:
+        return f"{price:.4f}"
+    return f"{price:,.2f}"
+
+
 # ==============================================================================
 # SERVER SELECTION
 # ==============================================================================
@@ -627,7 +641,7 @@ def evaluate_on_new_candle(st: SymbolState):
             st.status = "entry_pending"
 
             log("signal",
-                f"🔵 ENTRY SIGNAL {st.symbol} | High: {curr_high} | Target: {target:.2f} | Wait for break > High (Expires: {st.signal_expiry})")
+                f"🔵 ENTRY SIGNAL {st.symbol} | High: {format_price(curr_high)} | Target: {format_price(target)} | Wait for break > High (Expires: {st.signal_expiry})")
 
     # EXIT SIGNAL (Red candle close below Exit EMA)
     if st.status == "position":
@@ -641,7 +655,7 @@ def evaluate_on_new_candle(st: SymbolState):
                 "low": curr_low
             }
             st.exit_pending = True
-            log("signal", f"🟠 EXIT SIGNAL {st.symbol} | Low: {curr_low} | Wait for break < Low")
+            log("signal", f"🟠 EXIT SIGNAL {st.symbol} | Low: {format_price(curr_low)} | Wait for break < Low")
 
 
 def on_tick(symbol, ltp, ts):
@@ -725,7 +739,7 @@ def on_tick(symbol, ltp, ts):
             # Round to integer contracts (Delta usually uses integer contracts)
             st.qty = int(st.qty)
 
-            log("trade", f"🚀 [PAPER] ENTER BUY {symbol} @ {ltp} (Trigger {trigger}) | Qty: {st.qty} Contracts")
+            log("trade", f"🚀 [PAPER] ENTER BUY {symbol} @ {format_price(ltp)} (Trigger {format_price(trigger)}) | Qty: {st.qty} Contracts")
             st.status = "position"
             st.target_price = st.potential_target_price
 
@@ -740,7 +754,7 @@ def on_tick(symbol, ltp, ts):
             if not st.data.empty:
                 st.atr_at_entry = st.data.iloc[-1]["atr"]
 
-            log("trade", f"   Target: {st.target_price} | Stop: {st.stop_price}")
+            log("trade", f"   Target: {format_price(st.target_price)} | Stop: {format_price(st.stop_price)}")
             st.signal_candle = None
             POSITION_MANAGER.save_state()
 
@@ -807,7 +821,7 @@ def on_tick(symbol, ltp, ts):
             icon = "✅" if net_pnl >= 0 else "❌"
 
             log("trade",
-                f"{icon} [PAPER] {reason} {symbol} @ {exit_price} | PnL: ${net_pnl:.2f} (Gross: ${gross_pnl:.2f}, Fees: ${total_fee:.2f})")
+                f"{icon} [PAPER] {reason} {symbol} @ {format_price(exit_price)} | PnL: ${net_pnl:.2f} (Gross: ${gross_pnl:.2f}, Fees: ${total_fee:.2f})")
             log("trade", f"   Account Balance: ${PAPER_BALANCE:.2f}")
 
             st.status = "watch"
@@ -821,7 +835,7 @@ def on_tick(symbol, ltp, ts):
             if ltp >= (st.entry_price + dist):
                 st.stop_price = st.entry_price
                 st.sl_trailed = True
-                log("trade", f"🛡️ TRAILING STOP moved to Breakeven {st.entry_price}")
+                log("trade", f"🛡️ TRAILING STOP moved to Breakeven {format_price(st.entry_price)}")
 
 
 # ==============================================================================
@@ -863,8 +877,12 @@ def main():
 
             chg = st.change_24h
             icon = "📈" if chg >= 0 else "📉"
+
+            # Use real-time LTP if available, else last close
+            display_ltp = st.current_ltp if st.current_ltp > 0 else last['close']
+
             print(
-                f"{trend} {sym:<12} | LTP: $ {last['close']:,.2f} | 24h Change: {icon} {chg:>+7.2f}% | Vol: {int(last.get('volume', 0)):,} | Status: {st.status}")
+                f"{trend} {sym:<12} | LTP: $ {format_price(display_ltp)} | 24h Change: {icon} {chg:>+7.2f}% | Vol: {int(last.get('volume', 0)):,} | Status: {st.status}")
     print("=" * 70)
     print(f"⏰ TIMEFRAME: {TIMEFRAME_MINUTES} minute candles")
     print(f"   - Each candle represents {TIMEFRAME_MINUTES} minutes of price action")
@@ -1020,7 +1038,7 @@ def main():
                         # Log
                         chg = st.change_24h
                         icon = "📈" if chg >= 0 else "📉"
-                        print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | 24h: {icon} {chg:>+7.2f}% | Vol: {int(last.get('volume', 0)):,} | Status: {st.status}")
+                        print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {format_price(display_ltp)} | 24h: {icon} {chg:>+7.2f}% | Vol: {int(last.get('volume', 0)):,} | Status: {st.status}")
 
             time.sleep(10) # Fast loop for quick response to termination, but heavy work is throttled
 
