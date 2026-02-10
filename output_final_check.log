@@ -1,0 +1,170 @@
+[2026-02-10 19:43:33] [init] Checking server connectivity...
+[2026-02-10 19:43:35] [init]   - India: 2442.0ms
+[2026-02-10 19:43:35] [init] India server is healthy. Selecting India.
+[2026-02-10 19:43:35] [delta] Fetching product list from https://api.india.delta.exchange...
+[2026-02-10 19:43:35] [delta] Mapped ZROUSD -> ID 26457 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped ETCUSD -> ID 19615 | Val: 0.1 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped IOTAUSD -> ID 49170 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped KSMUSD -> ID 47611 | Val: 0.1 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped OPUSD -> ID 19618 | Val: 0.1 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped UNIUSD -> ID 15303 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped POLUSD -> ID 39943 | Val: 10.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped NEARUSD -> ID 16615 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped ZECUSD -> ID 98573 | Val: 0.1 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped GALAUSD -> ID 27912 | Val: 100.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped DOGEUSD -> ID 14745 | Val: 100.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped BTCUSD -> ID 27 | Val: 0.001 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped ONDOUSD -> ID 19300 | Val: 10.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped SANDUSD -> ID 47597 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped LDOUSD -> ID 19616 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped FILUSD -> ID 19617 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped DYDXUSD -> ID 21526 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped LINKUSD -> ID 15041 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped SUIUSD -> ID 17328 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped INJUSD -> ID 16622 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped STXUSD -> ID 20195 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped WLDUSD -> ID 17326 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped APTUSD -> ID 20196 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped HBARUSD -> ID 18288 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped AVAXUSD -> ID 14830 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped RUNEUSD -> ID 21522 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped CAKEUSD -> ID 62642 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped API3USD -> ID 68177 | Val: 10.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped LTCUSD -> ID 15040 | Val: 0.1 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped BCHUSD -> ID 15001 | Val: 0.01 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped TRXUSD -> ID 20193 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped MANAUSD -> ID 47596 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped AAVEUSD -> ID 19299 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped SEIUSD -> ID 17329 | Val: 10.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped ATOMUSD -> ID 16599 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped ETHUSD -> ID 3136 | Val: 0.01 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped TIAUSD -> ID 17330 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped XRPUSD -> ID 14969 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped SKLUSD -> ID 89749 | Val: 100.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped ADAUSD -> ID 16614 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped ALGOUSD -> ID 16617 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped ARBUSD -> ID 17331 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped BNBUSD -> ID 15042 | Val: 0.1 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped XMRUSD -> ID 116937 | Val: 0.01 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped ENSUSD -> ID 89750 | Val: 0.1 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped JUPUSD -> ID 57814 | Val: 10.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped DOTUSD -> ID 15304 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Mapped SOLUSD -> ID 14823 | Val: 1.0 | Inv: False
+[2026-02-10 19:43:35] [delta] Fetching 24h ticker data from https://api.india.delta.exchange...
+[2026-02-10 19:43:36] [warmup] Fetching historical data...
+[2026-02-10 19:43:36] [warmup] Loaded 999 candles for BTCUSD
+[2026-02-10 19:43:37] [warmup] Loaded 999 candles for ETHUSD
+[2026-02-10 19:43:38] [warmup] Loaded 999 candles for SOLUSD
+[2026-02-10 19:43:39] [warmup] Loaded 999 candles for XRPUSD
+[2026-02-10 19:43:39] [warmup] Loaded 997 candles for BNBUSD
+[2026-02-10 19:43:40] [warmup] Loaded 997 candles for DOGEUSD
+[2026-02-10 19:43:40] [warmup] Loaded 992 candles for ADAUSD
+[2026-02-10 19:43:41] [warmup] Loaded 993 candles for DOTUSD
+[2026-02-10 19:43:42] [warmup] Loaded 998 candles for AVAXUSD
+[2026-02-10 19:43:42] [warmup] Loaded 997 candles for LINKUSD
+[2026-02-10 19:43:42] [warmup] Loaded 999 candles for LTCUSD
+[2026-02-10 19:43:43] [warmup] Loaded 998 candles for BCHUSD
+[2026-02-10 19:43:43] [warmup] Loaded 990 candles for XMRUSD
+[2026-02-10 19:43:44] [warmup] Loaded 992 candles for ATOMUSD
+[2026-02-10 19:43:45] [warmup] Loaded 982 candles for TRXUSD
+[2026-02-10 19:43:46] [warmup] Loaded 993 candles for NEARUSD
+[2026-02-10 19:43:46] [warmup] Loaded 975 candles for FILUSD
+[2026-02-10 19:43:46] [warmup] Loaded 959 candles for APTUSD
+[2026-02-10 19:43:47] [warmup] Loaded 962 candles for INJUSD
+[2026-02-10 19:43:47] [warmup] Loaded 980 candles for STXUSD
+[2026-02-10 19:43:47] [warmup] Loaded 840 candles for ARBUSD
+[2026-02-10 19:43:48] [warmup] Loaded 992 candles for OPUSD
+[2026-02-10 19:43:48] [warmup] Loaded 987 candles for AAVEUSD
+[2026-02-10 19:43:48] [warmup] Loaded 997 candles for UNIUSD
+[2026-02-10 19:43:49] [warmup] Loaded 995 candles for SUIUSD
+[2026-02-10 19:43:49] [warmup] Loaded 962 candles for HBARUSD
+[2026-02-10 19:43:50] [warmup] Loaded 991 candles for ETCUSD
+[2026-02-10 19:43:50] [warmup] Loaded 992 candles for ALGOUSD
+[2026-02-10 19:43:50] [warmup] Loaded 990 candles for POLUSD
+[2026-02-10 19:43:51] [warmup] Loaded 964 candles for TIAUSD
+[2026-02-10 19:43:51] [warmup] Loaded 981 candles for ENSUSD
+[2026-02-10 19:43:51] [warmup] Loaded 985 candles for LDOUSD
+[2026-02-10 19:43:52] [warmup] Loaded 985 candles for GALAUSD
+[2026-02-10 19:43:52] [warmup] Loaded 984 candles for MANAUSD
+[2026-02-10 19:43:52] [warmup] Loaded 993 candles for SANDUSD
+[2026-02-10 19:43:53] [warmup] Loaded 942 candles for CAKEUSD
+[2026-02-10 19:43:53] [warmup] Loaded 917 candles for DYDXUSD
+[2026-02-10 19:43:54] [warmup] Loaded 958 candles for RUNEUSD
+[2026-02-10 19:43:55] [warmup] Loaded 994 candles for ZECUSD
+[2026-02-10 19:43:55] [warmup] Loaded 993 candles for ZROUSD
+[2026-02-10 19:43:56] [warmup] Loaded 970 candles for API3USD
+[2026-02-10 19:43:56] [warmup] Loaded 940 candles for KSMUSD
+[2026-02-10 19:43:57] [warmup] Loaded 933 candles for SKLUSD
+[2026-02-10 19:43:57] [warmup] Loaded 982 candles for IOTAUSD
+[2026-02-10 19:43:58] [warmup] Loaded 970 candles for JUPUSD
+[2026-02-10 19:43:58] [warmup] Loaded 988 candles for WLDUSD
+[2026-02-10 19:43:58] [warmup] Loaded 947 candles for ONDOUSD
+[2026-02-10 19:43:58] [warmup] Loaded 960 candles for SEIUSD
+[2026-02-10 19:43:58] [warmup] Historical data loaded
+[2026-02-10 19:43:58]
+======================================================================
+[2026-02-10 19:43:58] 📊 CURRENT MARKET PRICES (LTP)
+[2026-02-10 19:43:58] ======================================================================
+[2026-02-10 19:43:58] BTCUSD       | LTP: $ 69,182.50 | 24h Change: 📉  -2.33% | Vol: 19,611
+[2026-02-10 19:43:58] ETHUSD       | LTP: $ 2,020.55 | 24h Change: 📉  -5.18% | Vol: 413,074
+[2026-02-10 19:43:58] SOLUSD       | LTP: $ 83.41 | 24h Change: 📉  -5.21% | Vol: 1,456,401
+[2026-02-10 19:43:58] XRPUSD       | LTP: $ 1.41 | 24h Change: 📉  -3.10% | Vol: 32,485,123
+[2026-02-10 19:43:58] BNBUSD       | LTP: $ 619.22 | 24h Change: 📉  -3.51% | Vol: 1,817
+[2026-02-10 19:43:58] DOGEUSD      | LTP: $ 0.09 | 24h Change: 📉  -3.10% | Vol: 14,091,100
+[2026-02-10 19:43:58] ADAUSD       | LTP: $ 0.26 | 24h Change: 📉  -3.15% | Vol: 1,371,358
+[2026-02-10 19:43:58] DOTUSD       | LTP: $ 1.28 | 24h Change: 📉  -3.69% | Vol: 171,035
+[2026-02-10 19:43:58] AVAXUSD      | LTP: $ 8.74 | 24h Change: 📉  -4.25% | Vol: 35,132
+[2026-02-10 19:43:58] LINKUSD      | LTP: $ 8.56 | 24h Change: 📉  -4.47% | Vol: 121,636
+[2026-02-10 19:43:58] LTCUSD       | LTP: $ 53.29 | 24h Change: 📉  -2.79% | Vol: 26,278
+[2026-02-10 19:43:58] BCHUSD       | LTP: $ 519.25 | 24h Change: 📉  -2.72% | Vol: 4,414
+[2026-02-10 19:43:58] XMRUSD       | LTP: $ 325.57 | 24h Change: 📉  -0.14% | Vol: 925
+[2026-02-10 19:43:58] ATOMUSD      | LTP: $ 1.93 | 24h Change: 📉  -1.88% | Vol: 32,775
+[2026-02-10 19:43:58] TRXUSD       | LTP: $ 0.28 | 24h Change: 📉  -0.47% | Vol: 266,984
+[2026-02-10 19:43:58] NEARUSD      | LTP: $ 0.99 | 24h Change: 📉  -4.51% | Vol: 53,452
+[2026-02-10 19:43:58] FILUSD       | LTP: $ 0.89 | 24h Change: 📉  -4.91% | Vol: 9,068
+[2026-02-10 19:43:58] APTUSD       | LTP: $ 0.98 | 24h Change: 📉  -7.03% | Vol: 10,520
+[2026-02-10 19:43:58] INJUSD       | LTP: $ 3.00 | 24h Change: 📉  -5.23% | Vol: 8,442
+[2026-02-10 19:43:58] STXUSD       | LTP: $ 0.25 | 24h Change: 📉  -3.26% | Vol: 37,770
+[2026-02-10 19:43:58] ARBUSD       | LTP: $ 0.11 | 24h Change: 📉  -3.09% | Vol: 134,280
+[2026-02-10 19:43:58] OPUSD        | LTP: $ 0.18 | 24h Change: 📉  -4.26% | Vol: 95,135
+[2026-02-10 19:43:58] AAVEUSD      | LTP: $ 108.69 | 24h Change: 📉  -4.87% | Vol: 4,780
+[2026-02-10 19:43:58] UNIUSD       | LTP: $ 3.36 | 24h Change: 📉  -4.47% | Vol: 247,015
+[2026-02-10 19:43:58] SUIUSD       | LTP: $ 0.92 | 24h Change: 📉  -4.21% | Vol: 417,637
+[2026-02-10 19:43:58] HBARUSD      | LTP: $ 0.09 | 24h Change: 📉  -3.20% | Vol: 608,366
+[2026-02-10 19:43:58] ETCUSD       | LTP: $ 8.33 | 24h Change: 📉  -3.79% | Vol: 19,652
+[2026-02-10 19:43:58] ALGOUSD      | LTP: $ 0.09 | 24h Change: 📉  -5.38% | Vol: 1,241,558
+[2026-02-10 19:43:58] POLUSD       | LTP: $ 0.09 | 24h Change: 📉  -2.99% | Vol: 868,330
+[2026-02-10 19:43:58] TIAUSD       | LTP: $ 0.31 | 24h Change: 📉  -5.63% | Vol: 18,394
+[2026-02-10 19:43:58] ENSUSD       | LTP: $ 5.59 | 24h Change: 📉  -4.72% | Vol: 488
+[2026-02-10 19:43:58] LDOUSD       | LTP: $ 0.34 | 24h Change: 📉  -6.42% | Vol: 5,900
+[2026-02-10 19:43:58] GALAUSD      | LTP: $ 0.00 | 24h Change: 📉  -3.19% | Vol: 922,900
+[2026-02-10 19:43:58] MANAUSD      | LTP: $ 0.10 | 24h Change: 📉  -1.97% | Vol: 23,733
+[2026-02-10 19:43:58] SANDUSD      | LTP: $ 0.09 | 24h Change: 📉  -1.27% | Vol: 30,189
+[2026-02-10 19:43:58] CAKEUSD      | LTP: $ 1.31 | 24h Change: 📉  -4.53% | Vol: 1,193
+[2026-02-10 19:43:58] DYDXUSD      | LTP: $ 0.10 | 24h Change: 📉  -2.86% | Vol: 19,656
+[2026-02-10 19:43:58] RUNEUSD      | LTP: $ 0.40 | 24h Change: 📉  -4.83% | Vol: 86,226
+[2026-02-10 19:43:58] ZECUSD       | LTP: $ 232.38 | 24h Change: 📉  -3.98% | Vol: 5,029
+[2026-02-10 19:43:58] ZROUSD       | LTP: $ 1.74 | 24h Change: 📉  -2.35% | Vol: 402,480
+[2026-02-10 19:43:58] API3USD      | LTP: $ 0.32 | 24h Change: 📉  -3.27% | Vol: 43,060
+[2026-02-10 19:43:58] KSMUSD       | LTP: $ 4.23 | 24h Change: 📉  -4.79% | Vol: 7,713
+[2026-02-10 19:43:58] SKLUSD       | LTP: $ 0.01 | 24h Change: 📉  -4.99% | Vol: 255,600
+[2026-02-10 19:43:58] IOTAUSD      | LTP: $ 0.07 | 24h Change: 📉  -4.88% | Vol: 186,870
+[2026-02-10 19:43:58] JUPUSD       | LTP: $ 0.14 | 24h Change: 📉  -7.09% | Vol: 274,830
+[2026-02-10 19:43:58] WLDUSD       | LTP: $ 0.38 | 24h Change: 📉  -3.18% | Vol: 138,215
+[2026-02-10 19:43:58] ONDOUSD      | LTP: $ 0.24 | 24h Change: 📉  -3.35% | Vol: 60,730
+[2026-02-10 19:43:58] SEIUSD       | LTP: $ 0.07 | 24h Change: 📉  -5.21% | Vol: 68,940
+[2026-02-10 19:43:58] ======================================================================
+[2026-02-10 19:43:58] ⏰ TIMEFRAME: 1 minute candles
+[2026-02-10 19:43:58]    - Each candle represents 1 minutes of price action
+[2026-02-10 19:43:58]    - New candle completes every 1 minutes
+[2026-02-10 19:43:58]    - Strategy: Fast(20) / Slow(50) EMA Crossover
+[2026-02-10 19:43:58]    - Trade Allocation: $275.0 per trade
+[2026-02-10 19:43:58]    - Server: https://api.india.delta.exchange
+[2026-02-10 19:43:58] ======================================================================
+[2026-02-10 19:43:58]
+[2026-02-10 19:43:58] [main] Starting WebSocket connection...
+[2026-02-10 19:43:58] [main] Bot running. Press Ctrl+C to exit.
+[2026-02-10 19:43:58] [sync] Synchronizing with Delta Exchange positions...
+[2026-02-10 19:43:59] [sync] Failed to fetch positions: {'error': {'code': 'ip_not_whitelisted_for_api_key', 'context': {'client_ip': '35.224.132.190'}}, 'success': False}
+[2026-02-10 19:43:59] [ws] Connected to Delta Exchange (wss://socket.india.delta.exchange)
+[2026-02-10 19:43:59] [ws] Subscribed to 48 symbols

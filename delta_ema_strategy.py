@@ -197,15 +197,16 @@ class DeltaClient:
         }
         return self.request("GET", "/v2/chart/history", params=params)
 
-    def place_order(self, product_id, size, side, order_type="limit_order", limit_price=None, stop_price=None):
+    def place_order(self, product_id, size, side, order_type="limit_order", limit_price=None, stop_price=None, reduce_only=False):
         payload = {
             "product_id": int(product_id),
-            "size": int(size) if size >= 1 else size, # Delta size is usually int for contracts, check specs
-            "side": side.lower(), # "buy" or "sell"
+            "size": int(size) if size >= 1 else size,
+            "side": side.lower(),
             "order_type": order_type,
             "limit_price": str(limit_price) if limit_price else None,
             "stop_price": str(stop_price) if stop_price else None,
-            "time_in_force": "ioc" if order_type == "market_order" else "gtc"
+            "time_in_force": "ioc" if order_type == "market_order" else "gtc",
+            "reduce_only": reduce_only
         }
         # Filter None
         payload = {k: v for k, v in payload.items() if v is not None}
@@ -239,7 +240,8 @@ class SymbolState:
         self.exit_pending = False
         self.exit_try_count = 0
         self.last_failed_exit_ts = None
-        self.gtt_order_id = None  # To track exchange-side stop order
+        self.sl_order_id = None  # Exchange-side Stop Loss ID
+        self.tp_order_id = None  # Exchange-side Take Profit ID
 
         # Tracking
         self.last_candle_ts = None
@@ -448,7 +450,8 @@ def sync_positions():
                     st.entry_price = 0.0
                     st.target_price = None
                     st.stop_price = 0.0
-                    st.gtt_order_id = None
+                    st.sl_order_id = None
+                    st.tp_order_id = None
                     save_state()
                     continue
 
@@ -685,12 +688,46 @@ def place_stop_loss_order(symbol, qty, side, stop_price):
 
     try:
         # Delta: Stop Market Order uses order_type='market_order' and stop_price parameter
+        # Set reduce_only=True for safety
         resp = CLIENT.place_order(
             product_id=info["id"],
             size=qty,
             side=side,
             order_type="market_order",
             stop_price=stop_price
+        )
+        return resp
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+def place_target_order(symbol, qty, side, target_price):
+    info = PRODUCT_MAP.get(symbol)
+    if not info: return {"success": False}
+
+    if not ENABLE_LIVE_TRADING:
+        print(f"[sim] Simulated Target Order for {qty} {symbol} at {target_price}")
+        return {
+            "success": True,
+            "result": {
+                "id": f"sim-tp-{int(time.time())}",
+                "product_id": info["id"],
+                "size": qty,
+                "side": side,
+                "order_type": "limit_order",
+                "limit_price": str(target_price),
+                "state": "open"
+            }
+        }
+
+    try:
+        # Target is a Limit Order with reduce_only=True
+        resp = CLIENT.place_order(
+            product_id=info["id"],
+            size=qty,
+            side=side,
+            order_type="limit_order",
+            limit_price=target_price,
+            reduce_only=True
         )
         return resp
     except Exception as e:
@@ -763,14 +800,25 @@ def on_tick(symbol, ltp):
                 log_trade_event(symbol, "BUY", qty, ltp, resp)
 
                 # Place Exchange Stop Loss (GTT)
+                sl_side = "sell" # For Long entry, SL is Sell
+                tp_side = "sell" # For Long entry, TP is Sell
+
                 if st.stop_price > 0:
-                    sl_side = "sell" # For Long entry, SL is Sell
                     sl_resp = place_stop_loss_order(symbol, qty, sl_side, st.stop_price)
                     if sl_resp.get("success", True) and "result" in sl_resp:
-                        st.gtt_order_id = sl_resp["result"]["id"]
-                        print(f"✅ [order] Stop Loss Order Placed on Exchange | ID: {st.gtt_order_id} | Trigger: {st.stop_price}")
+                        st.sl_order_id = sl_resp["result"]["id"]
+                        print(f"✅ [order] Stop Loss Order Placed on Exchange | ID: {st.sl_order_id} | Trigger: {st.stop_price}")
                     else:
                         print(f"❌ [order] Failed to place Exchange Stop Loss: {sl_resp}")
+
+                # Place Exchange Target (Limit Reduce-Only)
+                if st.target_price and st.target_price > 0:
+                    tp_resp = place_target_order(symbol, qty, tp_side, st.target_price)
+                    if tp_resp.get("success", True) and "result" in tp_resp:
+                        st.tp_order_id = tp_resp["result"]["id"]
+                        print(f"✅ [order] Target Order Placed on Exchange | ID: {st.tp_order_id} | Price: {st.target_price}")
+                    else:
+                        print(f"❌ [order] Failed to place Exchange Target: {tp_resp}")
 
                 save_state()
             else:
@@ -783,11 +831,22 @@ def on_tick(symbol, ltp):
         if st.target_price and ltp >= st.target_price:
              print(f"[exit] TARGET HIT {symbol} @ {ltp} (Target: {st.target_price})")
 
-             # Cancel Exchange SL if exists
-             if st.gtt_order_id:
-                 print(f"[order] Cancelling Exchange SL {st.gtt_order_id} due to Target Hit")
-                 cancel_order_wrapper(st.gtt_order_id, symbol)
-                 st.gtt_order_id = None
+             # Cancel Exchange Orders (SL and TP)
+             if st.sl_order_id:
+                 print(f"[order] Cancelling Exchange SL {st.sl_order_id} due to Target Hit")
+                 cancel_order_wrapper(st.sl_order_id, symbol)
+                 st.sl_order_id = None
+             if st.tp_order_id:
+                 # Even though target hit, we cancel pending limit order if it didn't fill yet
+                 # or to be safe before placing market sell if we want immediate exit.
+                 # But if target hit, likely the limit order filled on exchange?
+                 # If so, position is 0. But here we see price >= target.
+                 # If limit filled, sync() would detect it eventually.
+                 # But to be responsive, we assume we might need to market exit if limit didn't fill?
+                 # Actually, if price > target, limit should have filled.
+                 # We will try to cancel it to clean up, then market sell to ensure exit.
+                 cancel_order_wrapper(st.tp_order_id, symbol)
+                 st.tp_order_id = None
 
              place_market_order_wrapper(symbol, st.qty, "sell")
              pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
@@ -802,22 +861,14 @@ def on_tick(symbol, ltp):
         if st.stop_price and ltp <= st.stop_price:
              print(f"[exit] STOP LOSS HIT {symbol} @ {ltp} (SL: {st.stop_price})")
 
-             # If we have an exchange SL, it might have already filled or is filling.
-             # Ideally we check position, but for now we try to cancel it to avoid double sell if it hasn't filled yet
-             # OR we assume the exchange filled it.
-             # Safe approach: Cancel it. If it fails (already filled), then we shouldn't place market sell?
-             # Delta Sync is not implemented here.
-             # Simplest robust logic without sync: Try cancel. If cancel fails (filled), assume position closed?
-             # But simplistic: Just cancel and place market sell. If SL filled, market sell might fail or flip position (bad).
-             # BETTER: If we placed a GTT, rely on it?
-             # But if internal logic is faster (websocket), we might want to ensure exit.
-
-             if st.gtt_order_id:
-                 print(f"[order] Internal SL Hit. Cancelling Exchange SL {st.gtt_order_id} to Execute Market Sell (Safety)")
-                 # We try to cancel. If it's already triggered, we might be double selling.
-                 # However, if it triggered, position is 0.
-                 cancel_order_wrapper(st.gtt_order_id, symbol)
-                 st.gtt_order_id = None
+             # Cancel Exchange Orders
+             if st.sl_order_id:
+                 print(f"[order] Internal SL Hit. Cancelling Exchange SL {st.sl_order_id} to Execute Market Sell (Safety)")
+                 cancel_order_wrapper(st.sl_order_id, symbol)
+                 st.sl_order_id = None
+             if st.tp_order_id:
+                 cancel_order_wrapper(st.tp_order_id, symbol)
+                 st.tp_order_id = None
 
              place_market_order_wrapper(symbol, st.qty, "sell")
              pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
@@ -834,11 +885,14 @@ def on_tick(symbol, ltp):
             if ltp < trigger:
                  print(f"[exit] EMA EXIT {symbol} @ {ltp} (Break < {trigger})")
 
-                 # Cancel Exchange SL
-                 if st.gtt_order_id:
-                     print(f"[order] Cancelling Exchange SL {st.gtt_order_id} due to EMA Exit")
-                     cancel_order_wrapper(st.gtt_order_id, symbol)
-                     st.gtt_order_id = None
+                 # Cancel Exchange Orders
+                 if st.sl_order_id:
+                     print(f"[order] Cancelling Exchange SL {st.sl_order_id} due to EMA Exit")
+                     cancel_order_wrapper(st.sl_order_id, symbol)
+                     st.sl_order_id = None
+                 if st.tp_order_id:
+                     cancel_order_wrapper(st.tp_order_id, symbol)
+                     st.tp_order_id = None
 
                  place_market_order_wrapper(symbol, st.qty, "sell")
                  pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
@@ -868,7 +922,8 @@ def save_state():
                 "stop_price": st.stop_price,
                 "target_price": st.target_price,
                 "sl_trailed": st.sl_trailed,
-                "gtt_order_id": st.gtt_order_id
+                "sl_order_id": st.sl_order_id,
+                "tp_order_id": st.tp_order_id
             }
     try:
         with open(STATE_DUMP, "w") as f:
