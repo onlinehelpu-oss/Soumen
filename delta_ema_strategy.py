@@ -641,6 +641,7 @@ def on_tick(symbol, ltp):
                 if not st.data.empty and "atr" in st.data.columns:
                     st.atr_at_entry = st.data["atr"].iloc[-1]
 
+                print(f"✅ [entry] ORDER FILLED {symbol} | Qty: {qty} | Entry Price: {ltp}")
                 log_trade_event(symbol, "BUY", qty, ltp, resp)
                 save_state()
             else:
@@ -653,6 +654,8 @@ def on_tick(symbol, ltp):
         if st.target_price and ltp >= st.target_price:
              print(f"[exit] TARGET HIT {symbol} @ {ltp} (Target: {st.target_price})")
              place_market_order_wrapper(symbol, st.qty, "sell")
+             pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
+             print(f"✅ [exit] TARGET FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
              st.status = "watch"
              st.qty = 0
              log_trade_event(symbol, "SELL_TARGET", st.qty, ltp, {})
@@ -663,6 +666,8 @@ def on_tick(symbol, ltp):
         if st.stop_price and ltp <= st.stop_price:
              print(f"[exit] STOP LOSS HIT {symbol} @ {ltp} (SL: {st.stop_price})")
              place_market_order_wrapper(symbol, st.qty, "sell")
+             pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
+             print(f"✅ [exit] STOPLOSS FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
              st.status = "watch"
              st.qty = 0
              log_trade_event(symbol, "SELL_SL", st.qty, ltp, {})
@@ -675,6 +680,8 @@ def on_tick(symbol, ltp):
             if ltp < trigger:
                  print(f"[exit] EMA EXIT {symbol} @ {ltp} (Break < {trigger})")
                  place_market_order_wrapper(symbol, st.qty, "sell")
+                 pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
+                 print(f"✅ [exit] EMA EXIT FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
                  st.status = "watch"
                  log_trade_event(symbol, "SELL_EMA", st.qty, ltp, {})
                  save_state()
