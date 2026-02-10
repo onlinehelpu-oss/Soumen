@@ -49,7 +49,7 @@ WS_URL = CONFIG.get("ws_url", "wss://socket.india.delta.exchange")
 API_KEY = CONFIG.get("api_key", "")
 API_SECRET = CONFIG.get("api_secret", "")
 
-SYMBOLS_TO_MONITOR = CONFIG.get("symbols", ["BTCUSD", "ETHUSD", "SOLUSD"])
+SYMBOLS_TO_MONITOR = CONFIG.get("symbols", ["BTCUSD", "PIPPINUSD", "YALAUSD"])
 
 TIMEFRAME_MINUTES = CONFIG.get("timeframe_minutes", 5)
 
