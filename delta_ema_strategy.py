@@ -722,7 +722,29 @@ def load_state():
         except: pass
 
 # ---------------------------- INITIALIZATION ----------------------------
+def parse_args():
+    parser = argparse.ArgumentParser(description="Delta Exchange EMA Strategy Bot")
+    parser.add_argument("--timeframe", type=int, default=TIMEFRAME_MIN, help="Timeframe in minutes (default: 5)")
+    parser.add_argument("--exit-ema", type=int, default=EXIT_EMA, help="Exit EMA period (default: 50)")
+    parser.add_argument("--entry-fast-ema", type=int, default=ENTRY_FAST_EMA, help="Entry Fast EMA period (default: 20)")
+    parser.add_argument("--entry-slow-ema", type=int, default=ENTRY_SLOW_EMA, help="Entry Slow EMA period (default: 50)")
+    parser.add_argument("--min-range-pct", type=float, default=MIN_RANGE_PCT, help="Minimum candle range %% (default: 0.0)")
+    parser.add_argument("--ema-buffer", type=float, default=EMA_BUFFER, help="EMA Buffer (default: 0.0)")
+    parser.add_argument("--trail-atr-mult", type=float, default=TRAIL_ATR_MULT, help="Trailing ATR Multiplier (default: 1.0)")
+    return parser.parse_args()
+
 def main():
+    global TIMEFRAME_MIN, EXIT_EMA, ENTRY_FAST_EMA, ENTRY_SLOW_EMA, MIN_RANGE_PCT, EMA_BUFFER, TRAIL_ATR_MULT
+
+    args = parse_args()
+    TIMEFRAME_MIN = args.timeframe
+    EXIT_EMA = args.exit_ema
+    ENTRY_FAST_EMA = args.entry_fast_ema
+    ENTRY_SLOW_EMA = args.entry_slow_ema
+    MIN_RANGE_PCT = args.min_range_pct
+    EMA_BUFFER = args.ema_buffer
+    TRAIL_ATR_MULT = args.trail_atr_mult
+
     print(f"[init] Checking server connectivity...")
     # Ping or simple get
     try:
