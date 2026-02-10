@@ -21,8 +21,12 @@ from typing import Dict, Optional, List
 def load_config():
     try:
         import os
-        config_path = os.path.join(os.path.dirname(__file__), "config.json")
+        config_path = os.path.join(os.path.dirname(__file__), "delta_ema_config.json")
         print(f"Loading configuration from: {config_path}")
+        if not os.path.exists(config_path):
+            print("Configuration file 'delta_ema_config.json' not found. Using script defaults (5m, Fast 20, Slow 50).")
+            return {}
+
         with open(config_path, "r") as f:
             cfg = json.load(f)
             # Log config but mask sensitive keys
@@ -32,7 +36,7 @@ def load_config():
             print(f"Loaded config: {json.dumps(safe_cfg, indent=2)}")
             return cfg
     except Exception as e:
-        print(f"Error loading config.json: {e}. Using defaults.")
+        print(f"Error loading delta_ema_config.json: {e}. Using defaults.")
         return {}
 
 
