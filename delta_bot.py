@@ -32,7 +32,35 @@ def load_config():
             if os.path.exists(path):
                 with open(path, "r") as f:
                     print(f"[config] Loaded configuration from {path}")
-                    return json.load(f)
+                    config = json.load(f)
+
+                    # Smart Update: Check for stale defaults and auto-update if found
+                    old_symbols = ["BTCUSD", "ETHUSD", "SOLUSD"]
+                    current_symbols = config.get("symbols", [])
+                    current_ema = config.get("strategy", {}).get("entry_slow_ema", 0)
+
+                    # Detect Stale Config (Old Symbols AND Old EMA)
+                    if current_symbols == old_symbols and current_ema == 50:
+                        print("♻️ Detected stale configuration. Auto-updating to user preferences...")
+
+                        # Apply New Defaults
+                        config["symbols"] = ["BTCUSD", "PIPPINUSD", "YALAUSD"]
+                        config["timeframe_minutes"] = 15
+                        if "strategy" not in config: config["strategy"] = {}
+                        config["strategy"]["entry_slow_ema"] = 288
+
+                        if "paper_trading" not in config: config["paper_trading"] = {}
+                        config["paper_trading"]["trade_allocation"] = 280.0
+
+                        # Save updated config back to disk
+                        try:
+                            with open(path, "w") as fw:
+                                json.dump(config, fw, indent=2)
+                            print(f"✅ Auto-updated config.json saved to {path}")
+                        except Exception as w_err:
+                            print(f"⚠️ Failed to save updated config: {w_err}")
+
+                    return config
 
         # If loop finishes without return, file not found
         print("⚠️ config.json not found. Using default settings.")
