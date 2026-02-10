@@ -897,6 +897,9 @@ def main():
                 client.fetch_positions()
                 last_sync_time = current_time
 
+            # Update tickers for 24h change
+            client.fetch_tickers()
+
             log("heartbeat", f"Bot active. Monitoring {len(SYMBOLS_TO_MONITOR)} symbols...")
             for sym in SYMBOLS_TO_MONITOR:
                 st = SYMBOL_STATES[sym]
@@ -905,7 +908,12 @@ def main():
                     trend_val = last.get("supertrend_trend", 0)
                     trend = "🟢" if trend_val == 1 else "🔴"
                     display_ltp = st.current_ltp if st.current_ltp > 0 else last['close']
-                    print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | Status: {st.status}")
+
+                    chg = st.change_24h
+                    icon = "📈" if chg >= 0 else "📉"
+                    vol = int(last.get('volume', 0))
+
+                    print(f"[heartbeat]   {trend} {sym:<12} | LTP: $ {display_ltp:,.2f} | 24h Change: {icon} {chg:>+7.2f}% | Vol: {vol:,} | Status: {st.status}")
 
             # Sleep matching timeframe (User request: "print as per time frame")
             # Wait for TIMEFRAME_MINUTES minutes
