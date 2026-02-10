@@ -909,7 +909,27 @@ def main():
 
     # Heartbeat loop
     while True:
-        time.sleep(300)
+        # Sleep for the strategy timeframe (e.g., 5m -> 300s)
+        time.sleep(TIMEFRAME_MIN * 60)
+
+        # Refresh 24h ticker data via REST to ensure accuracy
+        print(f"[delta] Fetching 24h ticker data from {BASE_URL}...")
+        try:
+            tickers = CLIENT.get_ticker_24h()
+            if tickers and "result" in tickers:
+                for t in tickers["result"]:
+                    sym = t.get("symbol")
+                    if sym in SYMBOL_STATES:
+                        if "close" in t and "open" in t:
+                            c = float(t["close"])
+                            o = float(t["open"])
+                            chg = ((c - o)/o)*100 if o > 0 else 0
+                            SYMBOL_STATES[sym].ltp_change_24h = chg
+                        if "volume" in t:
+                            SYMBOL_STATES[sym].volume_24h = float(t["volume"])
+        except Exception as e:
+            print(f"[delta] Ticker fetch failed: {e}")
+
         print(f"[heartbeat] Bot active. Monitoring {len(SYMBOLS)} symbols...")
         print(f"[heartbeat] 📊 Current Market Prices:")
         for sym in SYMBOLS:
