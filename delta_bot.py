@@ -79,7 +79,7 @@ API_SECRET = CONFIG.get("api_secret", "")
 
 SYMBOLS_TO_MONITOR = CONFIG.get("symbols", ["BTCUSD", "PIPPINUSD", "YALAUSD"])
 
-TIMEFRAME_MINUTES = CONFIG.get("timeframe_minutes", 5)
+TIMEFRAME_MINUTES = CONFIG.get("timeframe_minutes", 15)
 
 def get_resolution_str(minutes):
     if minutes < 60:
@@ -96,7 +96,7 @@ LOOKBACK_CANDLES = CONFIG.get("lookback_candles", 1000)
 
 STRATEGY = CONFIG.get("strategy", {})
 # REMOVED FAST EMA
-ENTRY_SLOW_EMA = STRATEGY.get("entry_slow_ema", 50)
+ENTRY_SLOW_EMA = STRATEGY.get("entry_slow_ema", 288)
 SUPERTREND_PERIOD = STRATEGY.get("supertrend_period", 10)
 SUPERTREND_MULTIPLIER = STRATEGY.get("supertrend_multiplier", 3.0)
 
@@ -113,7 +113,7 @@ PAPER_CFG = CONFIG.get("paper_trading", {})
 PAPER_TRADE = PAPER_CFG.get("enabled", True)
 MAX_CONCURRENT_POS = PAPER_CFG.get("max_concurrent_pos", 3)
 PAPER_BALANCE = PAPER_CFG.get("balance", 10000.0)
-TRADE_ALLOCATION = PAPER_CFG.get("trade_allocation", 275.0)
+TRADE_ALLOCATION = PAPER_CFG.get("trade_allocation", 280.0)
 TAKER_FEE_PCT = PAPER_CFG.get("taker_fee_pct", 0.05) / 100.0
 MAKER_FEE_PCT = PAPER_CFG.get("maker_fee_pct", 0.02) / 100.0
 PAPER_PNL = 0.0
