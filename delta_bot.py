@@ -472,7 +472,7 @@ class DeltaClient:
         # we can still fetch and warn.
 
         if not API_KEY or not API_SECRET:
-            log("sync", "Skipping exchange sync (API Key/Secret not configured)")
+            log("sync", "Skipping exchange sync. Set 'api_key' and 'api_secret' in config.json to detect manual closes.")
             return
 
         log("sync", "Syncing positions with Delta Exchange...")
@@ -809,6 +809,16 @@ def main():
 
     # Sync with exchange (if API keys configured)
     client.fetch_positions()
+
+    # Check for "Blind" Position Tracking (Active local position but no API Sync)
+    active_positions = [s for s, st in SYMBOL_STATES.items() if st.status == "position"]
+    if active_positions and (not API_KEY or not API_SECRET):
+        print("\n" + "!" * 80)
+        print(f"⚠️  CRITICAL WARNING: {len(active_positions)} Active Position(s) Restored ({', '.join(active_positions)})")
+        print("    BUT API Keys are missing! The bot cannot verify if these are still open on Exchange.")
+        print("    If you manually closed them, the bot DOES NOT KNOW and may try to exit again.")
+        print("    ACTION REQUIRED: Configure 'api_key' in config.json OR manually edit bot_state.json.")
+        print("!" * 80 + "\n")
 
     log("warmup", "Fetching historical data...")
     for sym in SYMBOLS_TO_MONITOR:
