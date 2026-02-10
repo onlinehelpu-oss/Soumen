@@ -21,11 +21,25 @@ from urllib.parse import urlparse
 # ==============================================================================
 def load_config():
     try:
-        config_path = os.path.join(os.path.dirname(__file__), "config.json")
-        with open(config_path, "r") as f:
-            return json.load(f)
+        # Try finding config in script directory first
+        paths_to_try = [
+            os.path.join(os.path.dirname(__file__), "config.json"),
+            os.path.join(os.getcwd(), "config.json"),
+            "config.json"
+        ]
+
+        for path in paths_to_try:
+            if os.path.exists(path):
+                with open(path, "r") as f:
+                    print(f"[config] Loaded configuration from {path}")
+                    return json.load(f)
+
+        # If loop finishes without return, file not found
+        print("⚠️ config.json not found. Using default settings.")
+        return {}
+
     except Exception as e:
-        print(f"Error loading config.json: {e}. Using defaults.")
+        print(f"⚠️ Error parsing config.json: {e}. Using defaults.")
         return {}
 
 CONFIG = load_config()
