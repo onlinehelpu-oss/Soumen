@@ -861,7 +861,8 @@ def main():
         if not st.data.empty:
             ltp = st.data.iloc[-1]["close"]
 
-        print(f"{sym:<12} | LTP: $ {ltp:<9.2f} | 24h Change: {icon} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f}")
+        # Format: LTP with commas, Vol with commas
+        print(f"{sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {icon} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f}")
 
     print("="*70)
     print(f"⏰ TIMEFRAME: {TIMEFRAME_MIN} minute candles")
@@ -899,7 +900,7 @@ def main():
                  ltp = st.data.iloc[-1]["close"]
 
              status = st.status
-             print(f"[heartbeat]   {icon} {sym:<12} | LTP: $ {ltp:<9.2f} | 24h Change: {'📈' if chg>=0 else '📉'} {chg:>6.2f}% | Vol: {st.volume_24h:.0f} | Status: {status}")
+             print(f"[heartbeat]   {icon} {sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {'📈' if chg>=0 else '📉'} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f} | Status: {status}")
 
 if __name__ == "__main__":
     main()
