@@ -957,10 +957,11 @@ def parse_args():
     parser.add_argument("--min-range-pct", type=float, default=MIN_RANGE_PCT, help="Minimum candle range %% (default: 0.0)")
     parser.add_argument("--ema-buffer", type=float, default=EMA_BUFFER, help="EMA Buffer (default: 0.0)")
     parser.add_argument("--trail-atr-mult", type=float, default=TRAIL_ATR_MULT, help="Trailing ATR Multiplier (default: 1.0)")
+    parser.add_argument("--allocation", type=float, default=ALLOC_DEFAULT, help="Trade Allocation Amount (default: 275.0)")
     return parser.parse_args()
 
 def main():
-    global TIMEFRAME_MIN, EXIT_EMA, ENTRY_FAST_EMA, ENTRY_SLOW_EMA, MIN_RANGE_PCT, EMA_BUFFER, TRAIL_ATR_MULT
+    global TIMEFRAME_MIN, EXIT_EMA, ENTRY_FAST_EMA, ENTRY_SLOW_EMA, MIN_RANGE_PCT, EMA_BUFFER, TRAIL_ATR_MULT, ALLOC_DEFAULT
 
     args = parse_args()
     TIMEFRAME_MIN = args.timeframe
@@ -970,6 +971,7 @@ def main():
     MIN_RANGE_PCT = args.min_range_pct
     EMA_BUFFER = args.ema_buffer
     TRAIL_ATR_MULT = args.trail_atr_mult
+    ALLOC_DEFAULT = args.allocation
 
     print(f"[init] Checking server connectivity...")
     # Ping or simple get
