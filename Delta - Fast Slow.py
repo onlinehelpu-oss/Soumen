@@ -1212,11 +1212,19 @@ def main():
         chg = st.ltp_change_24h
         icon = "📈" if chg >= 0 else "📉"
         ltp = 0.0
+
+        # Calculate Trend Icon based on EMA crossover
+        # Default to Neutral/Green if no data
+        trend_icon = "🟢"
         if not st.data.empty:
             ltp = st.data.iloc[-1]["close"]
+            last = st.data.iloc[-1]
+            fast = float(last.get("ema_fast_entry", 0))
+            slow = float(last.get("ema_slow_entry", 0))
+            trend_icon = "🟢" if fast > slow else "🔴"
 
         # Format: LTP with commas, Vol with commas
-        print(f"{sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {icon} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f}")
+        print(f"{trend_icon} {sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {icon} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f}")
 
     print("=" * 70)
     print(f"⏰ TIMEFRAME: {TIMEFRAME_MIN} minute candles")
