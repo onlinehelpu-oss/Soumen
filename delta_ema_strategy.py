@@ -101,6 +101,7 @@ STATE_DUMP = "bot_state.json"
 PARTIAL_CANDLES_FILE = "partial_candles.json"
 
 ALLOC_DEFAULT = 275.0  # From log example
+ALLOC_PCT = 0.0 # Percentage of wallet balance to use (0.0 = use fixed ALLOC_DEFAULT)
 SL_MODE = "signal_low"  # or "swing_low"
 SWING_LOOKBACK = 5
 SWING_HIGH_LOOKBACK = 50
@@ -217,6 +218,9 @@ class DeltaClient:
 
     def get_ticker_24h(self):
         return self.request("GET", "/v2/tickers")
+
+    def get_wallet_balances(self):
+        return self.request("GET", "/v2/wallet/balances", auth=True)
 
 # ---------------------------- STATE & MANAGER ----------------------------
 class SymbolState:
@@ -626,12 +630,44 @@ def decide_qty(symbol, price):
 
     c_val = float(info["contract_value"])
 
+    # Determine Allocation Amount
+    alloc_amount = ALLOC_DEFAULT
+
+    if ALLOC_PCT > 0:
+        # Fetch Balance
+        try:
+            bal_resp = CLIENT.get_wallet_balances()
+            if bal_resp and "result" in bal_resp:
+                # Find USDT or relevant asset
+                # Delta wallets often have multiple assets. We assume USDT for Linear.
+                # If Inverse (is_inv=True), we might need BTC/ETH.
+                # Simplification: Look for settling asset. But for now, check USDT first.
+                balance = 0.0
+                target_asset = "USDT" # Default for Linear
+
+                # TODO: Dynamic asset lookup from product specs (settling_asset) if available
+                # info["is_inverse"] helps.
+                if info.get("is_inverse"):
+                    # We don't have easy access to settling asset symbol here, but usually it's the base symbol (BTC)
+                    pass
+
+                for b in bal_resp["result"]:
+                    if b.get("asset_symbol") == target_asset:
+                        balance = float(b.get("available_balance", 0))
+                        break
+
+                if balance > 0:
+                    alloc_amount = balance * (ALLOC_PCT / 100.0)
+                    # print(f"[alloc] Using {ALLOC_PCT}% of {balance} {target_asset} = {alloc_amount}")
+        except Exception as e:
+            print(f"[alloc] Failed to fetch balance for dynamic sizing: {e}")
+
     # Approximation for Delta:
     # Size = Alloc / (Price * Contract_Value)
     try:
         notional_per_contract = price * c_val
         if notional_per_contract <= 0: return 0
-        qty = int(ALLOC_DEFAULT / notional_per_contract)
+        qty = int(alloc_amount / notional_per_contract)
         return max(1, qty)
     except:
         return 0
@@ -958,10 +994,11 @@ def parse_args():
     parser.add_argument("--ema-buffer", type=float, default=EMA_BUFFER, help="EMA Buffer (default: 0.0)")
     parser.add_argument("--trail-atr-mult", type=float, default=TRAIL_ATR_MULT, help="Trailing ATR Multiplier (default: 1.0)")
     parser.add_argument("--allocation", type=float, default=ALLOC_DEFAULT, help="Trade Allocation Amount (default: 275.0)")
+    parser.add_argument("--alloc-pct", type=float, default=ALLOC_PCT, help="Trade Allocation %% of Wallet Balance (default: 0.0, overrides --allocation)")
     return parser.parse_args()
 
 def main():
-    global TIMEFRAME_MIN, EXIT_EMA, ENTRY_FAST_EMA, ENTRY_SLOW_EMA, MIN_RANGE_PCT, EMA_BUFFER, TRAIL_ATR_MULT, ALLOC_DEFAULT
+    global TIMEFRAME_MIN, EXIT_EMA, ENTRY_FAST_EMA, ENTRY_SLOW_EMA, MIN_RANGE_PCT, EMA_BUFFER, TRAIL_ATR_MULT, ALLOC_DEFAULT, ALLOC_PCT
 
     args = parse_args()
     TIMEFRAME_MIN = args.timeframe
@@ -972,6 +1009,7 @@ def main():
     EMA_BUFFER = args.ema_buffer
     TRAIL_ATR_MULT = args.trail_atr_mult
     ALLOC_DEFAULT = args.allocation
+    ALLOC_PCT = args.alloc_pct
 
     print(f"[init] Checking server connectivity...")
     # Ping or simple get
