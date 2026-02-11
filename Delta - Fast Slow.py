@@ -171,7 +171,12 @@ class DeltaClient:
 
         if auth:
             timestamp = str(int(time.time()))
-            signature = self._generate_signature(method, endpoint, payload, timestamp)
+            signature_endpoint = endpoint
+            if params:
+                query_string = urlencode(params)
+                signature_endpoint = f"{endpoint}?{query_string}"
+
+            signature = self._generate_signature(method, signature_endpoint, payload, timestamp)
             headers.update({
                 'api-key': self.api_key,
                 'timestamp': timestamp,
@@ -460,10 +465,11 @@ def sync_positions():
                     broker_map[sym] = qty
                 else:
                     failed_sync.add(sym)
-                    print(f"[sync] Failed to fetch position for {sym}")
+                    print(f"[sync] Failed to fetch position for {sym}: {resp}")
             except Exception as e:
                 failed_sync.add(sym)
                 print(f"[sync] Error fetching position for {sym}: {e}")
+            time.sleep(0.1) # Prevent rate limiting
 
         # Compare with Bot State
         for sym, st in SYMBOL_STATES.items():
