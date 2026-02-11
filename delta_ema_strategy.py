@@ -57,56 +57,91 @@ import numpy as np
 import websocket
 
 # ---------------------------- CONFIGURATION ----------------------------
+# CONFIGURATION LOADER
+CONFIG_FILE = "delta_ema_config.json"
+
+def load_config():
+    default_config = {
+        "api_key": "",
+        "api_secret": "",
+        "base_url": "https://api.india.delta.exchange",
+        "ws_url": "wss://socket.india.delta.exchange",
+        "symbols": ["BTCUSD"],
+        "strategy": {
+            "timeframe_minutes": 5,
+            "exit_ema": 50,
+            "entry_fast_ema": 20,
+            "entry_slow_ema": 50,
+            "ema_buffer": 0.0,
+            "min_range_pct": 0.0,
+            "require_green_signal": True,
+            "sl_mode": "signal_low",
+            "swing_lookback": 5,
+            "swing_high_lookback": 50,
+            "trail_atr_mult": 1.0
+        },
+        "paper_trading": {
+            "enabled": True,
+            "alloc_default": 275.0,
+            "alloc_pct": 0.0
+        }
+    }
+
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                user_config = json.load(f)
+                # Deep update could be better, but simple update works for top level
+                default_config.update(user_config)
+                # Ensure nested dicts are updated too if partial
+                if "strategy" in user_config:
+                    default_config["strategy"].update(user_config["strategy"])
+                if "paper_trading" in user_config:
+                    default_config["paper_trading"].update(user_config["paper_trading"])
+        except Exception as e:
+            print(f"[config] Error loading config file: {e}")
+
+    return default_config
+
+CONFIG = load_config()
+
 # DELTA EXCHANGE CREDENTIALS
-API_KEY = "qnz5G7ullIHIIywNbojX6i2mEfWCKY"
-API_SECRET = "NM0zX5jmDDtLkqAX5qNTyWgLtW5XqTVHZceBl3yCD7FVy0K8r8Dqlxts9oy0"
-
-# --- TRADING ENVIRONMENT ---
-USE_TESTNET = False  # Set True for Testnet
-ENABLE_LIVE_TRADING = True  # Set False for Paper Trading (Simulated Orders)
-
-if USE_TESTNET:
-    BASE_URL = "https://testnet-api.india.delta.exchange"
-    WS_URL = "wss://testnet-socket.india.delta.exchange"
-else:
-    BASE_URL = "https://api.india.delta.exchange"
-    WS_URL = "wss://socket.india.delta.exchange"
+API_KEY = CONFIG.get("api_key", "")
+API_SECRET = CONFIG.get("api_secret", "")
+BASE_URL = CONFIG.get("base_url", "https://api.india.delta.exchange")
+WS_URL = CONFIG.get("ws_url", "wss://socket.india.delta.exchange")
 
 # STRATEGY PARAMETERS
-TIMEFRAME_MIN = 5  # Default 5m as per log example
-EXIT_EMA = 50
-ENTRY_FAST_EMA = 20
-ENTRY_SLOW_EMA = 50
+STRAT = CONFIG.get("strategy", {})
+TIMEFRAME_MIN = int(STRAT.get("timeframe_minutes", 5))
+EXIT_EMA = int(STRAT.get("exit_ema", 50))
+ENTRY_FAST_EMA = int(STRAT.get("entry_fast_ema", 20))
+ENTRY_SLOW_EMA = int(STRAT.get("entry_slow_ema", 50))
+EMA_BUFFER = float(STRAT.get("ema_buffer", 0.0))
+MIN_RANGE_PCT = float(STRAT.get("min_range_pct", 0.0))
+REQUIRE_GREEN_SIGNAL = bool(STRAT.get("require_green_signal", True))
 
-MIN_RANGE_PCT = 0.0
-EMA_BUFFER = 0.0
-REQUIRE_GREEN_SIGNAL = True
+SL_MODE = str(STRAT.get("sl_mode", "signal_low"))
+SWING_LOOKBACK = int(STRAT.get("swing_lookback", 5))
+SWING_HIGH_LOOKBACK = int(STRAT.get("swing_high_lookback", 50))
+TRAIL_ATR_MULT = float(STRAT.get("trail_atr_mult", 1.0))
 
 # SYMBOLS TO TRADE
-SYMBOLS = [
-    "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "BNBUSD",
-    "DOGEUSD", "ADAUSD", "DOTUSD", "AVAXUSD", "LINKUSD",
-    "LTCUSD", "BCHUSD", "XMRUSD", "ATOMUSD", "TRXUSD",
-    "NEARUSD", "FILUSD", "APTUSD", "INJUSD", "STXUSD",
-    "ARBUSD", "OPUSD", "AAVEUSD", "UNIUSD", "SUIUSD",
-    "HBARUSD", "ETCUSD", "ALGOUSD", "POLUSD", "TIAUSD",
-    "ENSUSD", "LDOUSD", "GALAUSD", "MANAUSD", "SANDUSD",
-    "CAKEUSD", "DYDXUSD", "RUNEUSD", "ZECUSD", "ZROUSD",
-    "API3USD", "KSMUSD", "SKLUSD", "IOTAUSD", "JUPUSD",
-    "WLDUSD", "ONDOUSD", "SEIUSD"
-]
+SYMBOLS = CONFIG.get("symbols", [])
+
+# PAPER TRADING
+PAPER = CONFIG.get("paper_trading", {})
+# User config "enabled": false means live trading is enabled.
+# Script variable ENABLE_LIVE_TRADING logic is reversed (True = Live).
+ENABLE_LIVE_TRADING = not bool(PAPER.get("enabled", False))
+ALLOC_DEFAULT = float(PAPER.get("alloc_default", 275.0))
+ALLOC_PCT = float(PAPER.get("alloc_pct", 0.0))
 
 LOG_FILE = "trade_log.csv"
 STATE_DUMP = "bot_state.json"
 PARTIAL_CANDLES_FILE = "partial_candles.json"
 
-ALLOC_DEFAULT = 275.0  # From log example
-ALLOC_PCT = 0.0 # Percentage of wallet balance to use (0.0 = use fixed ALLOC_DEFAULT)
-SL_MODE = "signal_low"  # or "swing_low"
-SWING_LOOKBACK = 5
-SWING_HIGH_LOOKBACK = 50
 MAX_CONCURRENT_POS = 3
-TRAIL_ATR_MULT = 1.0  # Trailing Stop Multiplier
 
 # GLOBAL STATE
 SYMBOL_STATES = {}
@@ -213,8 +248,9 @@ class DeltaClient:
         payload = {k: v for k, v in payload.items() if v is not None}
         return self.request("POST", "/v2/orders", payload=payload, auth=True)
 
-    def get_positions(self):
-        return self.request("GET", "/v2/positions", auth=True)
+    def get_positions(self, product_id):
+        params = {"product_id": product_id}
+        return self.request("GET", "/v2/positions", params=params, auth=True)
 
     def get_ticker_24h(self):
         return self.request("GET", "/v2/tickers")
@@ -420,30 +456,30 @@ def sync_positions():
     if not ENABLE_LIVE_TRADING:
         return
 
-    print("[sync] Synchronizing with Delta Exchange positions...")
-    try:
-        resp = CLIENT.get_positions()
-        if not isinstance(resp, dict) or "result" not in resp:
-            print(f"[sync] Failed to fetch positions: {resp}")
-            return
+    # print("[sync] Synchronizing with Delta Exchange positions...")
 
-        # Map Broker Positions: Symbol -> Quantity (Absolute)
-        broker_map = {}
-        for p in resp["result"]:
-            # Delta returns product_id, size (signed or unsigned depending on field? usually size is +ve, side determines sign)
-            # Actually Delta v2 positions: size is integer (contracts). entry_price, etc.
-            # We need to map product_id back to symbol
-            pid = int(p.get("product_id"))
-            size = int(p.get("size", 0))
+    # Iterate over monitored symbols that we think we have a position in
+    for sym, st in SYMBOL_STATES.items():
+        if st.status == "position":
+            info = PRODUCT_MAP.get(sym)
+            if not info: continue
 
-            sym = ID_TO_SYMBOL.get(pid)
-            if sym:
-                broker_map[sym] = size
+            pid = info["id"]
+            try:
+                # Fetch specific position
+                resp = CLIENT.get_positions(product_id=pid)
 
-        # Compare with Bot State
-        for sym, st in SYMBOL_STATES.items():
-            if st.status == "position":
-                broker_qty = broker_map.get(sym, 0)
+                broker_qty = 0
+                if isinstance(resp, dict) and "result" in resp:
+                    # Result is a list of positions (should be 0 or 1 for specific product_id)
+                    # Delta API returns a list even for specific product_id query
+                    positions = resp["result"]
+                    for p in positions:
+                        # Double check product_id
+                        if int(p.get("product_id")) == int(pid):
+                            broker_qty = int(p.get("size", 0))
+                            break
+
                 bot_qty = st.qty
 
                 # Case 1: Manual Close (Broker has 0, Bot has >0)
@@ -467,17 +503,32 @@ def sync_positions():
                         save_state()
                     else:
                         # Broker > Bot (User added more).
-                        # Requirement: "only monitor that position by this particular bot"
-                        # We ignore the extra quantity and keep managing the original amount?
-                        # OR we update to match?
-                        # Risk: If we only sell 'bot_qty', we leave the manual portion open (Safe).
-                        # If we update 'st.qty = broker_qty', we manage ALL of it.
-                        # User said: "dont close other position".
-                        # So we do NOT update st.qty if broker > bot. We stick to our tracked size.
                         print(f"[sync] ℹ️ External position size larger ({broker_qty}) than bot ({bot_qty}) for {sym}. Ignoring extra.")
 
-    except Exception as e:
-        print(f"[sync] Error during sync: {e}")
+            except Exception as e:
+                print(f"[sync] Error syncing {sym}: {e}")
+
+def compute_swing_low_for_signal(state, lookback):
+    """
+    Computes the lowest low in the lookback period before the signal candle.
+    Used for Stop Loss when SL_MODE = "swing_low".
+    """
+    try:
+        df = state.data
+        if df is None or df.empty:
+            return float("nan")
+
+        # We look at the data leading up to the signal candle
+        # Assuming signal candle is the last completed candle in df
+        # We take the last 'lookback' candles
+
+        if len(df) < lookback:
+            return float(df["low"].min())
+
+        tail = df.iloc[-lookback:]
+        return float(tail["low"].min())
+    except Exception:
+        return float("nan")
 
 def compute_prev_swing_high_for_entry(state, lookback, reference_price):
     df = state.data
@@ -832,8 +883,14 @@ def on_tick(symbol, ltp):
                 # Set Stop Loss
                 if SL_MODE == "signal_low":
                     st.stop_price = st.signal_candle["low"]
+                elif SL_MODE == "swing_low":
+                    swing = compute_swing_low_for_signal(st, SWING_LOOKBACK)
+                    if not math.isnan(swing) and swing > 0:
+                        st.stop_price = swing
+                    else:
+                        st.stop_price = st.signal_candle["low"] # Fallback
                 else:
-                    st.stop_price = st.signal_candle["low"] # Fallback
+                    st.stop_price = st.signal_candle["low"] # Default
 
                 # ATR Trailing setup
                 if not st.data.empty and "atr" in st.data.columns:
