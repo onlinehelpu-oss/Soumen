@@ -456,12 +456,18 @@ def sync_positions():
             try:
                 resp = CLIENT.get_positions(product_id=info["id"])
                 if isinstance(resp, dict) and "result" in resp:
-                    # Default 0 if not found in result list
+                    result_data = resp["result"]
                     qty = 0
-                    for p in resp["result"]:
-                        if int(p.get("product_id")) == int(info["id"]):
-                            qty = int(p.get("size", 0))
-                            break
+
+                    if isinstance(result_data, list):
+                        for p in result_data:
+                            if isinstance(p, dict) and int(p.get("product_id", 0)) == int(info["id"]):
+                                qty = int(p.get("size", 0))
+                                break
+                    elif isinstance(result_data, dict):
+                        if int(result_data.get("product_id", 0)) == int(info["id"]):
+                            qty = int(result_data.get("size", 0))
+
                     broker_map[sym] = qty
                 else:
                     failed_sync.add(sym)
