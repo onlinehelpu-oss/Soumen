@@ -808,6 +808,13 @@ def on_tick(symbol, ltp):
         trigger = st.signal_candle["high"]
         if ltp > trigger:
             qty = decide_qty(symbol, ltp)
+
+            if qty <= 0:
+                print(f"⚠️ [entry] Insufficient balance or allocation for {symbol} (Qty: {qty}). Skipping entry.")
+                st.status = "watch"
+                st.signal_candle = None
+                return
+
             print(f"[entry] Executing BUY {symbol} Qty: {qty} @ {ltp} (Break > {trigger})")
             resp = place_market_order_wrapper(symbol, qty, "buy")
 
