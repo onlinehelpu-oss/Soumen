@@ -67,10 +67,12 @@ ENABLE_LIVE_TRADING = True  # Set False for Paper Trading (Simulated Orders)
 
 if USE_TESTNET:
     BASE_URL = "https://testnet-api.india.delta.exchange"
-    WS_URL = "wss://testnet-socket.india.delta.exchange"
+    WS_URL_INDIA = "wss://testnet-socket.india.delta.exchange"
+    WS_URL_GLOBAL = "wss://testnet-socket.delta.exchange"
 else:
     BASE_URL = "https://api.india.delta.exchange"
-    WS_URL = "wss://socket.india.delta.exchange"
+    WS_URL_INDIA = "wss://socket.india.delta.exchange"
+    WS_URL_GLOBAL = "wss://socket.delta.exchange"
 
 # STRATEGY PARAMETERS
 TIMEFRAME_MIN = 5  # Default 5m as per log example
@@ -358,17 +360,20 @@ def compute_indicators(df):
 
 # ---------------------------- WEBSOCKET ----------------------------
 class DeltaWS:
-    def __init__(self, url, symbols, on_tick_callback):
-        self.url = url
+    def __init__(self, symbols, on_tick_callback):
         self.symbols = symbols
         self.on_tick = on_tick_callback
         self.ws = None
         self.thread = None
         self.should_run = True
+        self.fail_count = 0
+        self.current_url = WS_URL_INDIA # Start with India
 
     def connect(self):
+        # Connection Fallback Logic
+        print(f"[ws] Connecting to {self.current_url}...")
         self.ws = websocket.WebSocketApp(
-            self.url,
+            self.current_url,
             on_open=self.on_open,
             on_message=self.on_message,
             on_error=self.on_error,
@@ -379,7 +384,10 @@ class DeltaWS:
         self.thread.start()
 
     def on_open(self, ws):
-        print(f"[ws] Connected to Delta Exchange ({self.url})")
+        print(f"[ws] Connected to Delta Exchange ({self.current_url})")
+        # Reset fail count on successful connection
+        self.fail_count = 0
+
         # Subscribe to ticker for all symbols
         payload = {
             "type": "subscribe",
@@ -430,8 +438,16 @@ class DeltaWS:
         print(f"[ws] Error: {error}")
 
     def on_close(self, ws, close_status_code, close_msg):
-        # print(f"[ws] Closed: {close_msg}")
         if self.should_run:
+            self.fail_count += 1
+            print(f"[ws] Disconnected. Attempt {self.fail_count}...")
+
+            # Fallback logic
+            if self.fail_count >= 3 and self.current_url == WS_URL_INDIA:
+                print(f"[ws] ⚠️ Repeated failures on India Endpoint. Switching to Global Endpoint...")
+                self.current_url = WS_URL_GLOBAL
+                self.fail_count = 0 # Reset for new endpoint
+
             time.sleep(5)
             self.connect()
 
@@ -501,6 +517,11 @@ def sync_positions():
 
                 # Case 1: Manual Close (Broker has 0, Bot has >0)
                 if broker_qty == 0:
+                    # Check if just entered (within last 30s)
+                    if st.just_entered or (time.time() - st.entry_time < 30):
+                        print(f"[sync] ℹ️ {sym} recently entered. Skipping sync check to avoid race condition.")
+                        continue
+
                     print(f"[sync] ⚠️ Manual Close Detected for {sym}. Resetting bot to WATCH.")
                     st.status = "watch"
                     st.qty = 0
@@ -1269,7 +1290,7 @@ def main():
 
     load_state()
 
-    ws_client = DeltaWS(WS_URL, SYMBOLS, on_tick)
+    ws_client = DeltaWS(SYMBOLS, on_tick)
     print(f"[main] Starting WebSocket connection...")
     print(f"[main] Bot running. Press Ctrl+C to exit.")
     ws_client.connect()
