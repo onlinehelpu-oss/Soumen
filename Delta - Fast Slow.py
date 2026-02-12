@@ -160,22 +160,12 @@ class DeltaClient:
         # Prepare payload string once to ensure consistency between signature and request
         payload_str = ""
         if payload is not None:
-            # Use default json.dumps to match requests behavior or enforce specific format
-            # Ideally, we enforce format and send that string.
-            # Delta API usually expects no spaces in signature generation if we use separators=(',',':')
-            # But the error log showed spaces. Let's stick to consistent string usage.
-            # We will use json.dumps() (with spaces) for both to match standard behavior?
-            # Or better: use no-spaces for both.
+            # Use json.dumps with separators to remove spaces (compact JSON)
             payload_str = json.dumps(payload, separators=(',', ':'))
 
         if auth:
             timestamp = str(int(time.time()))
-            signature_endpoint = endpoint
-            if params:
-                query_string = urlencode(params)
-                signature_endpoint = f"{endpoint}?{query_string}"
-
-            signature = self._generate_signature(method, signature_endpoint, payload_str, timestamp)
+            signature = self._generate_signature(method, endpoint, payload_str, timestamp)
             headers.update({
                 'api-key': self.api_key,
                 'timestamp': timestamp,
@@ -878,7 +868,6 @@ def on_tick(symbol, ltp):
             if success:
                 st.status = "position"
                 st.entry_price = ltp
-                st.entry_time = time.time()  # Track entry time for sync grace period
                 st.qty = qty
                 st.target_price = st.potential_target_price
 
@@ -908,26 +897,15 @@ def on_tick(symbol, ltp):
                     else:
                         print(f"❌ [order] Failed to place Exchange Stop Loss: {sl_resp}")
 
-                # Place Exchange Target (Limit Reduce-Only) with Retry
+                # Place Exchange Target (Limit Reduce-Only)
                 if st.target_price and st.target_price > 0:
-                    for attempt in range(1, 4):
-                        tp_resp = place_target_order(symbol, qty, tp_side, st.target_price)
-                        if tp_resp.get("success", True) and "result" in tp_resp:
-                            st.tp_order_id = tp_resp["result"]["id"]
-                            print(
-                                f"✅ [order] Target Order Placed on Exchange | ID: {st.tp_order_id} | Price: {st.target_price}")
-                            break
-                        else:
-                            # Check for specific "no_position" error
-                            err_code = tp_resp.get("error", {}).get("code")
-                            if err_code == "no_position_for_reduce_only":
-                                print(f"⏳ [order] Exchange hasn't seen position yet (Attempt {attempt}/3). Retrying in 2s...")
-                                time.sleep(2)
-                            else:
-                                print(f"❌ [order] Failed to place Exchange Target: {tp_resp}")
-                                break
+                    tp_resp = place_target_order(symbol, qty, tp_side, st.target_price)
+                    if tp_resp.get("success", True) and "result" in tp_resp:
+                        st.tp_order_id = tp_resp["result"]["id"]
+                        print(
+                            f"✅ [order] Target Order Placed on Exchange | ID: {st.tp_order_id} | Price: {st.target_price}")
                     else:
-                        print(f"❌ [order] Gave up placing Exchange Target after 3 attempts.")
+                        print(f"❌ [order] Failed to place Exchange Target: {tp_resp}")
 
                 save_state()
             else:
@@ -1232,19 +1210,11 @@ def main():
         chg = st.ltp_change_24h
         icon = "📈" if chg >= 0 else "📉"
         ltp = 0.0
-
-        # Calculate Trend Icon based on EMA crossover
-        # Default to Neutral/Green if no data
-        trend_icon = "🟢"
         if not st.data.empty:
             ltp = st.data.iloc[-1]["close"]
-            last = st.data.iloc[-1]
-            fast = float(last.get("ema_fast_entry", 0))
-            slow = float(last.get("ema_slow_entry", 0))
-            trend_icon = "🟢" if fast > slow else "🔴"
 
         # Format: LTP with commas, Vol with commas
-        print(f"{trend_icon} {sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {icon} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f}")
+        print(f"{sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {icon} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f}")
 
     print("=" * 70)
     print(f"⏰ TIMEFRAME: {TIMEFRAME_MIN} minute candles")
