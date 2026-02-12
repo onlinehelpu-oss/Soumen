@@ -485,6 +485,15 @@ def sync_positions():
             # Case 1: Manual Close (Broker has 0, Bot has >0)
             if broker_qty == 0:
                 print(f"[sync] ⚠️ Manual Close Detected for {sym}. Resetting bot to WATCH.")
+
+                # Cancel any pending exchange orders to prevent ghost triggers
+                if st.sl_order_id:
+                    print(f"[sync] Cancelling orphan SL order {st.sl_order_id}")
+                    cancel_order_wrapper(st.sl_order_id, sym)
+                if st.tp_order_id:
+                    print(f"[sync] Cancelling orphan TP order {st.tp_order_id}")
+                    cancel_order_wrapper(st.tp_order_id, sym)
+
                 st.status = "watch"
                 st.qty = 0
                 st.entry_price = 0.0
