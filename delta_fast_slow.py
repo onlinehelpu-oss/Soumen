@@ -177,16 +177,10 @@ class DeltaClient:
             data_str = json.dumps(payload, separators=(',', ':'))
 
         if auth:
-            # If params exist, append them to endpoint for signature generation
-            endpoint_for_sign = endpoint
-            if params:
-                query_string = urlencode(params)
-                endpoint_for_sign = f"{endpoint}?{query_string}"
-
             timestamp = str(int(time.time()))
             # Note: _generate_signature uses payload object, but inside it dumps it with separators=(',', ':')
             # So it matches data_str constructed above.
-            signature = self._generate_signature(method, endpoint_for_sign, payload, timestamp)
+            signature = self._generate_signature(method, endpoint, payload, timestamp)
             headers.update({
                 'api-key': self.api_key,
                 'timestamp': timestamp,
@@ -220,15 +214,6 @@ class DeltaClient:
 
     def place_order(self, product_id, size, side, order_type="limit_order", limit_price=None, stop_price=None,
                     reduce_only=False):
-        # TIF LOGIC FIX: Stop orders (with stop_price) must be GTC, not IOC.
-        # Market orders (no stop_price) can be IOC.
-        if stop_price:
-             time_in_force = "gtc"
-        elif order_type == "market_order":
-             time_in_force = "ioc"
-        else:
-             time_in_force = "gtc"
-
         payload = {
             "product_id": int(product_id),
             "size": int(size) if size >= 1 else size,
@@ -236,7 +221,7 @@ class DeltaClient:
             "order_type": order_type,
             "limit_price": str(limit_price) if limit_price else None,
             "stop_price": str(stop_price) if stop_price else None,
-            "time_in_force": time_in_force,
+            "time_in_force": "ioc" if order_type == "market_order" else "gtc",
             "reduce_only": reduce_only
         }
         # Filter None
@@ -497,6 +482,13 @@ def sync_positions():
             # Case 1: Manual Close (Broker has 0, Bot has >0)
             if broker_qty == 0:
                 print(f"[sync] ⚠️ Manual Close Detected for {sym}. Resetting bot to WATCH.")
+
+                # Cancel lingering orders if any
+                if st.sl_order_id:
+                    cancel_order_wrapper(st.sl_order_id, sym)
+                if st.tp_order_id:
+                    cancel_order_wrapper(st.tp_order_id, sym)
+
                 st.status = "watch"
                 st.qty = 0
                 st.entry_price = 0.0
@@ -534,19 +526,13 @@ def compute_prev_swing_high_for_entry(state, lookback, reference_price):
     if df is None or df.empty:
         return float("nan")
 
-    # FIX: Minimum Target Distance (0.5%)
-    min_dist = 0.005
-    min_target = reference_price * (1 + min_dist)
-
-    # Exclude current signal candle logic if needed, but here we just take tail
+        # Exclude current signal candle logic if needed, but here we just take tail
     # Code-1 logic:
     pivot_width = 2
     highs = df["high"].values[:-1]  # Exclude incomplete/latest? No, assume completed candles.
 
     if len(highs) < lookback:
-        # Fallback to max high, but respect min_target
-        val = float(df["high"].max())
-        return max(val, min_target)
+        return float(df["high"].max())
 
         # We need a bit more history for pivots
     peaks = []
@@ -561,16 +547,13 @@ def compute_prev_swing_high_for_entry(state, lookback, reference_price):
         if is_peak:
             peaks.append(curr)
 
-    # FIX: Filter peaks that are > min_target (not just > reference_price)
-    valid = [p for p in peaks if p > min_target]
+    valid = [p for p in peaks if p > reference_price]
     if valid:
         return valid[-1]  # Most recent
 
     # Fallback to max high in lookback period if no fractal peak found
     recent_highs = highs[-lookback:]
-    fallback_high = float(np.max(recent_highs))
-
-    return max(fallback_high, min_target)
+    return float(np.max(recent_highs))
 
 
 def on_completed_candle(symbol, candle):
@@ -645,7 +628,13 @@ def evaluate_on_new_candle(st):
 
         if cond1 and cond2 and cond3 and cond4 and cond5 and cond_green and ok_signal:
             # Check Target
-            target = compute_prev_swing_high_for_entry(st, SWING_HIGH_LOOKBACK, curr["high"])
+            swing_target = compute_prev_swing_high_for_entry(st, SWING_HIGH_LOOKBACK, curr["high"])
+
+            # Ensure Minimum Risk:Reward (1.5R) to avoid immediate target hit
+            risk = curr["high"] - curr["low"]
+            min_target = curr["high"] + (risk * 1.5)
+            target = max(swing_target, min_target)
+
             if target > curr["high"]:
                 st.signal_candle = {
                     "ts": curr.name, "high": curr["high"], "low": curr["low"]
@@ -736,7 +725,7 @@ def decide_qty(symbol, price):
         return 0
 
 
-def place_market_order_wrapper(symbol, qty, side, reduce_only=False):
+def place_market_order_wrapper(symbol, qty, side):
     info = PRODUCT_MAP.get(symbol)
     if not info: return {"success": False}
 
@@ -761,8 +750,7 @@ def place_market_order_wrapper(symbol, qty, side, reduce_only=False):
             product_id=info["id"],
             size=qty,
             side=side,
-            order_type="market_order",
-            reduce_only=reduce_only
+            order_type="market_order"
         )
         return resp
     except Exception as e:
@@ -790,14 +778,13 @@ def place_stop_loss_order(symbol, qty, side, stop_price):
 
     try:
         # Delta: Stop Market Order uses order_type='market_order' and stop_price parameter
-        # FIX: Set reduce_only=True for safety
+        # Set reduce_only=True for safety
         resp = CLIENT.place_order(
             product_id=info["id"],
             size=qty,
             side=side,
             order_type="market_order",
-            stop_price=stop_price,
-            reduce_only=True
+            stop_price=stop_price
         )
         return resp
     except Exception as e:
@@ -887,9 +874,6 @@ def on_tick(symbol, ltp):
                 success = True
 
             if success:
-                print(f"[entry] Order Success. Waiting 2s for exchange sync...")
-                time.sleep(2) # FIX: Wait for position to register for reduce_only orders
-
                 st.status = "position"
                 st.entry_price = ltp
                 st.qty = qty
@@ -908,35 +892,31 @@ def on_tick(symbol, ltp):
                 print(f"✅ [entry] ORDER FILLED {symbol} | Qty: {qty} | Entry Price: {ltp}")
                 log_trade_event(symbol, "BUY", qty, ltp, resp)
 
+                # Wait for position to register on exchange to avoid 'no_position_for_reduce_only'
+                time.sleep(2)
+
                 # Place Exchange Stop Loss (GTT)
                 sl_side = "sell"  # For Long entry, SL is Sell
                 tp_side = "sell"  # For Long entry, TP is Sell
 
-                # RETRY LOGIC for SL/TP
                 if st.stop_price > 0:
-                    for attempt in range(3):
-                        sl_resp = place_stop_loss_order(symbol, qty, sl_side, st.stop_price)
-                        if sl_resp.get("success", True) and "result" in sl_resp:
-                            st.sl_order_id = sl_resp["result"]["id"]
-                            print(
-                                f"✅ [order] Stop Loss Order Placed on Exchange | ID: {st.sl_order_id} | Trigger: {st.stop_price}")
-                            break
-                        else:
-                            print(f"❌ [order] Failed to place Exchange Stop Loss (Attempt {attempt+1}): {sl_resp}")
-                            time.sleep(1)
+                    sl_resp = place_stop_loss_order(symbol, qty, sl_side, st.stop_price)
+                    if sl_resp.get("success", True) and "result" in sl_resp:
+                        st.sl_order_id = sl_resp["result"]["id"]
+                        print(
+                            f"✅ [order] Stop Loss Order Placed on Exchange | ID: {st.sl_order_id} | Trigger: {st.stop_price}")
+                    else:
+                        print(f"❌ [order] Failed to place Exchange Stop Loss: {sl_resp}")
 
                         # Place Exchange Target (Limit Reduce-Only)
                 if st.target_price and st.target_price > 0:
-                    for attempt in range(3):
-                        tp_resp = place_target_order(symbol, qty, tp_side, st.target_price)
-                        if tp_resp.get("success", True) and "result" in tp_resp:
-                            st.tp_order_id = tp_resp["result"]["id"]
-                            print(
-                                f"✅ [order] Target Order Placed on Exchange | ID: {st.tp_order_id} | Price: {st.target_price}")
-                            break
-                        else:
-                            print(f"❌ [order] Failed to place Exchange Target (Attempt {attempt+1}): {tp_resp}")
-                            time.sleep(1)
+                    tp_resp = place_target_order(symbol, qty, tp_side, st.target_price)
+                    if tp_resp.get("success", True) and "result" in tp_resp:
+                        st.tp_order_id = tp_resp["result"]["id"]
+                        print(
+                            f"✅ [order] Target Order Placed on Exchange | ID: {st.tp_order_id} | Price: {st.target_price}")
+                    else:
+                        print(f"❌ [order] Failed to place Exchange Target: {tp_resp}")
 
                 save_state()
             else:
@@ -966,8 +946,7 @@ def on_tick(symbol, ltp):
                 cancel_order_wrapper(st.tp_order_id, symbol)
                 st.tp_order_id = None
 
-            # FIX: Use reduce_only=True to prevent opening new position if already closed
-            place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
+            place_market_order_wrapper(symbol, st.qty, "sell")
             pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
             print(f"✅ [exit] TARGET FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
             st.status = "watch"
@@ -990,8 +969,7 @@ def on_tick(symbol, ltp):
                 cancel_order_wrapper(st.tp_order_id, symbol)
                 st.tp_order_id = None
 
-            # FIX: Use reduce_only=True
-            place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
+            place_market_order_wrapper(symbol, st.qty, "sell")
             pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
             print(f"✅ [exit] STOPLOSS FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
             st.status = "watch"
@@ -1015,8 +993,7 @@ def on_tick(symbol, ltp):
                     cancel_order_wrapper(st.tp_order_id, symbol)
                     st.tp_order_id = None
 
-                # FIX: Use reduce_only=True
-                place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
+                place_market_order_wrapper(symbol, st.qty, "sell")
                 pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
                 print(f"✅ [exit] EMA EXIT FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
                 st.status = "watch"
