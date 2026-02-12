@@ -472,6 +472,13 @@ def sync_positions():
                     broker_map[sym] = qty
                 else:
                     failed_sync.add(sym)
+                    # Check for IP whitelist error to avoid spamming
+                    err = resp.get("error", {})
+                    if isinstance(err, dict) and err.get("code") == "ip_not_whitelisted_for_api_key":
+                        client_ip = err.get("context", {}).get("client_ip", "Unknown")
+                        print(f"\n⛔ [CRITICAL] IP Not Whitelisted: {client_ip}")
+                        print(f"   Please add this IP to your API Key settings on Delta Exchange.\n")
+                        break  # Stop iterating symbols
                     print(f"[sync] Failed to fetch position for {sym}: {resp}")
             except Exception as e:
                 failed_sync.add(sym)
