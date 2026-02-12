@@ -878,6 +878,7 @@ def on_tick(symbol, ltp):
             if success:
                 st.status = "position"
                 st.entry_price = ltp
+                st.entry_time = time.time()  # Track entry time for sync grace period
                 st.qty = qty
                 st.target_price = st.potential_target_price
 
