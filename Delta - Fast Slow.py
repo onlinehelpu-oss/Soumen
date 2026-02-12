@@ -908,15 +908,26 @@ def on_tick(symbol, ltp):
                     else:
                         print(f"❌ [order] Failed to place Exchange Stop Loss: {sl_resp}")
 
-                # Place Exchange Target (Limit Reduce-Only)
+                # Place Exchange Target (Limit Reduce-Only) with Retry
                 if st.target_price and st.target_price > 0:
-                    tp_resp = place_target_order(symbol, qty, tp_side, st.target_price)
-                    if tp_resp.get("success", True) and "result" in tp_resp:
-                        st.tp_order_id = tp_resp["result"]["id"]
-                        print(
-                            f"✅ [order] Target Order Placed on Exchange | ID: {st.tp_order_id} | Price: {st.target_price}")
+                    for attempt in range(1, 4):
+                        tp_resp = place_target_order(symbol, qty, tp_side, st.target_price)
+                        if tp_resp.get("success", True) and "result" in tp_resp:
+                            st.tp_order_id = tp_resp["result"]["id"]
+                            print(
+                                f"✅ [order] Target Order Placed on Exchange | ID: {st.tp_order_id} | Price: {st.target_price}")
+                            break
+                        else:
+                            # Check for specific "no_position" error
+                            err_code = tp_resp.get("error", {}).get("code")
+                            if err_code == "no_position_for_reduce_only":
+                                print(f"⏳ [order] Exchange hasn't seen position yet (Attempt {attempt}/3). Retrying in 2s...")
+                                time.sleep(2)
+                            else:
+                                print(f"❌ [order] Failed to place Exchange Target: {tp_resp}")
+                                break
                     else:
-                        print(f"❌ [order] Failed to place Exchange Target: {tp_resp}")
+                        print(f"❌ [order] Gave up placing Exchange Target after 3 attempts.")
 
                 save_state()
             else:
