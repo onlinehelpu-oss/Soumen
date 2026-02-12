@@ -391,17 +391,23 @@ class DeltaWS:
                     {
                         "name": "v2/ticker",
                         "symbols": self.symbols
+                    },
+                    {
+                        "name": "all_trades",
+                        "symbols": self.symbols
                     }
                 ]
             }
         }
         ws.send(json.dumps(payload))
-        print(f"[ws] Subscribed to {len(self.symbols)} symbols")
+        print(f"[ws] Subscribed to {len(self.symbols)} symbols (Ticker + All Trades)")
 
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
-            if data.get("type") == "v2/ticker":
+            msg_type = data.get("type")
+
+            if msg_type == "v2/ticker":
                 # Handle tick
                 sym = data.get("symbol")
                 # Delta sends everything as strings mostly
@@ -426,6 +432,16 @@ class DeltaWS:
                                 SYMBOL_STATES[sym].volume_24h = float(data["volume"])
 
                         self.on_tick(sym, ltp)
+
+            elif msg_type == "all_trades":
+                # Real-time trade execution update
+                sym = data.get("symbol")
+                price = data.get("price")
+                if sym and price:
+                    ltp = float(price)
+                    if ltp > 0:
+                        self.on_tick(sym, ltp)
+
         except Exception as e:
             pass
 
