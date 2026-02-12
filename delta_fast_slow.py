@@ -566,9 +566,10 @@ def compute_prev_swing_high_for_entry(state, lookback, reference_price):
     min_target_dist = 0.005 # 0.5%
     min_price = reference_price * (1 + min_target_dist)
 
-    # 1. Try to find recent fractal peaks
+    # 1. Try to find recent fractal peaks within lookback
     peaks = []
-    for i in range(pivot_width, len(highs) - pivot_width):
+    start_index = max(pivot_width, len(highs) - lookback)
+    for i in range(start_index, len(highs) - pivot_width):
         curr = highs[i]
         is_peak = True
         for j in range(1, pivot_width + 1):
