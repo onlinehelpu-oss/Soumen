@@ -168,7 +168,7 @@ class DeltaClient:
 
         # Build URL with params for signature if needed
         # Delta docs say: "The request path is the path part of the URL, e.g. /v2/orders"
-        # Query params are appended to URL but NOT included in signature path usually
+        # However, for GET requests with query params, the query string MUST be part of the signature path.
 
         # Prepare body string for signature and request to ensure consistency
         data_str = None
@@ -177,10 +177,16 @@ class DeltaClient:
             data_str = json.dumps(payload, separators=(',', ':'))
 
         if auth:
+            # If params exist, append them to endpoint for signature generation
+            endpoint_for_sign = endpoint
+            if params:
+                query_string = urlencode(params)
+                endpoint_for_sign = f"{endpoint}?{query_string}"
+
             timestamp = str(int(time.time()))
             # Note: _generate_signature uses payload object, but inside it dumps it with separators=(',', ':')
             # So it matches data_str constructed above.
-            signature = self._generate_signature(method, endpoint, payload, timestamp)
+            signature = self._generate_signature(method, endpoint_for_sign, payload, timestamp)
             headers.update({
                 'api-key': self.api_key,
                 'timestamp': timestamp,
@@ -188,6 +194,7 @@ class DeltaClient:
             })
 
         try:
+            # Pass params to request so it appends them to URL automatically
             resp = self.session.request(method, url, params=params, data=data_str,
                                         headers=headers, timeout=10)
             if resp.status_code not in (200, 201):
