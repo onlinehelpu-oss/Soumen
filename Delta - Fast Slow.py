@@ -165,9 +165,17 @@ class DeltaClient:
         url = f"{self.base_url}{endpoint}"
         headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
 
-        # Build URL with params for signature if needed
-        # Delta docs say: "The request path is the path part of the URL, e.g. /v2/orders"
-        # Query params are appended to URL but NOT included in signature path usually
+        # Construct the full path (including query string) for signature calculation
+        signature_path = endpoint
+
+        # Manually construct query string to ensure consistent sorting and encoding
+        # This fixes the Signature Mismatch error for GET requests with params
+        if params:
+            query_string = urlencode(sorted(params.items()))
+            url = f"{url}?{query_string}"
+            signature_path = f"{endpoint}?{query_string}"
+            # Clear params so requests doesn't re-append them or re-encode them differently
+            params = None
 
         # Prepare body string for signature and request to ensure consistency
         data_str = None
@@ -177,9 +185,8 @@ class DeltaClient:
 
         if auth:
             timestamp = str(int(time.time()))
-            # Note: _generate_signature uses payload object, but inside it dumps it with separators=(',', ':')
-            # So it matches data_str constructed above.
-            signature = self._generate_signature(method, endpoint, payload, timestamp)
+            # Pass the signature_path which includes query params if present
+            signature = self._generate_signature(method, signature_path, payload, timestamp)
             headers.update({
                 'api-key': self.api_key,
                 'timestamp': timestamp,
@@ -187,6 +194,7 @@ class DeltaClient:
             })
 
         try:
+            # Use data_str instead of json=payload to ensure exact string match with signature
             resp = self.session.request(method, url, params=params, data=data_str,
                                         headers=headers, timeout=10)
             if resp.status_code not in (200, 201):
@@ -451,6 +459,7 @@ def sync_positions():
         # Iterate over symbols where we expect a position
         active_symbols = [s for s, st in SYMBOL_STATES.items() if st.status == "position"]
         broker_map = {}
+        synced_symbols = set()
 
         for sym in active_symbols:
             info = PRODUCT_MAP.get(sym)
@@ -458,9 +467,11 @@ def sync_positions():
                 continue
 
             pid = info["id"]
+            # FIX: Pass product_id explicitly to avoid bad_schema error
             resp = CLIENT.get_positions(product_id=pid)
 
             if isinstance(resp, dict) and "result" in resp:
+                synced_symbols.add(sym) # Mark sync as successful
                 for p in resp["result"]:
                     # Ensure we match the product ID
                     if int(p.get("product_id")) == int(pid):
@@ -471,6 +482,10 @@ def sync_positions():
 
         # Compare with Bot State
         for sym in active_symbols:
+            # FIX: Only compare if sync was successful
+            if sym not in synced_symbols:
+                continue
+
             st = SYMBOL_STATES[sym]
             broker_qty = broker_map.get(sym, 0)
             bot_qty = st.qty
@@ -495,14 +510,6 @@ def sync_positions():
                     st.qty = broker_qty
                     save_state()
                 else:
-                    # Broker > Bot (User added more).
-                    # Requirement: "only monitor that position by this particular bot"
-                    # We ignore the extra quantity and keep managing the original amount?
-                    # OR we update to match?
-                    # Risk: If we only sell 'bot_qty', we leave the manual portion open (Safe).
-                    # If we update 'st.qty = broker_qty', we manage ALL of it.
-                    # User said: "dont close other position".
-                    # So we do NOT update st.qty if broker > bot. We stick to our tracked size.
                     print(
                         f"[sync] ℹ️ External position size larger ({broker_qty}) than bot ({bot_qty}) for {sym}. Ignoring extra.")
 
@@ -708,7 +715,7 @@ def decide_qty(symbol, price):
         return 0
 
 
-def place_market_order_wrapper(symbol, qty, side):
+def place_market_order_wrapper(symbol, qty, side, reduce_only=False):
     info = PRODUCT_MAP.get(symbol)
     if not info: return {"success": False}
 
@@ -733,7 +740,8 @@ def place_market_order_wrapper(symbol, qty, side):
             product_id=info["id"],
             size=qty,
             side=side,
-            order_type="market_order"
+            order_type="market_order",
+            reduce_only=reduce_only
         )
         return resp
     except Exception as e:
@@ -767,7 +775,8 @@ def place_stop_loss_order(symbol, qty, side, stop_price):
             size=qty,
             side=side,
             order_type="market_order",
-            stop_price=stop_price
+            stop_price=stop_price,
+            reduce_only=True
         )
         return resp
     except Exception as e:
@@ -875,6 +884,9 @@ def on_tick(symbol, ltp):
                 print(f"✅ [entry] ORDER FILLED {symbol} | Qty: {qty} | Entry Price: {ltp}")
                 log_trade_event(symbol, "BUY", qty, ltp, resp)
 
+                # Wait 1s for position to register on exchange to avoid 'no_position_for_reduce_only'
+                time.sleep(1)
+
                 # Place Exchange Stop Loss (GTT)
                 sl_side = "sell"  # For Long entry, SL is Sell
                 tp_side = "sell"  # For Long entry, TP is Sell
@@ -926,7 +938,8 @@ def on_tick(symbol, ltp):
                 cancel_order_wrapper(st.tp_order_id, symbol)
                 st.tp_order_id = None
 
-            place_market_order_wrapper(symbol, st.qty, "sell")
+            # FIX: Use reduce_only=True to prevent opening Short if position already closed
+            place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
             pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
             print(f"✅ [exit] TARGET FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
             st.status = "watch"
@@ -949,7 +962,8 @@ def on_tick(symbol, ltp):
                 cancel_order_wrapper(st.tp_order_id, symbol)
                 st.tp_order_id = None
 
-            place_market_order_wrapper(symbol, st.qty, "sell")
+            # FIX: Use reduce_only=True
+            place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
             pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
             print(f"✅ [exit] STOPLOSS FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
             st.status = "watch"
@@ -973,7 +987,8 @@ def on_tick(symbol, ltp):
                     cancel_order_wrapper(st.tp_order_id, symbol)
                     st.tp_order_id = None
 
-                place_market_order_wrapper(symbol, st.qty, "sell")
+                # FIX: Use reduce_only=True
+                place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
                 pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
                 print(f"✅ [exit] EMA EXIT FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
                 st.status = "watch"
