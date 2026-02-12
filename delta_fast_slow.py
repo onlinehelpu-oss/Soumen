@@ -58,8 +58,9 @@ import websocket
 
 # ---------------------------- CONFIGURATION ----------------------------
 # DELTA EXCHANGE CREDENTIALS
-API_KEY = "qnz5G7ullIHIIywNbojX6i2mEfWCKY"
-API_SECRET = "NM0zX5jmDDtLkqAX5qNTyWgLtW5XqTVHZceBl3yCD7FVy0K8r8Dqlxts9oy0"
+# Ideally set these in environment variables for security
+API_KEY = os.getenv("DELTA_API_KEY", "qnz5G7ullIHIIywNbojX6i2mEfWCKY")
+API_SECRET = os.getenv("DELTA_API_SECRET", "NM0zX5jmDDtLkqAX5qNTyWgLtW5XqTVHZceBl3yCD7FVy0K8r8Dqlxts9oy0")
 
 # --- TRADING ENVIRONMENT ---
 USE_TESTNET = False  # Set True for Testnet
@@ -554,17 +555,19 @@ def compute_prev_swing_high_for_entry(state, lookback, reference_price):
     if df is None or df.empty:
         return float("nan")
 
-        # Exclude current signal candle logic if needed, but here we just take tail
-    # Code-1 logic:
-    pivot_width = 2
-    highs = df["high"].values[:-1]  # Exclude incomplete/latest? No, assume completed candles.
+    # Exclude current signal candle logic
+    pivot_width = 3
+    highs = df["high"].values[:-1]  # Exclude incomplete/latest
 
     if len(highs) < lookback:
         return float(df["high"].max())
 
-        # We need a bit more history for pivots
+    # Minimum Target Distance (0.5% or at least reasonable scalping distance)
+    min_target_dist = 0.005 # 0.5%
+    min_price = reference_price * (1 + min_target_dist)
+
+    # 1. Try to find recent fractal peaks
     peaks = []
-    # Loop needs enough padding
     for i in range(pivot_width, len(highs) - pivot_width):
         curr = highs[i]
         is_peak = True
@@ -575,13 +578,25 @@ def compute_prev_swing_high_for_entry(state, lookback, reference_price):
         if is_peak:
             peaks.append(curr)
 
-    valid = [p for p in peaks if p > reference_price]
+    # Filter peaks that are too close
+    valid = [p for p in peaks if p > min_price]
     if valid:
-        return valid[-1]  # Most recent
+        # Return the most recent valid peak
+        # Ideally we want the nearest one that is valid? Or the most recent?
+        # Standard swing logic: target next resistance. So lowest valid peak above us.
+        # But `peaks` is time-ordered.
+        # Let's verify recent peaks first.
+        return valid[-1]
 
-    # Fallback to max high in lookback period if no fractal peak found
+    # 2. Fallback: Max high in lookback
     recent_highs = highs[-lookback:]
-    return float(np.max(recent_highs))
+    max_h = float(np.max(recent_highs))
+
+    if max_h > min_price:
+        return max_h
+
+    # 3. Last Resort: Projected Target (1.5% default)
+    return reference_price * 1.015
 
 
 def on_completed_candle(symbol, candle):
