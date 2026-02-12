@@ -157,15 +157,28 @@ class DeltaClient:
         url = f"{self.base_url}{endpoint}"
         headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
 
-        # Prepare payload string once to ensure consistency between signature and request
+        # Prepare payload string once to ensure consistency between signature and request body
         payload_str = ""
         if payload is not None:
-            # Use json.dumps with separators to remove spaces (compact JSON)
+            # Use json.dumps with separators to remove spaces (compact JSON) for signature matching
             payload_str = json.dumps(payload, separators=(',', ':'))
+
+        # Handle query parameters explicitly for signature generation
+        # To avoid mismatch between 'params' encoding by requests and urlencode here,
+        # we manually construct the full URL with query string if params exist.
+        query_string = ""
+        if params:
+            query_string = urlencode(params)
+            # Append query string to endpoint for signature calculation
+            signature_endpoint = f"{endpoint}?{query_string}"
+            # Update URL to include query string
+            url = f"{self.base_url}{signature_endpoint}"
+        else:
+            signature_endpoint = endpoint
 
         if auth:
             timestamp = str(int(time.time()))
-            signature = self._generate_signature(method, endpoint, payload_str, timestamp)
+            signature = self._generate_signature(method, signature_endpoint, payload_str, timestamp)
             headers.update({
                 'api-key': self.api_key,
                 'timestamp': timestamp,
@@ -173,9 +186,11 @@ class DeltaClient:
             })
 
         try:
-            # Pass payload_str directly to data to ensure exact match
+            # Pass payload_str directly to data to ensure exact match with signature
+            # Set params=None because we already appended them to the URL
             data_payload = payload_str if payload is not None else None
-            resp = self.session.request(method, url, params=params, data=data_payload,
+
+            resp = self.session.request(method, url, params=None, data=data_payload,
                                         headers=headers, timeout=10)
             if resp.status_code not in (200, 201):
                 # print(f"[delta] HTTP {resp.status_code}: {resp.text}")
@@ -868,6 +883,7 @@ def on_tick(symbol, ltp):
             if success:
                 st.status = "position"
                 st.entry_price = ltp
+                st.entry_time = time.time()  # Track entry time for sync grace period
                 st.qty = qty
                 st.target_price = st.potential_target_price
 
@@ -899,13 +915,24 @@ def on_tick(symbol, ltp):
 
                 # Place Exchange Target (Limit Reduce-Only)
                 if st.target_price and st.target_price > 0:
-                    tp_resp = place_target_order(symbol, qty, tp_side, st.target_price)
-                    if tp_resp.get("success", True) and "result" in tp_resp:
-                        st.tp_order_id = tp_resp["result"]["id"]
-                        print(
-                            f"✅ [order] Target Order Placed on Exchange | ID: {st.tp_order_id} | Price: {st.target_price}")
+                    for attempt in range(1, 4):
+                        tp_resp = place_target_order(symbol, qty, tp_side, st.target_price)
+                        if tp_resp.get("success", True) and "result" in tp_resp:
+                            st.tp_order_id = tp_resp["result"]["id"]
+                            print(
+                                f"✅ [order] Target Order Placed on Exchange | ID: {st.tp_order_id} | Price: {st.target_price}")
+                            break
+                        else:
+                            # Check for specific "no_position" error
+                            err_code = tp_resp.get("error", {}).get("code")
+                            if err_code == "no_position_for_reduce_only":
+                                print(f"⏳ [order] Exchange hasn't seen position yet (Attempt {attempt}/3). Retrying in 2s...")
+                                time.sleep(2)
+                            else:
+                                print(f"❌ [order] Failed to place Exchange Target: {tp_resp}")
+                                break
                     else:
-                        print(f"❌ [order] Failed to place Exchange Target: {tp_resp}")
+                        print(f"❌ [order] Gave up placing Exchange Target after 3 attempts.")
 
                 save_state()
             else:
@@ -1210,11 +1237,19 @@ def main():
         chg = st.ltp_change_24h
         icon = "📈" if chg >= 0 else "📉"
         ltp = 0.0
+
+        # Calculate Trend Icon based on EMA crossover
+        # Default to Neutral/Green if no data
+        trend_icon = "🟢"
         if not st.data.empty:
             ltp = st.data.iloc[-1]["close"]
+            last = st.data.iloc[-1]
+            fast = float(last.get("ema_fast_entry", 0))
+            slow = float(last.get("ema_slow_entry", 0))
+            trend_icon = "🟢" if fast > slow else "🔴"
 
         # Format: LTP with commas, Vol with commas
-        print(f"{sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {icon} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f}")
+        print(f"{trend_icon} {sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {icon} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f}")
 
     print("=" * 70)
     print(f"⏰ TIMEFRAME: {TIMEFRAME_MIN} minute candles")
