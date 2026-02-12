@@ -673,23 +673,14 @@ def evaluate_on_new_candle(st):
 
                 # EXIT SIGNAL
     if st.status == "position":
-        # Red candle crosses & closes below EXIT EMA
+        # Red candle closes below EXIT EMA
         is_red = curr["close"] < curr["open"]
-        # crossed_below = (curr["open"] > ema_exit) and (curr["close"] < ema_exit) # Simple cross check
-
-        # Code-1 logic:
-        # intrabar_up = (curr_open < ema_exit) and (curr_high > ema_exit)
-        # closed_below = curr_close < ema_exit - EMA_BUFFER
-        # is_red = curr_close < curr_open
-
-        intrabar_up = (curr["open"] < ema_exit) and (curr["high"] > ema_exit)  # This was the Code-1 logic...
-        # Wait, Code-1 logic for intrabar_up: (curr_open < ema_exit) and (curr_high > ema_exit)
-        # This means the candle opened BELOW EMA, went ABOVE EMA (touched it), and then closed BELOW EMA.
-        # This signifies a rejection from the EMA.
-
         closed_below = curr["close"] < (ema_exit - EMA_BUFFER)
 
-        if is_red and intrabar_up and closed_below:
+        # Previous logic required intrabar rejection (open < ema and high > ema)
+        # New logic: Just Red candle close < EMA Exit
+
+        if is_red and closed_below:
             st.exit_pending = True
             st.exit_signal_candle = {"low": curr["low"]}
             print(f"[exit-signal] 🔴 EXIT SIGNAL {st.symbol} | Low: {curr['low']} | Wait for break < Low")
