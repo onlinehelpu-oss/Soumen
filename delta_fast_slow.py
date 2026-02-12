@@ -58,8 +58,8 @@ import websocket
 
 # ---------------------------- CONFIGURATION ----------------------------
 # DELTA EXCHANGE CREDENTIALS
-API_KEY = "qnz5G7ullIHIIywNbojX6i2mEfWCKY"
-API_SECRET = "NM0zX5jmDDtLkqAX5qNTyWgLtW5XqTVHZceBl3yCD7FVy0K8r8Dqlxts9oy0"
+API_KEY = "YOUR_API_KEY_HERE"
+API_SECRET = "YOUR_API_SECRET_HERE"
 
 # --- TRADING ENVIRONMENT ---
 USE_TESTNET = False  # Set True for Testnet
@@ -178,9 +178,16 @@ class DeltaClient:
 
         if auth:
             timestamp = str(int(time.time()))
+
+            # Prepare signature path: endpoint + query_string if params exist
+            signature_path = endpoint
+            if params:
+                query_string = urlencode(params)
+                signature_path = f"{endpoint}?{query_string}"
+
             # Note: _generate_signature uses payload object, but inside it dumps it with separators=(',', ':')
             # So it matches data_str constructed above.
-            signature = self._generate_signature(method, endpoint, payload, timestamp)
+            signature = self._generate_signature(method, signature_path, payload, timestamp)
             headers.update({
                 'api-key': self.api_key,
                 'timestamp': timestamp,
@@ -454,9 +461,10 @@ def sync_positions():
     try:
         # Iterate over symbols where we expect a position
         active_symbols = [s for s, st in SYMBOL_STATES.items() if st.status == "position"]
-        broker_map = {}
 
+        # We process each symbol individually to be safe
         for sym in active_symbols:
+            st = SYMBOL_STATES[sym]
             info = PRODUCT_MAP.get(sym)
             if not info:
                 continue
@@ -464,19 +472,17 @@ def sync_positions():
             pid = info["id"]
             resp = CLIENT.get_positions(product_id=pid)
 
-            if isinstance(resp, dict) and "result" in resp:
-                for p in resp["result"]:
-                    # Ensure we match the product ID
-                    if int(p.get("product_id")) == int(pid):
-                        size = int(p.get("size", 0))
-                        broker_map[sym] = size
-            else:
-                print(f"[sync] Failed to fetch positions for {sym}: {resp}")
+            # Check if API call was successful
+            if not (isinstance(resp, dict) and "result" in resp):
+                print(f"[sync] Failed to fetch positions for {sym}: {resp}. Skipping sync for this symbol.")
+                continue
 
-                # Compare with Bot State
-        for sym in active_symbols:
-            st = SYMBOL_STATES[sym]
-            broker_qty = broker_map.get(sym, 0)
+            # API Call Success -> Calculate Broker Qty
+            broker_qty = 0
+            for p in resp["result"]:
+                if int(p.get("product_id")) == int(pid):
+                    broker_qty = int(p.get("size", 0))
+
             bot_qty = st.qty
 
             # Case 1: Manual Close (Broker has 0, Bot has >0)
@@ -506,14 +512,6 @@ def sync_positions():
                     st.qty = broker_qty
                     save_state()
                 else:
-                    # Broker > Bot (User added more).
-                    # Requirement: "only monitor that position by this particular bot"
-                    # We ignore the extra quantity and keep managing the original amount?
-                    # OR we update to match?
-                    # Risk: If we only sell 'bot_qty', we leave the manual portion open (Safe).
-                    # If we update 'st.qty = broker_qty', we manage ALL of it.
-                    # User said: "dont close other position".
-                    # So we do NOT update st.qty if broker > bot. We stick to our tracked size.
                     print(
                         f"[sync] ℹ️ External position size larger ({broker_qty}) than bot ({bot_qty}) for {sym}. Ignoring extra.")
 
@@ -725,12 +723,12 @@ def decide_qty(symbol, price):
         return 0
 
 
-def place_market_order_wrapper(symbol, qty, side):
+def place_market_order_wrapper(symbol, qty, side, reduce_only=False):
     info = PRODUCT_MAP.get(symbol)
     if not info: return {"success": False}
 
     if not ENABLE_LIVE_TRADING:
-        print(f"[sim] Simulated {side.upper()} Order for {qty} {symbol} placed successfully.")
+        print(f"[sim] Simulated {side.upper()} Order for {qty} {symbol} placed successfully. Reduce Only: {reduce_only}")
         # Return mock success response structure similar to Delta API
         return {
             "success": True,
@@ -741,6 +739,7 @@ def place_market_order_wrapper(symbol, qty, side):
                 "side": side,
                 "order_type": "market_order",
                 "state": "closed",
+                "reduce_only": reduce_only,
                 "average_price": "0"  # Will be updated with LTP in real logic
             }
         }
@@ -750,7 +749,8 @@ def place_market_order_wrapper(symbol, qty, side):
             product_id=info["id"],
             size=qty,
             side=side,
-            order_type="market_order"
+            order_type="market_order",
+            reduce_only=reduce_only
         )
         return resp
     except Exception as e:
@@ -946,7 +946,7 @@ def on_tick(symbol, ltp):
                 cancel_order_wrapper(st.tp_order_id, symbol)
                 st.tp_order_id = None
 
-            place_market_order_wrapper(symbol, st.qty, "sell")
+            place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
             pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
             print(f"✅ [exit] TARGET FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
             st.status = "watch"
@@ -969,7 +969,7 @@ def on_tick(symbol, ltp):
                 cancel_order_wrapper(st.tp_order_id, symbol)
                 st.tp_order_id = None
 
-            place_market_order_wrapper(symbol, st.qty, "sell")
+            place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
             pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
             print(f"✅ [exit] STOPLOSS FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
             st.status = "watch"
@@ -993,7 +993,7 @@ def on_tick(symbol, ltp):
                     cancel_order_wrapper(st.tp_order_id, symbol)
                     st.tp_order_id = None
 
-                place_market_order_wrapper(symbol, st.qty, "sell")
+                place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
                 pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
                 print(f"✅ [exit] EMA EXIT FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
                 st.status = "watch"
@@ -1001,13 +1001,27 @@ def on_tick(symbol, ltp):
                 save_state()
                 return
 
-                # Trailing SL
+        # Trailing SL (Move to Breakeven)
         if TRAIL_ATR_MULT and st.atr_at_entry > 0 and not st.sl_trailed:
             dist = st.atr_at_entry * TRAIL_ATR_MULT
             if ltp >= (st.entry_price + dist):
-                print(f"[trail] Moving SL to Entry for {symbol}")
+                print(f"[trail] Moving SL to Breakeven for {symbol} @ {st.entry_price}")
                 st.stop_price = st.entry_price
                 st.sl_trailed = True
+
+                # Update Exchange Order
+                if st.sl_order_id:
+                    print(f"[trail] Cancelling Old Exchange SL {st.sl_order_id}...")
+                    cancel_order_wrapper(st.sl_order_id, symbol)
+
+                # Place New SL at Entry Price
+                sl_side = "sell" # Long only strategy
+                sl_resp = place_stop_loss_order(symbol, st.qty, sl_side, st.stop_price)
+                if sl_resp.get("success", True) and "result" in sl_resp:
+                    st.sl_order_id = sl_resp["result"]["id"]
+                    print(f"✅ [trail] Breakeven Stop Loss Placed on Exchange | ID: {st.sl_order_id} | Trigger: {st.stop_price}")
+                else:
+                    print(f"❌ [trail] Failed to place Breakeven SL: {sl_resp}")
 
 
 def save_state():
