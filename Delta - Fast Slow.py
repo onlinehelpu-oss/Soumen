@@ -143,17 +143,9 @@ class DeltaClient:
         self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
 
-    def _generate_signature(self, method, endpoint, payload, timestamp):
-        # Signature string: method + timestamp + endpoint + payload
-        # Payload is empty string if None, else JSON string
-        body_str = ""
-        if payload is not None:
-            if isinstance(payload, dict):
-                body_str = json.dumps(payload, separators=(',', ':'))
-            else:
-                body_str = str(payload)
-
-        msg = f"{method}{timestamp}{endpoint}{body_str}"
+    def _generate_signature(self, method, endpoint, payload_str, timestamp):
+        # Signature string: method + timestamp + endpoint + payload_str
+        msg = f"{method}{timestamp}{endpoint}{payload_str}"
         signature = hmac.new(
             self.api_secret.encode('utf-8'),
             msg.encode('utf-8'),
@@ -165,9 +157,16 @@ class DeltaClient:
         url = f"{self.base_url}{endpoint}"
         headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
 
-        # Build URL with params for signature if needed
-        # Delta docs say: "The request path is the path part of the URL, e.g. /v2/orders"
-        # Query params are appended to URL but NOT included in signature path usually
+        # Prepare payload string once to ensure consistency between signature and request
+        payload_str = ""
+        if payload is not None:
+            # Use default json.dumps to match requests behavior or enforce specific format
+            # Ideally, we enforce format and send that string.
+            # Delta API usually expects no spaces in signature generation if we use separators=(',',':')
+            # But the error log showed spaces. Let's stick to consistent string usage.
+            # We will use json.dumps() (with spaces) for both to match standard behavior?
+            # Or better: use no-spaces for both.
+            payload_str = json.dumps(payload, separators=(',', ':'))
 
         if auth:
             timestamp = str(int(time.time()))
@@ -176,7 +175,7 @@ class DeltaClient:
                 query_string = urlencode(params)
                 signature_endpoint = f"{endpoint}?{query_string}"
 
-            signature = self._generate_signature(method, signature_endpoint, payload, timestamp)
+            signature = self._generate_signature(method, signature_endpoint, payload_str, timestamp)
             headers.update({
                 'api-key': self.api_key,
                 'timestamp': timestamp,
@@ -184,7 +183,9 @@ class DeltaClient:
             })
 
         try:
-            resp = self.session.request(method, url, params=params, data=json.dumps(payload) if payload else None,
+            # Pass payload_str directly to data to ensure exact match
+            data_payload = payload_str if payload is not None else None
+            resp = self.session.request(method, url, params=params, data=data_payload,
                                         headers=headers, timeout=10)
             if resp.status_code not in (200, 201):
                 # print(f"[delta] HTTP {resp.status_code}: {resp.text}")
