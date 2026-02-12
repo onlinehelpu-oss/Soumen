@@ -143,9 +143,17 @@ class DeltaClient:
         self.base_url = base_url.rstrip('/')
         self.session = requests.Session()
 
-    def _generate_signature(self, method, endpoint, payload_str, timestamp):
-        # Signature string: method + timestamp + endpoint + payload_str
-        msg = f"{method}{timestamp}{endpoint}{payload_str}"
+    def _generate_signature(self, method, endpoint, payload, timestamp):
+        # Signature string: method + timestamp + endpoint + payload
+        # Payload is empty string if None, else JSON string
+        body_str = ""
+        if payload is not None:
+            if isinstance(payload, dict):
+                body_str = json.dumps(payload, separators=(',', ':'))
+            else:
+                body_str = str(payload)
+
+        msg = f"{method}{timestamp}{endpoint}{body_str}"
         signature = hmac.new(
             self.api_secret.encode('utf-8'),
             msg.encode('utf-8'),
@@ -157,28 +165,21 @@ class DeltaClient:
         url = f"{self.base_url}{endpoint}"
         headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
 
-        # Prepare payload string once to ensure consistency between signature and request body
-        payload_str = ""
-        if payload is not None:
-            # Use json.dumps with separators to remove spaces (compact JSON) for signature matching
-            payload_str = json.dumps(payload, separators=(',', ':'))
+        # Build URL with params for signature if needed
+        # Delta docs say: "The request path is the path part of the URL, e.g. /v2/orders"
+        # Query params are appended to URL but NOT included in signature path usually
 
-        # Handle query parameters explicitly for signature generation
-        # To avoid mismatch between 'params' encoding by requests and urlencode here,
-        # we manually construct the full URL with query string if params exist.
-        query_string = ""
-        if params:
-            query_string = urlencode(params)
-            # Append query string to endpoint for signature calculation
-            signature_endpoint = f"{endpoint}?{query_string}"
-            # Update URL to include query string
-            url = f"{self.base_url}{signature_endpoint}"
-        else:
-            signature_endpoint = endpoint
+        # Prepare body string for signature and request to ensure consistency
+        data_str = None
+        if payload is not None:
+            # Use compact separators to match _generate_signature logic
+            data_str = json.dumps(payload, separators=(',', ':'))
 
         if auth:
             timestamp = str(int(time.time()))
-            signature = self._generate_signature(method, signature_endpoint, payload_str, timestamp)
+            # Note: _generate_signature uses payload object, but inside it dumps it with separators=(',', ':')
+            # So it matches data_str constructed above.
+            signature = self._generate_signature(method, endpoint, payload, timestamp)
             headers.update({
                 'api-key': self.api_key,
                 'timestamp': timestamp,
@@ -186,11 +187,7 @@ class DeltaClient:
             })
 
         try:
-            # Pass payload_str directly to data to ensure exact match with signature
-            # Set params=None because we already appended them to the URL
-            data_payload = payload_str if payload is not None else None
-
-            resp = self.session.request(method, url, params=None, data=data_payload,
+            resp = self.session.request(method, url, params=params, data=data_str,
                                         headers=headers, timeout=10)
             if resp.status_code not in (200, 201):
                 # print(f"[delta] HTTP {resp.status_code}: {resp.text}")
@@ -233,7 +230,7 @@ class DeltaClient:
     def get_positions(self, product_id=None):
         params = {}
         if product_id:
-            params['product_id'] = product_id
+            params["product_id"] = product_id
         return self.request("GET", "/v2/positions", params=params, auth=True)
 
     def get_ticker_24h(self):
@@ -451,84 +448,63 @@ def sync_positions():
 
     print("[sync] Synchronizing with Delta Exchange positions...")
     try:
-        # Map Broker Positions: Symbol -> Quantity (Absolute)
+        # Iterate over symbols where we expect a position
+        active_symbols = [s for s, st in SYMBOL_STATES.items() if st.status == "position"]
         broker_map = {}
-        failed_sync = set()
 
-        for sym in SYMBOLS:
+        for sym in active_symbols:
             info = PRODUCT_MAP.get(sym)
-            if not info: continue
-
-            try:
-                resp = CLIENT.get_positions(product_id=info["id"])
-                if isinstance(resp, dict) and "result" in resp:
-                    result_data = resp["result"]
-                    qty = 0
-
-                    if isinstance(result_data, list):
-                        for p in result_data:
-                            if isinstance(p, dict) and int(p.get("product_id", 0)) == int(info["id"]):
-                                qty = int(p.get("size", 0))
-                                break
-                    elif isinstance(result_data, dict):
-                        if int(result_data.get("product_id", 0)) == int(info["id"]):
-                            qty = int(result_data.get("size", 0))
-
-                    broker_map[sym] = qty
-                else:
-                    failed_sync.add(sym)
-                    # Check for IP whitelist error to avoid spamming
-                    err = resp.get("error", {})
-                    if isinstance(err, dict) and err.get("code") == "ip_not_whitelisted_for_api_key":
-                        client_ip = err.get("context", {}).get("client_ip", "Unknown")
-                        print(f"\n⛔ [CRITICAL] IP Not Whitelisted: {client_ip}")
-                        print(f"   Please add this IP to your API Key settings on Delta Exchange.\n")
-                        break  # Stop iterating symbols
-                    print(f"[sync] Failed to fetch position for {sym}: {resp}")
-            except Exception as e:
-                failed_sync.add(sym)
-                print(f"[sync] Error fetching position for {sym}: {e}")
-            time.sleep(0.1) # Prevent rate limiting
-
-        # Compare with Bot State
-        for sym, st in SYMBOL_STATES.items():
-            if sym in failed_sync:
+            if not info:
                 continue
 
-            if st.status == "position":
-                broker_qty = broker_map.get(sym, 0)
-                bot_qty = st.qty
+            pid = info["id"]
+            resp = CLIENT.get_positions(product_id=pid)
 
-                # Case 1: Manual Close (Broker has 0, Bot has >0)
-                if broker_qty == 0:
-                    print(f"[sync] ⚠️ Manual Close Detected for {sym}. Resetting bot to WATCH.")
-                    st.status = "watch"
-                    st.qty = 0
-                    st.entry_price = 0.0
-                    st.target_price = None
-                    st.stop_price = 0.0
-                    st.sl_order_id = None
-                    st.tp_order_id = None
+            if isinstance(resp, dict) and "result" in resp:
+                for p in resp["result"]:
+                    # Ensure we match the product ID
+                    if int(p.get("product_id")) == int(pid):
+                        size = int(p.get("size", 0))
+                        broker_map[sym] = size
+            else:
+                print(f"[sync] Failed to fetch positions for {sym}: {resp}")
+
+        # Compare with Bot State
+        for sym in active_symbols:
+            st = SYMBOL_STATES[sym]
+            broker_qty = broker_map.get(sym, 0)
+            bot_qty = st.qty
+
+            # Case 1: Manual Close (Broker has 0, Bot has >0)
+            if broker_qty == 0:
+                print(f"[sync] ⚠️ Manual Close Detected for {sym}. Resetting bot to WATCH.")
+                st.status = "watch"
+                st.qty = 0
+                st.entry_price = 0.0
+                st.target_price = None
+                st.stop_price = 0.0
+                st.sl_order_id = None
+                st.tp_order_id = None
+                save_state()
+                continue
+
+            # Case 2: Quantity Mismatch
+            if broker_qty != bot_qty:
+                if broker_qty < bot_qty:
+                    print(f"[sync] ⚠️ Partial Close Detected for {sym}. Updating Qty: {bot_qty} -> {broker_qty}")
+                    st.qty = broker_qty
                     save_state()
-                    continue
-
-                # Case 2: Quantity Mismatch
-                if broker_qty != bot_qty:
-                    if broker_qty < bot_qty:
-                        print(f"[sync] ⚠️ Partial Close Detected for {sym}. Updating Qty: {bot_qty} -> {broker_qty}")
-                        st.qty = broker_qty
-                        save_state()
-                    else:
-                        # Broker > Bot (User added more).
-                        # Requirement: "only monitor that position by this particular bot"
-                        # We ignore the extra quantity and keep managing the original amount?
-                        # OR we update to match?
-                        # Risk: If we only sell 'bot_qty', we leave the manual portion open (Safe).
-                        # If we update 'st.qty = broker_qty', we manage ALL of it.
-                        # User said: "dont close other position".
-                        # So we do NOT update st.qty if broker > bot. We stick to our tracked size.
-                        print(
-                            f"[sync] ℹ️ External position size larger ({broker_qty}) than bot ({bot_qty}) for {sym}. Ignoring extra.")
+                else:
+                    # Broker > Bot (User added more).
+                    # Requirement: "only monitor that position by this particular bot"
+                    # We ignore the extra quantity and keep managing the original amount?
+                    # OR we update to match?
+                    # Risk: If we only sell 'bot_qty', we leave the manual portion open (Safe).
+                    # If we update 'st.qty = broker_qty', we manage ALL of it.
+                    # User said: "dont close other position".
+                    # So we do NOT update st.qty if broker > bot. We stick to our tracked size.
+                    print(
+                        f"[sync] ℹ️ External position size larger ({broker_qty}) than bot ({bot_qty}) for {sym}. Ignoring extra.")
 
     except Exception as e:
         print(f"[sync] Error during sync: {e}")
@@ -883,7 +859,6 @@ def on_tick(symbol, ltp):
             if success:
                 st.status = "position"
                 st.entry_price = ltp
-                st.entry_time = time.time()  # Track entry time for sync grace period
                 st.qty = qty
                 st.target_price = st.potential_target_price
 
@@ -915,24 +890,13 @@ def on_tick(symbol, ltp):
 
                 # Place Exchange Target (Limit Reduce-Only)
                 if st.target_price and st.target_price > 0:
-                    for attempt in range(1, 4):
-                        tp_resp = place_target_order(symbol, qty, tp_side, st.target_price)
-                        if tp_resp.get("success", True) and "result" in tp_resp:
-                            st.tp_order_id = tp_resp["result"]["id"]
-                            print(
-                                f"✅ [order] Target Order Placed on Exchange | ID: {st.tp_order_id} | Price: {st.target_price}")
-                            break
-                        else:
-                            # Check for specific "no_position" error
-                            err_code = tp_resp.get("error", {}).get("code")
-                            if err_code == "no_position_for_reduce_only":
-                                print(f"⏳ [order] Exchange hasn't seen position yet (Attempt {attempt}/3). Retrying in 2s...")
-                                time.sleep(2)
-                            else:
-                                print(f"❌ [order] Failed to place Exchange Target: {tp_resp}")
-                                break
+                    tp_resp = place_target_order(symbol, qty, tp_side, st.target_price)
+                    if tp_resp.get("success", True) and "result" in tp_resp:
+                        st.tp_order_id = tp_resp["result"]["id"]
+                        print(
+                            f"✅ [order] Target Order Placed on Exchange | ID: {st.tp_order_id} | Price: {st.target_price}")
                     else:
-                        print(f"❌ [order] Gave up placing Exchange Target after 3 attempts.")
+                        print(f"❌ [order] Failed to place Exchange Target: {tp_resp}")
 
                 save_state()
             else:
@@ -1237,19 +1201,11 @@ def main():
         chg = st.ltp_change_24h
         icon = "📈" if chg >= 0 else "📉"
         ltp = 0.0
-
-        # Calculate Trend Icon based on EMA crossover
-        # Default to Neutral/Green if no data
-        trend_icon = "🟢"
         if not st.data.empty:
             ltp = st.data.iloc[-1]["close"]
-            last = st.data.iloc[-1]
-            fast = float(last.get("ema_fast_entry", 0))
-            slow = float(last.get("ema_slow_entry", 0))
-            trend_icon = "🟢" if fast > slow else "🔴"
 
         # Format: LTP with commas, Vol with commas
-        print(f"{trend_icon} {sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {icon} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f}")
+        print(f"{sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {icon} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f}")
 
     print("=" * 70)
     print(f"⏰ TIMEFRAME: {TIMEFRAME_MIN} minute candles")
