@@ -58,8 +58,8 @@ import websocket
 
 # ---------------------------- CONFIGURATION ----------------------------
 # DELTA EXCHANGE CREDENTIALS
-API_KEY = os.getenv("DELTA_API_KEY", "YOUR_API_KEY")
-API_SECRET = os.getenv("DELTA_API_SECRET", "YOUR_API_SECRET")
+API_KEY = "qnz5G7ullIHIIywNbojX6i2mEfWCKY"
+API_SECRET = "NM0zX5jmDDtLkqAX5qNTyWgLtW5XqTVHZceBl3yCD7FVy0K8r8Dqlxts9oy0"
 
 # --- TRADING ENVIRONMENT ---
 USE_TESTNET = False  # Set True for Testnet
