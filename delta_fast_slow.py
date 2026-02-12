@@ -58,9 +58,8 @@ import websocket
 
 # ---------------------------- CONFIGURATION ----------------------------
 # DELTA EXCHANGE CREDENTIALS
-# Ideally set these in environment variables for security
-API_KEY = os.getenv("DELTA_API_KEY", "qnz5G7ullIHIIywNbojX6i2mEfWCKY")
-API_SECRET = os.getenv("DELTA_API_SECRET", "NM0zX5jmDDtLkqAX5qNTyWgLtW5XqTVHZceBl3yCD7FVy0K8r8Dqlxts9oy0")
+API_KEY = "qnz5G7ullIHIIywNbojX6i2mEfWCKY"
+API_SECRET = "NM0zX5jmDDtLkqAX5qNTyWgLtW5XqTVHZceBl3yCD7FVy0K8r8Dqlxts9oy0"
 
 # --- TRADING ENVIRONMENT ---
 USE_TESTNET = False  # Set True for Testnet
@@ -169,7 +168,7 @@ class DeltaClient:
 
         # Build URL with params for signature if needed
         # Delta docs say: "The request path is the path part of the URL, e.g. /v2/orders"
-        # However, for GET requests with query params, the query string MUST be part of the signature path.
+        # Query params are appended to URL but NOT included in signature path usually
 
         # Prepare body string for signature and request to ensure consistency
         data_str = None
@@ -195,7 +194,6 @@ class DeltaClient:
             })
 
         try:
-            # Pass params to request so it appends them to URL automatically
             resp = self.session.request(method, url, params=params, data=data_str,
                                         headers=headers, timeout=10)
             if resp.status_code not in (200, 201):
@@ -221,7 +219,16 @@ class DeltaClient:
         return self.request("GET", "/v2/chart/history", params=params)
 
     def place_order(self, product_id, size, side, order_type="limit_order", limit_price=None, stop_price=None,
-                    stop_order_type=None, reduce_only=False):
+                    reduce_only=False):
+        # TIF LOGIC FIX: Stop orders (with stop_price) must be GTC, not IOC.
+        # Market orders (no stop_price) can be IOC.
+        if stop_price:
+             time_in_force = "gtc"
+        elif order_type == "market_order":
+             time_in_force = "ioc"
+        else:
+             time_in_force = "gtc"
+
         payload = {
             "product_id": int(product_id),
             "size": int(size) if size >= 1 else size,
@@ -229,10 +236,7 @@ class DeltaClient:
             "order_type": order_type,
             "limit_price": str(limit_price) if limit_price else None,
             "stop_price": str(stop_price) if stop_price else None,
-            "stop_order_type": stop_order_type,
-            # For Stop orders (with stop_price), we MUST use GTC.
-            # Only use IOC for plain Market Orders (without stop_price).
-            "time_in_force": "ioc" if (order_type == "market_order" and stop_price is None) else "gtc",
+            "time_in_force": time_in_force,
             "reduce_only": reduce_only
         }
         # Filter None
@@ -399,23 +403,17 @@ class DeltaWS:
                     {
                         "name": "v2/ticker",
                         "symbols": self.symbols
-                    },
-                    {
-                        "name": "all_trades",
-                        "symbols": self.symbols
                     }
                 ]
             }
         }
         ws.send(json.dumps(payload))
-        print(f"[ws] Subscribed to {len(self.symbols)} symbols (Ticker + All Trades)")
+        print(f"[ws] Subscribed to {len(self.symbols)} symbols")
 
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
-            msg_type = data.get("type")
-
-            if msg_type == "v2/ticker":
+            if data.get("type") == "v2/ticker":
                 # Handle tick
                 sym = data.get("symbol")
                 # Delta sends everything as strings mostly
@@ -440,16 +438,6 @@ class DeltaWS:
                                 SYMBOL_STATES[sym].volume_24h = float(data["volume"])
 
                         self.on_tick(sym, ltp)
-
-            elif msg_type == "all_trades":
-                # Real-time trade execution update
-                sym = data.get("symbol")
-                price = data.get("price")
-                if sym and price:
-                    ltp = float(price)
-                    if ltp > 0:
-                        self.on_tick(sym, ltp)
-
         except Exception as e:
             pass
 
@@ -509,15 +497,6 @@ def sync_positions():
             # Case 1: Manual Close (Broker has 0, Bot has >0)
             if broker_qty == 0:
                 print(f"[sync] ⚠️ Manual Close Detected for {sym}. Resetting bot to WATCH.")
-
-                # Cancel any pending exchange orders to prevent ghost triggers
-                if st.sl_order_id:
-                    print(f"[sync] Cancelling orphan SL order {st.sl_order_id}")
-                    cancel_order_wrapper(st.sl_order_id, sym)
-                if st.tp_order_id:
-                    print(f"[sync] Cancelling orphan TP order {st.tp_order_id}")
-                    cancel_order_wrapper(st.tp_order_id, sym)
-
                 st.status = "watch"
                 st.qty = 0
                 st.entry_price = 0.0
@@ -555,21 +534,24 @@ def compute_prev_swing_high_for_entry(state, lookback, reference_price):
     if df is None or df.empty:
         return float("nan")
 
-    # Exclude current signal candle logic
-    pivot_width = 3
-    highs = df["high"].values[:-1]  # Exclude incomplete/latest
+    # FIX: Minimum Target Distance (0.5%)
+    min_dist = 0.005
+    min_target = reference_price * (1 + min_dist)
+
+    # Exclude current signal candle logic if needed, but here we just take tail
+    # Code-1 logic:
+    pivot_width = 2
+    highs = df["high"].values[:-1]  # Exclude incomplete/latest? No, assume completed candles.
 
     if len(highs) < lookback:
-        return float(df["high"].max())
+        # Fallback to max high, but respect min_target
+        val = float(df["high"].max())
+        return max(val, min_target)
 
-    # Minimum Target Distance (0.5% or at least reasonable scalping distance)
-    min_target_dist = 0.005 # 0.5%
-    min_price = reference_price * (1 + min_target_dist)
-
-    # 1. Try to find recent fractal peaks within lookback
+        # We need a bit more history for pivots
     peaks = []
-    start_index = max(pivot_width, len(highs) - lookback)
-    for i in range(start_index, len(highs) - pivot_width):
+    # Loop needs enough padding
+    for i in range(pivot_width, len(highs) - pivot_width):
         curr = highs[i]
         is_peak = True
         for j in range(1, pivot_width + 1):
@@ -579,25 +561,16 @@ def compute_prev_swing_high_for_entry(state, lookback, reference_price):
         if is_peak:
             peaks.append(curr)
 
-    # Filter peaks that are too close
-    valid = [p for p in peaks if p > min_price]
+    # FIX: Filter peaks that are > min_target (not just > reference_price)
+    valid = [p for p in peaks if p > min_target]
     if valid:
-        # Return the most recent valid peak
-        # Ideally we want the nearest one that is valid? Or the most recent?
-        # Standard swing logic: target next resistance. So lowest valid peak above us.
-        # But `peaks` is time-ordered.
-        # Let's verify recent peaks first.
-        return valid[-1]
+        return valid[-1]  # Most recent
 
-    # 2. Fallback: Max high in lookback
+    # Fallback to max high in lookback period if no fractal peak found
     recent_highs = highs[-lookback:]
-    max_h = float(np.max(recent_highs))
+    fallback_high = float(np.max(recent_highs))
 
-    if max_h > min_price:
-        return max_h
-
-    # 3. Last Resort: Projected Target (1.5% default)
-    return reference_price * 1.015
+    return max(fallback_high, min_target)
 
 
 def on_completed_candle(symbol, candle):
@@ -685,18 +658,27 @@ def evaluate_on_new_candle(st):
                 st.qty = 0  # Calculated at entry
 
                 print(
-                    f"[signal] 🔵 ENTRY SIGNAL {st.symbol} | High: {curr['high']:.4f} | Target: {target:.4f} | Wait for break > High (Expires: {st.signal_expiry})")
+                    f"[signal] 🔵 ENTRY SIGNAL {st.symbol} | High: {curr['high']} | Target: {target:.2f} | Wait for break > High (Expires: {st.signal_expiry})")
 
                 # EXIT SIGNAL
     if st.status == "position":
-        # Red candle closes below EXIT EMA
+        # Red candle crosses & closes below EXIT EMA
         is_red = curr["close"] < curr["open"]
+        # crossed_below = (curr["open"] > ema_exit) and (curr["close"] < ema_exit) # Simple cross check
+
+        # Code-1 logic:
+        # intrabar_up = (curr_open < ema_exit) and (curr_high > ema_exit)
+        # closed_below = curr_close < ema_exit - EMA_BUFFER
+        # is_red = curr_close < curr_open
+
+        intrabar_up = (curr["open"] < ema_exit) and (curr["high"] > ema_exit)  # This was the Code-1 logic...
+        # Wait, Code-1 logic for intrabar_up: (curr_open < ema_exit) and (curr_high > ema_exit)
+        # This means the candle opened BELOW EMA, went ABOVE EMA (touched it), and then closed BELOW EMA.
+        # This signifies a rejection from the EMA.
+
         closed_below = curr["close"] < (ema_exit - EMA_BUFFER)
 
-        # Previous logic required intrabar rejection (open < ema and high > ema)
-        # New logic: Just Red candle close < EMA Exit
-
-        if is_red and closed_below:
+        if is_red and intrabar_up and closed_below:
             st.exit_pending = True
             st.exit_signal_candle = {"low": curr["low"]}
             print(f"[exit-signal] 🔴 EXIT SIGNAL {st.symbol} | Low: {curr['low']} | Wait for break < Low")
@@ -754,7 +736,7 @@ def decide_qty(symbol, price):
         return 0
 
 
-def place_market_order_wrapper(symbol, qty, side):
+def place_market_order_wrapper(symbol, qty, side, reduce_only=False):
     info = PRODUCT_MAP.get(symbol)
     if not info: return {"success": False}
 
@@ -779,7 +761,8 @@ def place_market_order_wrapper(symbol, qty, side):
             product_id=info["id"],
             size=qty,
             side=side,
-            order_type="market_order"
+            order_type="market_order",
+            reduce_only=reduce_only
         )
         return resp
     except Exception as e:
@@ -807,14 +790,13 @@ def place_stop_loss_order(symbol, qty, side, stop_price):
 
     try:
         # Delta: Stop Market Order uses order_type='market_order' and stop_price parameter
-        # Set reduce_only=True for safety
+        # FIX: Set reduce_only=True for safety
         resp = CLIENT.place_order(
             product_id=info["id"],
             size=qty,
             side=side,
             order_type="market_order",
             stop_price=stop_price,
-            stop_order_type="stop_loss_order",
             reduce_only=True
         )
         return resp
@@ -905,8 +887,8 @@ def on_tick(symbol, ltp):
                 success = True
 
             if success:
-                # Wait for position update to propagate
-                time.sleep(1)
+                print(f"[entry] Order Success. Waiting 2s for exchange sync...")
+                time.sleep(2) # FIX: Wait for position to register for reduce_only orders
 
                 st.status = "position"
                 st.entry_price = ltp
@@ -930,24 +912,31 @@ def on_tick(symbol, ltp):
                 sl_side = "sell"  # For Long entry, SL is Sell
                 tp_side = "sell"  # For Long entry, TP is Sell
 
+                # RETRY LOGIC for SL/TP
                 if st.stop_price > 0:
-                    sl_resp = place_stop_loss_order(symbol, qty, sl_side, st.stop_price)
-                    if sl_resp.get("success", True) and "result" in sl_resp:
-                        st.sl_order_id = sl_resp["result"]["id"]
-                        print(
-                            f"✅ [order] Stop Loss Order Placed on Exchange | ID: {st.sl_order_id} | Trigger: {st.stop_price}")
-                    else:
-                        print(f"❌ [order] Failed to place Exchange Stop Loss: {sl_resp}")
+                    for attempt in range(3):
+                        sl_resp = place_stop_loss_order(symbol, qty, sl_side, st.stop_price)
+                        if sl_resp.get("success", True) and "result" in sl_resp:
+                            st.sl_order_id = sl_resp["result"]["id"]
+                            print(
+                                f"✅ [order] Stop Loss Order Placed on Exchange | ID: {st.sl_order_id} | Trigger: {st.stop_price}")
+                            break
+                        else:
+                            print(f"❌ [order] Failed to place Exchange Stop Loss (Attempt {attempt+1}): {sl_resp}")
+                            time.sleep(1)
 
                         # Place Exchange Target (Limit Reduce-Only)
                 if st.target_price and st.target_price > 0:
-                    tp_resp = place_target_order(symbol, qty, tp_side, st.target_price)
-                    if tp_resp.get("success", True) and "result" in tp_resp:
-                        st.tp_order_id = tp_resp["result"]["id"]
-                        print(
-                            f"✅ [order] Target Order Placed on Exchange | ID: {st.tp_order_id} | Price: {st.target_price}")
-                    else:
-                        print(f"❌ [order] Failed to place Exchange Target: {tp_resp}")
+                    for attempt in range(3):
+                        tp_resp = place_target_order(symbol, qty, tp_side, st.target_price)
+                        if tp_resp.get("success", True) and "result" in tp_resp:
+                            st.tp_order_id = tp_resp["result"]["id"]
+                            print(
+                                f"✅ [order] Target Order Placed on Exchange | ID: {st.tp_order_id} | Price: {st.target_price}")
+                            break
+                        else:
+                            print(f"❌ [order] Failed to place Exchange Target (Attempt {attempt+1}): {tp_resp}")
+                            time.sleep(1)
 
                 save_state()
             else:
@@ -977,7 +966,8 @@ def on_tick(symbol, ltp):
                 cancel_order_wrapper(st.tp_order_id, symbol)
                 st.tp_order_id = None
 
-            place_market_order_wrapper(symbol, st.qty, "sell")
+            # FIX: Use reduce_only=True to prevent opening new position if already closed
+            place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
             pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
             print(f"✅ [exit] TARGET FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
             st.status = "watch"
@@ -1000,7 +990,8 @@ def on_tick(symbol, ltp):
                 cancel_order_wrapper(st.tp_order_id, symbol)
                 st.tp_order_id = None
 
-            place_market_order_wrapper(symbol, st.qty, "sell")
+            # FIX: Use reduce_only=True
+            place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
             pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
             print(f"✅ [exit] STOPLOSS FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
             st.status = "watch"
@@ -1024,7 +1015,8 @@ def on_tick(symbol, ltp):
                     cancel_order_wrapper(st.tp_order_id, symbol)
                     st.tp_order_id = None
 
-                place_market_order_wrapper(symbol, st.qty, "sell")
+                # FIX: Use reduce_only=True
+                place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
                 pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
                 print(f"✅ [exit] EMA EXIT FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
                 st.status = "watch"
@@ -1257,7 +1249,7 @@ def main():
             ltp = st.data.iloc[-1]["close"]
 
             # Format: LTP with commas, Vol with commas
-        print(f"{sym:<12} | LTP: $ {ltp:,.4f} | 24h Change: {icon} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f}")
+        print(f"{sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {icon} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f}")
 
     print("=" * 70)
     print(f"⏰ TIMEFRAME: {TIMEFRAME_MIN} minute candles")
@@ -1328,7 +1320,7 @@ def main():
 
             status = st.status
             print(
-                f"[heartbeat]   {trend_icon} {sym:<12} | LTP: $ {ltp:,.4f} | 24h Change: {'📈' if chg >= 0 else '📉'} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f} | Status: {status}")
+                f"[heartbeat]   {trend_icon} {sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {'📈' if chg >= 0 else '📉'} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f} | Status: {status}")
 
 
 if __name__ == "__main__":
