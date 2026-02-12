@@ -685,7 +685,7 @@ def evaluate_on_new_candle(st):
                 st.qty = 0  # Calculated at entry
 
                 print(
-                    f"[signal] 🔵 ENTRY SIGNAL {st.symbol} | High: {curr['high']} | Target: {target:.2f} | Wait for break > High (Expires: {st.signal_expiry})")
+                    f"[signal] 🔵 ENTRY SIGNAL {st.symbol} | High: {curr['high']} | Target: {target:.4f} | Wait for break > High (Expires: {st.signal_expiry})")
 
                 # EXIT SIGNAL
     if st.status == "position":
@@ -1257,7 +1257,7 @@ def main():
             ltp = st.data.iloc[-1]["close"]
 
             # Format: LTP with commas, Vol with commas
-        print(f"{sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {icon} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f}")
+        print(f"{sym:<12} | LTP: $ {ltp:,.4f} | 24h Change: {icon} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f}")
 
     print("=" * 70)
     print(f"⏰ TIMEFRAME: {TIMEFRAME_MIN} minute candles")
@@ -1328,7 +1328,7 @@ def main():
 
             status = st.status
             print(
-                f"[heartbeat]   {trend_icon} {sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {'📈' if chg >= 0 else '📉'} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f} | Status: {status}")
+                f"[heartbeat]   {trend_icon} {sym:<12} | LTP: $ {ltp:,.4f} | 24h Change: {'📈' if chg >= 0 else '📉'} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f} | Status: {status}")
 
 
 if __name__ == "__main__":
