@@ -699,7 +699,7 @@ def evaluate_on_new_candle(st):
 
         cond1 = ema_fast > ema_slow
         cond2 = ema_slow > ema_slow_prev
-        cond3 = curr["low"] <= ema_slow
+        cond3 = curr["open"] < min(ema_fast, ema_slow)
         cond4 = curr["close"] > (max(ema_fast, ema_slow) + EMA_BUFFER)
         cond5 = curr["high"] > prev["high"]
         cond_green = (curr["close"] > curr["open"]) if REQUIRE_GREEN_SIGNAL else True
