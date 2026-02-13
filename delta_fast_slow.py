@@ -472,12 +472,13 @@ def sync_positions():
         return
 
     print("[sync] Synchronizing with Delta Exchange positions...")
-    try:
-        # Iterate over symbols where we expect a position
-        active_symbols = [s for s, st in SYMBOL_STATES.items() if st.status == "position"]
 
-        # We process each symbol individually to be safe
-        for sym in active_symbols:
+    # Iterate over symbols where we expect a position
+    active_symbols = [s for s, st in SYMBOL_STATES.items() if st.status == "position"]
+
+    # We process each symbol individually to be safe
+    for sym in active_symbols:
+        try:
             st = SYMBOL_STATES[sym]
             info = PRODUCT_MAP.get(sym)
             if not info:
@@ -532,7 +533,7 @@ def sync_positions():
                     # Sync Orders (If IDs are missing/placeholder)
             if st.sl_order_id == "bracket-auto" or st.tp_order_id == "bracket-auto":
                 orders_resp = CLIENT.get_active_orders(product_id=pid)
-                if orders_resp.get("success") and "result" in orders_resp:
+                if isinstance(orders_resp, dict) and orders_resp.get("success") and "result" in orders_resp:
                     result_list = orders_resp["result"]
                     if isinstance(result_list, list):
                         for o in result_list:
@@ -548,9 +549,8 @@ def sync_positions():
                                 st.tp_order_id = str(o.get("id"))
                                 print(f"[sync] Found Active TP Order: {st.tp_order_id}")
                         save_state()
-
-    except Exception as e:
-        print(f"[sync] Error during sync: {e}")
+        except Exception as e:
+            print(f"[sync] Error during sync for {sym}: {e}")
 
 
 def compute_prev_swing_high_for_entry(state, lookback, reference_price):
@@ -1021,6 +1021,13 @@ def on_tick(symbol, ltp):
                 st.qty = 0
                 log_trade_event(symbol, "SELL_TARGET", st.qty, ltp, resp)
                 save_state()
+            elif isinstance(resp, dict) and resp.get("error", {}).get("code") == "no_position_for_reduce_only":
+                print(f"⚠️ [exit] Position already closed for {symbol} (Exchange error: no_position). Resetting state.")
+                st.status = "watch"
+                st.qty = 0
+                st.sl_order_id = None
+                st.tp_order_id = None
+                save_state()
             else:
                 print(f"❌ [exit] Target Exit Failed for {symbol}: {resp}")
             return
@@ -1047,6 +1054,13 @@ def on_tick(symbol, ltp):
                 st.qty = 0
                 log_trade_event(symbol, "SELL_SL", st.qty, ltp, resp)
                 save_state()
+            elif isinstance(resp, dict) and resp.get("error", {}).get("code") == "no_position_for_reduce_only":
+                print(f"⚠️ [exit] Position already closed for {symbol} (Exchange error: no_position). Resetting state.")
+                st.status = "watch"
+                st.qty = 0
+                st.sl_order_id = None
+                st.tp_order_id = None
+                save_state()
             else:
                 print(f"❌ [exit] SL Exit Failed for {symbol}: {resp}")
             return
@@ -1072,6 +1086,13 @@ def on_tick(symbol, ltp):
                     print(f"✅ [exit] EMA EXIT FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
                     st.status = "watch"
                     log_trade_event(symbol, "SELL_EMA", st.qty, ltp, resp)
+                    save_state()
+                elif isinstance(resp, dict) and resp.get("error", {}).get("code") == "no_position_for_reduce_only":
+                    print(f"⚠️ [exit] Position already closed for {symbol} (Exchange error: no_position). Resetting state.")
+                    st.status = "watch"
+                    st.qty = 0
+                    st.sl_order_id = None
+                    st.tp_order_id = None
                     save_state()
                 else:
                     print(f"❌ [exit] EMA Exit Failed for {symbol}: {resp}")
