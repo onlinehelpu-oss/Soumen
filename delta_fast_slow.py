@@ -532,7 +532,7 @@ def sync_positions():
             # Sync Orders (If IDs are missing/placeholder)
             if st.sl_order_id == "bracket-auto" or st.tp_order_id == "bracket-auto":
                 orders_resp = CLIENT.get_active_orders(product_id=pid)
-                if orders_resp.get("success") and "result" in orders_resp:
+                if isinstance(orders_resp, dict) and orders_resp.get("success") and "result" in orders_resp:
                     result_list = orders_resp["result"]
                     if isinstance(result_list, list):
                         for o in result_list:
