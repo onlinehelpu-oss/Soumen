@@ -626,12 +626,7 @@ def evaluate_on_new_candle(st):
 
         if cond1 and cond2 and cond3 and cond4 and cond5 and cond_green and ok_signal:
             # Check Target
-            swing_target = compute_prev_swing_high_for_entry(st, SWING_HIGH_LOOKBACK, curr["high"])
-
-            # Ensure Minimum Risk:Reward (1.5R) to avoid immediate target hit
-            risk = curr["high"] - curr["low"]
-            min_target = curr["high"] + (risk * 1.5)
-            target = max(swing_target, min_target)
+            target = compute_prev_swing_high_for_entry(st, SWING_HIGH_LOOKBACK, curr["high"])
 
             if target > curr["high"]:
                 st.signal_candle = {
