@@ -1377,54 +1377,60 @@ def main():
     ws_client.connect()
 
     # Heartbeat loop
+    last_heartbeat_ts = 0
     while True:
-        # Sync positions first (robustness check)
+        # Sync positions frequently (every 10s) to detect exchange-side fills/closes
         sync_positions()
 
-        # Sleep for the strategy timeframe (e.g., 5m -> 300s)
-        time.sleep(TIMEFRAME_MIN * 60)
+        now = time.time()
+        # Print heartbeat / update 24h stats only every minute (or timeframe) to avoid spam
+        if now - last_heartbeat_ts > 60:
+            last_heartbeat_ts = now
 
-        # Refresh 24h ticker data via REST to ensure accuracy
-        print(f"[delta] Fetching 24h ticker data from {BASE_URL}...")
-        try:
-            tickers = CLIENT.get_ticker_24h()
-            if tickers and "result" in tickers:
-                for t in tickers["result"]:
-                    sym = t.get("symbol")
-                    if sym in SYMBOL_STATES:
-                        if "close" in t and "open" in t:
-                            c = float(t["close"])
-                            o = float(t["open"])
-                            chg = ((c - o) / o) * 100 if o > 0 else 0
-                            SYMBOL_STATES[sym].ltp_change_24h = chg
-                        if "volume" in t:
-                            SYMBOL_STATES[sym].volume_24h = float(t["volume"])
-        except Exception as e:
-            print(f"[delta] Ticker fetch failed: {e}")
+            # Refresh 24h ticker data via REST to ensure accuracy
+            print(f"[delta] Fetching 24h ticker data from {BASE_URL}...")
+            try:
+                tickers = CLIENT.get_ticker_24h()
+                if tickers and "result" in tickers:
+                    for t in tickers["result"]:
+                        sym = t.get("symbol")
+                        if sym in SYMBOL_STATES:
+                            if "close" in t and "open" in t:
+                                c = float(t["close"])
+                                o = float(t["open"])
+                                chg = ((c - o) / o) * 100 if o > 0 else 0
+                                SYMBOL_STATES[sym].ltp_change_24h = chg
+                            if "volume" in t:
+                                SYMBOL_STATES[sym].volume_24h = float(t["volume"])
+            except Exception as e:
+                print(f"[delta] Ticker fetch failed: {e}")
 
-        print(f"[heartbeat] Bot active. Monitoring {len(SYMBOLS)} symbols...")
-        print(f"[heartbeat] 📊 Current Market Prices:")
-        for sym in SYMBOLS:
-            st = SYMBOL_STATES[sym]
-            chg = st.ltp_change_24h
+            print(f"[heartbeat] Bot active. Monitoring {len(SYMBOLS)} symbols...")
+            print(f"[heartbeat] 📊 Current Market Prices:")
+            for sym in SYMBOLS:
+                st = SYMBOL_STATES[sym]
+                chg = st.ltp_change_24h
 
-            # Calculate Trend Icon based on EMA crossover
-            # Default to Neutral/Green if no data
-            trend_icon = "🟢"
-            if not st.data.empty:
-                last = st.data.iloc[-1]
-                fast = float(last.get("ema_fast_entry", 0))
-                slow = float(last.get("ema_slow_entry", 0))
-                trend_icon = "🟢" if fast > slow else "🔴"
+                # Calculate Trend Icon based on EMA crossover
+                # Default to Neutral/Green if no data
+                trend_icon = "🟢"
+                if not st.data.empty:
+                    last = st.data.iloc[-1]
+                    fast = float(last.get("ema_fast_entry", 0))
+                    slow = float(last.get("ema_slow_entry", 0))
+                    trend_icon = "🟢" if fast > slow else "🔴"
 
-                # Use close or cached ltp
-            ltp = 0.0
-            if not st.data.empty:
-                ltp = st.data.iloc[-1]["close"]
+                    # Use close or cached ltp
+                ltp = 0.0
+                if not st.data.empty:
+                    ltp = st.data.iloc[-1]["close"]
 
-            status = st.status
-            print(
-                f"[heartbeat]   {trend_icon} {sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {'📈' if chg >= 0 else '📉'} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f} | Status: {status}")
+                status = st.status
+                print(
+                    f"[heartbeat]   {trend_icon} {sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {'📈' if chg >= 0 else '📉'} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f} | Status: {status}")
+
+        # Short sleep for responsiveness
+        time.sleep(10)
 
 
 if __name__ == "__main__":
