@@ -946,10 +946,16 @@ def on_tick(symbol, ltp):
             if isinstance(resp, dict) and "result" in resp:
                 success = True
             elif isinstance(resp, dict) and resp.get("error", {}).get("code") == "bracket_order_position_exists":
-                # Special handling: We might have entered already or user has position?
-                # Or we just need to place market order without bracket and attach later?
-                # For safety, we treat this as a failed entry but log distinct warning.
-                print(f"[entry] ⚠️ Failed: Bracket Order Position Exists. Possible manual position or sync lag.")
+                # Special handling: Bracket already exists.
+                # Retry as simple Market Order to add to position/enter, relying on existing bracket.
+                print(f"[entry] ⚠️ Bracket Exists. Retrying as simple Market Order...")
+                resp = place_market_order_wrapper(symbol, qty, "buy", stop_loss_price=None, take_profit_price=None)
+
+                if isinstance(resp, dict) and "result" in resp:
+                    success = True
+                    print(f"✅ [entry] RETRY SUCCESS {symbol} | Simple Market Order Filled.")
+                else:
+                    print(f"[entry] ❌ Retry Failed: {resp}")
 
             if success:
                 st.status = "position"
