@@ -221,7 +221,7 @@ class DeltaClient:
         return self.request("GET", "/v2/chart/history", params=params)
 
     def place_order(self, product_id, size, side, order_type="limit_order", limit_price=None, stop_price=None,
-                    reduce_only=False):
+                    reduce_only=False, **kwargs):
         payload = {
             "product_id": int(product_id),
             "size": int(size) if size >= 1 else size,
@@ -232,6 +232,12 @@ class DeltaClient:
             "time_in_force": "ioc" if order_type == "market_order" else "gtc",
             "reduce_only": reduce_only
         }
+        # Add any extra arguments (like bracket params) to payload
+        for k, v in kwargs.items():
+            if v is not None:
+                # Convert numbers to strings if needed for specific keys or generally
+                payload[k] = str(v) if isinstance(v, (int, float)) else v
+
         # Filter None
         payload = {k: v for k, v in payload.items() if v is not None}
         return self.request("POST", "/v2/orders", payload=payload, auth=True)
@@ -241,6 +247,12 @@ class DeltaClient:
         if product_id:
             params["product_id"] = product_id
         return self.request("GET", "/v2/positions", params=params, auth=True)
+
+    def get_active_orders(self, product_id=None):
+        params = {"state": "open"}
+        if product_id:
+            params["product_id"] = product_id
+        return self.request("GET", "/v2/orders", params=params, auth=True)
 
     def get_ticker_24h(self):
         return self.request("GET", "/v2/tickers")
@@ -454,6 +466,7 @@ def sync_positions():
     """
     Synchronizes bot state with actual broker positions.
     Handles manual closes, partial closes, and restarts.
+    Also syncs Order IDs for Bracket Orders.
     """
     if not ENABLE_LIVE_TRADING:
         return
@@ -491,9 +504,9 @@ def sync_positions():
                 print(f"[sync] ⚠️ Manual Close Detected for {sym}. Resetting bot to WATCH.")
 
                 # Cancel lingering orders if any
-                if st.sl_order_id:
+                if st.sl_order_id and st.sl_order_id != "bracket-auto":
                     cancel_order_wrapper(st.sl_order_id, sym)
-                if st.tp_order_id:
+                if st.tp_order_id and st.tp_order_id != "bracket-auto":
                     cancel_order_wrapper(st.tp_order_id, sym)
 
                 st.status = "watch"
@@ -515,6 +528,24 @@ def sync_positions():
                 else:
                     print(
                         f"[sync] ℹ️ External position size larger ({broker_qty}) than bot ({bot_qty}) for {sym}. Ignoring extra.")
+
+            # Sync Orders (If IDs are missing/placeholder)
+            if st.sl_order_id == "bracket-auto" or st.tp_order_id == "bracket-auto":
+                orders_resp = CLIENT.get_active_orders(product_id=pid)
+                if orders_resp.get("success") and "result" in orders_resp:
+                    for o in orders_resp["result"]:
+                        # Identify SL (Stop Loss Order)
+                        if o.get("stop_order_type") == "stop_loss_order":
+                            st.sl_order_id = str(o["id"])
+                            print(f"[sync] Found Active SL Order: {st.sl_order_id}")
+
+                        # Identify TP (Take Profit Order or Limit Order near Target)
+                        # Bracket TP is usually 'take_profit_order' if triggered, or just limit?
+                        # Delta Bracket TP is typically a stop_order_type="take_profit_order"
+                        if o.get("stop_order_type") == "take_profit_order":
+                            st.tp_order_id = str(o["id"])
+                            print(f"[sync] Found Active TP Order: {st.tp_order_id}")
+                    save_state()
 
     except Exception as e:
         print(f"[sync] Error during sync: {e}")
@@ -721,12 +752,31 @@ def decide_qty(symbol, price):
         return 0
 
 
-def place_market_order_wrapper(symbol, qty, side, reduce_only=False):
+def place_market_order_wrapper(symbol, qty, side, reduce_only=False, stop_loss_price=None, take_profit_price=None):
     info = PRODUCT_MAP.get(symbol)
     if not info: return {"success": False}
 
+    # Bracket params
+    bracket_params = {}
+    if stop_loss_price:
+        bracket_params["bracket_stop_loss_price"] = str(stop_loss_price)
+        # Assuming stop market if limit price not sent, or set limit safely for 'Stop Limit' behaving as market
+        # For a SELL Stop Loss (Long Exit), trigger is below market. Limit should be below trigger to ensure fill.
+        # We set it slightly lower.
+        if side.lower() == "buy": # Long Entry -> Sell SL
+             bracket_params["bracket_stop_loss_limit_price"] = str(float(stop_loss_price) * 0.95)
+        else: # Short Entry -> Buy SL
+             bracket_params["bracket_stop_loss_limit_price"] = str(float(stop_loss_price) * 1.05)
+
+        bracket_params["bracket_stop_trigger_method"] = "last_traded_price"
+
+    if take_profit_price:
+        bracket_params["bracket_take_profit_price"] = str(take_profit_price)
+        # Target usually Limit. Set Limit = Trigger for TP Limit.
+        bracket_params["bracket_take_profit_limit_price"] = str(take_profit_price)
+
     if not ENABLE_LIVE_TRADING:
-        print(f"[sim] Simulated {side.upper()} Order for {qty} {symbol} placed successfully. Reduce Only: {reduce_only}")
+        print(f"[sim] Simulated {side.upper()} Order for {qty} {symbol} placed successfully. Reduce Only: {reduce_only} | SL: {stop_loss_price} | TP: {take_profit_price}")
         # Return mock success response structure similar to Delta API
         return {
             "success": True,
@@ -748,7 +798,8 @@ def place_market_order_wrapper(symbol, qty, side, reduce_only=False):
             size=qty,
             side=side,
             order_type="market_order",
-            reduce_only=reduce_only
+            reduce_only=reduce_only,
+            **bracket_params
         )
         return resp
     except Exception as e:
@@ -864,8 +915,15 @@ def on_tick(symbol, ltp):
         trigger = st.signal_candle["high"]
         if ltp > trigger:
             qty = decide_qty(symbol, ltp)
-            print(f"[entry] Executing BUY {symbol} Qty: {qty} @ {ltp} (Break > {trigger})")
-            resp = place_market_order_wrapper(symbol, qty, "buy")
+
+            # Prepare SL/TP for Bracket
+            stop_loss_price = st.signal_candle["low"] if SL_MODE == "signal_low" else st.signal_candle["low"]
+            target_price = st.potential_target_price
+
+            print(f"[entry] Executing BUY {symbol} Qty: {qty} @ {ltp} (Break > {trigger}) | Bracket SL: {stop_loss_price} | TP: {target_price}")
+
+            # Place Order with Bracket
+            resp = place_market_order_wrapper(symbol, qty, "buy", stop_loss_price=stop_loss_price, take_profit_price=target_price)
 
             # Delta returns order object in 'result' if successful
             success = False
@@ -876,13 +934,8 @@ def on_tick(symbol, ltp):
                 st.status = "position"
                 st.entry_price = ltp
                 st.qty = qty
-                st.target_price = st.potential_target_price
-
-                # Set Stop Loss
-                if SL_MODE == "signal_low":
-                    st.stop_price = st.signal_candle["low"]
-                else:
-                    st.stop_price = st.signal_candle["low"]  # Fallback
+                st.target_price = target_price
+                st.stop_price = stop_loss_price
 
                 # ATR Trailing setup
                 if not st.data.empty and "atr" in st.data.columns:
@@ -891,31 +944,15 @@ def on_tick(symbol, ltp):
                 print(f"✅ [entry] ORDER FILLED {symbol} | Qty: {qty} | Entry Price: {ltp}")
                 log_trade_event(symbol, "BUY", qty, ltp, resp)
 
-                # Wait for position to register on exchange to avoid 'no_position_for_reduce_only'
-                time.sleep(2)
-
-                # Place Exchange Stop Loss (GTT)
-                sl_side = "sell"  # For Long entry, SL is Sell
-                tp_side = "sell"  # For Long entry, TP is Sell
-
-                if st.stop_price > 0:
-                    sl_resp = place_stop_loss_order(symbol, qty, sl_side, st.stop_price)
-                    if sl_resp.get("success", True) and "result" in sl_resp:
-                        st.sl_order_id = sl_resp["result"]["id"]
-                        print(
-                            f"✅ [order] Stop Loss Order Placed on Exchange | ID: {st.sl_order_id} | Trigger: {st.stop_price}")
-                    else:
-                        print(f"❌ [order] Failed to place Exchange Stop Loss: {sl_resp}")
-
-                        # Place Exchange Target (Limit Reduce-Only)
-                if st.target_price and st.target_price > 0:
-                    tp_resp = place_target_order(symbol, qty, tp_side, st.target_price)
-                    if tp_resp.get("success", True) and "result" in tp_resp:
-                        st.tp_order_id = tp_resp["result"]["id"]
-                        print(
-                            f"✅ [order] Target Order Placed on Exchange | ID: {st.tp_order_id} | Price: {st.target_price}")
-                    else:
-                        print(f"❌ [order] Failed to place Exchange Target: {tp_resp}")
+                # Fetch Active Orders to find Bracket IDs (Optional, for logging/tracking)
+                # We do this asynchronously or just let sync_positions handle it later?
+                # Ideally, we want to know st.sl_order_id for trailing.
+                # Since brackets are created by the exchange, we need to fetch them.
+                # However, they might not appear instantly.
+                # We will rely on 'sync_positions' or manual fetch if we want to trail.
+                # For now, we set them to None or 'bracket' placeholder.
+                st.sl_order_id = "bracket-auto"
+                st.tp_order_id = "bracket-auto"
 
                 save_state()
             else:
