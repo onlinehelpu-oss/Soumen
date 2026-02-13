@@ -1010,24 +1010,19 @@ def on_tick(symbol, ltp):
                 cancel_order_wrapper(st.sl_order_id, symbol)
                 st.sl_order_id = None
             if st.tp_order_id:
-                # Even though target hit, we cancel pending limit order if it didn't fill yet
-                # or to be safe before placing market sell if we want immediate exit.
-                # But if target hit, likely the limit order filled on exchange?
-                # If so, position is 0. But here we see price >= target.
-                # If limit filled, sync() would detect it eventually.
-                # But to be responsive, we assume we might need to market exit if limit didn't fill?
-                # Actually, if price > target, limit should have filled.
-                # We will try to cancel it to clean up, then market sell to ensure exit.
                 cancel_order_wrapper(st.tp_order_id, symbol)
                 st.tp_order_id = None
 
-            place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
-            pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
-            print(f"✅ [exit] TARGET FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
-            st.status = "watch"
-            st.qty = 0
-            log_trade_event(symbol, "SELL_TARGET", st.qty, ltp, {})
-            save_state()
+            resp = place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
+            if isinstance(resp, dict) and "result" in resp:
+                pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
+                print(f"✅ [exit] TARGET FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
+                st.status = "watch"
+                st.qty = 0
+                log_trade_event(symbol, "SELL_TARGET", st.qty, ltp, resp)
+                save_state()
+            else:
+                print(f"❌ [exit] Target Exit Failed for {symbol}: {resp}")
             return
 
             # Stop Loss (Internal Backup + Exchange GTT Handling)
@@ -1044,13 +1039,16 @@ def on_tick(symbol, ltp):
                 cancel_order_wrapper(st.tp_order_id, symbol)
                 st.tp_order_id = None
 
-            place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
-            pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
-            print(f"✅ [exit] STOPLOSS FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
-            st.status = "watch"
-            st.qty = 0
-            log_trade_event(symbol, "SELL_SL", st.qty, ltp, {})
-            save_state()
+            resp = place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
+            if isinstance(resp, dict) and "result" in resp:
+                pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
+                print(f"✅ [exit] STOPLOSS FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
+                st.status = "watch"
+                st.qty = 0
+                log_trade_event(symbol, "SELL_SL", st.qty, ltp, resp)
+                save_state()
+            else:
+                print(f"❌ [exit] SL Exit Failed for {symbol}: {resp}")
             return
 
             # EMA Exit
@@ -1068,12 +1066,15 @@ def on_tick(symbol, ltp):
                     cancel_order_wrapper(st.tp_order_id, symbol)
                     st.tp_order_id = None
 
-                place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
-                pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
-                print(f"✅ [exit] EMA EXIT FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
-                st.status = "watch"
-                log_trade_event(symbol, "SELL_EMA", st.qty, ltp, {})
-                save_state()
+                resp = place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
+                if isinstance(resp, dict) and "result" in resp:
+                    pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
+                    print(f"✅ [exit] EMA EXIT FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
+                    st.status = "watch"
+                    log_trade_event(symbol, "SELL_EMA", st.qty, ltp, resp)
+                    save_state()
+                else:
+                    print(f"❌ [exit] EMA Exit Failed for {symbol}: {resp}")
                 return
 
                 # Trailing SL (Move to Breakeven)
