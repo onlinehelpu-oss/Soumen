@@ -58,8 +58,9 @@ import websocket
 
 # ---------------------------- CONFIGURATION ----------------------------
 # DELTA EXCHANGE CREDENTIALS
-API_KEY = "YOUR_API_KEY_HERE"
-API_SECRET = "YOUR_API_SECRET_HERE"
+# Try to load from Environment Variables first, otherwise use provided default
+API_KEY = os.getenv("DELTA_API_KEY", "qnz5G7ullIHIIywNbojX6i2mEfWCKY")
+API_SECRET = os.getenv("DELTA_API_SECRET", "NM0zX5jmDDtLkqAX5qNTyWgLtW5XqTVHZceBl3yCD7FVy0K8r8Dqlxts9oy0")
 
 # --- TRADING ENVIRONMENT ---
 USE_TESTNET = False  # Set True for Testnet
@@ -628,6 +629,8 @@ def evaluate_on_new_candle(st):
             # Check Target
             target = compute_prev_swing_high_for_entry(st, SWING_HIGH_LOOKBACK, curr["high"])
 
+            # Safety: Target must be higher than entry trigger (Signal High)
+            # If target <= high, it means the swing high is below the breakout point (invalid trade)
             if target > curr["high"]:
                 st.signal_candle = {
                     "ts": curr.name, "high": curr["high"], "low": curr["low"]
@@ -779,7 +782,8 @@ def place_stop_loss_order(symbol, qty, side, stop_price):
             size=qty,
             side=side,
             order_type="market_order",
-            stop_price=stop_price
+            stop_price=stop_price,
+            reduce_only=True
         )
         return resp
     except Exception as e:
