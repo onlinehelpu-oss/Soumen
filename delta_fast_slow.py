@@ -1044,6 +1044,13 @@ def on_tick(symbol, ltp):
                 st.sl_order_id = None
                 st.tp_order_id = None
                 save_state()
+            elif isinstance(resp, dict) and resp.get("error", {}).get("code") == "invalid_api_key":
+                print(f"❌ [exit] Critical Error: Invalid API Key for {symbol}. Resetting state to WATCH to prevent loop.")
+                st.status = "watch"
+                st.qty = 0
+                st.sl_order_id = None
+                st.tp_order_id = None
+                save_state()
             else:
                 print(f"❌ [exit] Target Exit Failed for {symbol}: {resp}")
             return
@@ -1072,6 +1079,13 @@ def on_tick(symbol, ltp):
                 save_state()
             elif isinstance(resp, dict) and resp.get("error", {}).get("code") == "no_position_for_reduce_only":
                 print(f"⚠️ [exit] Position already closed for {symbol} (Exchange error: no_position). Resetting state.")
+                st.status = "watch"
+                st.qty = 0
+                st.sl_order_id = None
+                st.tp_order_id = None
+                save_state()
+            elif isinstance(resp, dict) and resp.get("error", {}).get("code") == "invalid_api_key":
+                print(f"❌ [exit] Critical Error: Invalid API Key for {symbol}. Resetting state to WATCH to prevent loop.")
                 st.status = "watch"
                 st.qty = 0
                 st.sl_order_id = None
@@ -1106,6 +1120,13 @@ def on_tick(symbol, ltp):
                 elif isinstance(resp, dict) and resp.get("error", {}).get("code") == "no_position_for_reduce_only":
                     print(
                         f"⚠️ [exit] Position already closed for {symbol} (Exchange error: no_position). Resetting state.")
+                    st.status = "watch"
+                    st.qty = 0
+                    st.sl_order_id = None
+                    st.tp_order_id = None
+                    save_state()
+                elif isinstance(resp, dict) and resp.get("error", {}).get("code") == "invalid_api_key":
+                    print(f"❌ [exit] Critical Error: Invalid API Key for {symbol}. Resetting state to WATCH to prevent loop.")
                     st.status = "watch"
                     st.qty = 0
                     st.sl_order_id = None
@@ -1208,7 +1229,7 @@ def parse_args():
 
 
 def main():
-    global TIMEFRAME_MIN, EXIT_EMA, ENTRY_FAST_EMA, ENTRY_SLOW_EMA, MIN_RANGE_PCT, EMA_BUFFER, TRAIL_ATR_MULT, ALLOC_DEFAULT, ALLOC_PCT
+    global TIMEFRAME_MIN, EXIT_EMA, ENTRY_FAST_EMA, ENTRY_SLOW_EMA, MIN_RANGE_PCT, EMA_BUFFER, TRAIL_ATR_MULT, ALLOC_DEFAULT, ALLOC_PCT, ENABLE_LIVE_TRADING
 
     args = parse_args()
     TIMEFRAME_MIN = args.timeframe
@@ -1220,6 +1241,11 @@ def main():
     TRAIL_ATR_MULT = args.trail_atr_mult
     ALLOC_DEFAULT = args.allocation
     ALLOC_PCT = args.alloc_pct
+
+    # Sanity check for API Keys
+    if ENABLE_LIVE_TRADING and (not API_KEY or not API_SECRET):
+        print("⚠️ [init] Live Trading Enabled but API Keys are missing! Disabling Live Trading.")
+        ENABLE_LIVE_TRADING = False
 
     print(f"[init] Checking server connectivity...")
     # Ping or simple get
