@@ -1245,6 +1245,8 @@ def main():
     # Sanity check for API Keys
     if ENABLE_LIVE_TRADING and (not API_KEY or not API_SECRET):
         print("⚠️ [init] Live Trading Enabled but API Keys are missing! Disabling Live Trading.")
+        print("   -> To enable live trading, set environment variables: DELTA_API_KEY and DELTA_API_SECRET")
+        print("   -> Or manually update the API_KEY and API_SECRET constants in the script (not recommended for sharing).")
         ENABLE_LIVE_TRADING = False
 
     print(f"[init] Checking server connectivity...")
