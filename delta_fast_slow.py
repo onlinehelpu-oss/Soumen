@@ -933,89 +933,102 @@ def cancel_order_wrapper(order_id, symbol):
 
 def on_tick(symbol, ltp):
     ts = dt.now()
+
+    # --- OPTIMIZED ENTRY CHECK: Check immediately before any other processing ---
+    st = SYMBOL_STATES.get(symbol)
+    if st and st.status == "entry_pending":
+         # Check Breakout (Fast Path)
+         if st.signal_candle and ltp > st.signal_candle["high"]:
+             # Check expiry first to avoid stale entries
+             if st.signal_expiry and ts > st.signal_expiry:
+                 st.status = "watch"
+                 st.signal_candle = None
+             else:
+                 # Execute Entry Logic
+                 if st.qty > 0:
+                     print(f"[entry] ⚠️ Skipping Entry for {symbol}: Position already exists (Qty: {st.qty})")
+                     st.status = "position"
+                     st.signal_candle = None
+                 else:
+                     trigger = st.signal_candle["high"]
+                     qty = decide_qty(symbol, ltp)
+
+                     if SL_MODE == "signal_low":
+                         stop_loss_price = st.signal_candle["low"]
+                     else:
+                         sl_swing = compute_prev_swing_low_for_entry(st, SWING_LOOKBACK, st.signal_candle["low"])
+                         if not math.isnan(sl_swing) and sl_swing < ltp:
+                             stop_loss_price = sl_swing
+                         else:
+                             stop_loss_price = st.signal_candle["low"]
+
+                     target_price = st.potential_target_price
+
+                     print(f"[entry] Executing BUY {symbol} Qty: {qty} @ {ltp} (Break > {trigger})")
+
+                     # 1. Place Market Entry
+                     resp = place_market_order_wrapper(symbol, qty, "buy")
+
+                     if isinstance(resp, dict) and "result" in resp:
+                         st.status = "position"
+                         st.entry_price = ltp
+                         st.qty = qty
+                         st.target_price = target_price
+                         st.stop_price = stop_loss_price
+
+                         print(f"✅ [entry] ORDER FILLED {symbol} | Qty: {qty} | Entry Price: {ltp}")
+                         log_trade_event(symbol, "BUY", qty, ltp, resp)
+
+                         # 2. Place Stop Loss (Stop Market)
+                         print(f"[entry] Placing Stop Loss Order @ {stop_loss_price}...")
+                         sl_side = "sell"
+                         sl_resp = place_stop_loss_order(symbol, qty, sl_side, stop_loss_price)
+                         if isinstance(sl_resp, dict) and "result" in sl_resp:
+                             st.sl_order_id = str(sl_resp["result"]["id"])
+                             print(f"✅ [entry] SL PLACED {symbol} | ID: {st.sl_order_id}")
+                         else:
+                             print(f"❌ [entry] SL FAILED {symbol}: {sl_resp}")
+
+                         # 3. Place Target (Take Profit Market)
+                         print(f"[entry] Placing Target Order @ {target_price}...")
+                         tp_side = "sell"
+                         tp_resp = place_take_profit_market_order(symbol, qty, tp_side, target_price)
+                         if isinstance(tp_resp, dict) and "result" in tp_resp:
+                             st.tp_order_id = str(tp_resp["result"]["id"])
+                             print(f"✅ [entry] TP PLACED {symbol} | ID: {st.tp_order_id}")
+                         else:
+                             print(f"❌ [entry] TP FAILED {symbol}: {tp_resp}")
+
+                         # ATR Trailing setup
+                         if not st.data.empty and "atr" in st.data.columns:
+                             st.atr_at_entry = st.data["atr"].iloc[-1]
+
+                         save_state()
+                     else:
+                         print(f"[entry] Failed: {resp}")
+                         st.status = "watch"
+
+                 # Return immediately to avoid processing this tick further for candles (optional, but safer to let it process)
+                 # But since we just entered, we let candle mgr process it so it updates the high/close of the candle.
+
+    # Regular Candle Processing
     if CANDLE_MGR:
         CANDLE_MGR.process_tick(symbol, ltp, ts)
 
-    st = SYMBOL_STATES.get(symbol)
     if not st: return
 
-    # ENTRY EXECUTION
+    # ENTRY EXECUTION (REMOVED FROM HERE - MOVED TO TOP)
+    # The block below is now redundant for entry_pending, but kept structure for other statuses
     if st.status == "entry_pending":
-        # Check expiry
+        # Check expiry (already checked above if trigger hit, but check again if no trigger)
         if st.signal_expiry and ts > st.signal_expiry:
             st.status = "watch"
             st.signal_candle = None
             return
 
-            # Check Breakout
-        trigger = st.signal_candle["high"]
-        if ltp > trigger:
-            if st.qty > 0:
-                print(f"[entry] ⚠️ Skipping Entry for {symbol}: Position already exists (Qty: {st.qty})")
-                st.status = "position"  # Force update status
-                st.signal_candle = None
-                return
+        # Original Check Breakout block removed as it's now handled at the top of the function
 
-            qty = decide_qty(symbol, ltp)
-
-            if SL_MODE == "signal_low":
-                stop_loss_price = st.signal_candle["low"]
-            else:
-                # Try to find swing low
-                sl_swing = compute_prev_swing_low_for_entry(st, SWING_LOOKBACK, st.signal_candle["low"])
-                if not math.isnan(sl_swing) and sl_swing < ltp:
-                    stop_loss_price = sl_swing
-                else:
-                    stop_loss_price = st.signal_candle["low"]
-
-            target_price = st.potential_target_price
-
-            print(
-                f"[entry] Executing BUY {symbol} Qty: {qty} @ {ltp} (Break > {trigger})")
-
-            # 1. Place Market Entry
-            resp = place_market_order_wrapper(symbol, qty, "buy")
-
-            if isinstance(resp, dict) and "result" in resp:
-                st.status = "position"
-                st.entry_price = ltp
-                st.qty = qty
-                st.target_price = target_price
-                st.stop_price = stop_loss_price
-
-                print(f"✅ [entry] ORDER FILLED {symbol} | Qty: {qty} | Entry Price: {ltp}")
-                log_trade_event(symbol, "BUY", qty, ltp, resp)
-
-                # 2. Place Stop Loss (Stop Market)
-                print(f"[entry] Placing Stop Loss Order @ {stop_loss_price}...")
-                sl_side = "sell"  # Long entry -> Sell SL
-                sl_resp = place_stop_loss_order(symbol, qty, sl_side, stop_loss_price)
-                if isinstance(sl_resp, dict) and "result" in sl_resp:
-                    st.sl_order_id = str(sl_resp["result"]["id"])
-                    print(f"✅ [entry] SL PLACED {symbol} | ID: {st.sl_order_id}")
-                else:
-                    print(f"❌ [entry] SL FAILED {symbol}: {sl_resp}")
-
-                    # 3. Place Target (Take Profit Market)
-                print(f"[entry] Placing Target Order @ {target_price}...")
-                tp_side = "sell"  # Long entry -> Sell TP
-                tp_resp = place_take_profit_market_order(symbol, qty, tp_side, target_price)
-                if isinstance(tp_resp, dict) and "result" in tp_resp:
-                    st.tp_order_id = str(tp_resp["result"]["id"])
-                    print(f"✅ [entry] TP PLACED {symbol} | ID: {st.tp_order_id}")
-                else:
-                    print(f"❌ [entry] TP FAILED {symbol}: {tp_resp}")
-
-                    # ATR Trailing setup
-                if not st.data.empty and "atr" in st.data.columns:
-                    st.atr_at_entry = st.data["atr"].iloc[-1]
-
-                save_state()
-            else:
-                print(f"[entry] Failed: {resp}")
-                st.status = "watch"
-
-                # EXIT EXECUTION
+    # EXIT EXECUTION
     if st.status == "position":
         # Target
         if st.target_price and ltp >= st.target_price:
