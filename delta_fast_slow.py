@@ -533,19 +533,21 @@ def sync_positions():
             if st.sl_order_id == "bracket-auto" or st.tp_order_id == "bracket-auto":
                 orders_resp = CLIENT.get_active_orders(product_id=pid)
                 if orders_resp.get("success") and "result" in orders_resp:
-                    for o in orders_resp["result"]:
-                        # Identify SL (Stop Loss Order)
-                        if o.get("stop_order_type") == "stop_loss_order":
-                            st.sl_order_id = str(o["id"])
-                            print(f"[sync] Found Active SL Order: {st.sl_order_id}")
+                    result_list = orders_resp["result"]
+                    if isinstance(result_list, list):
+                        for o in result_list:
+                            if not isinstance(o, dict): continue
 
-                        # Identify TP (Take Profit Order or Limit Order near Target)
-                        # Bracket TP is usually 'take_profit_order' if triggered, or just limit?
-                        # Delta Bracket TP is typically a stop_order_type="take_profit_order"
-                        if o.get("stop_order_type") == "take_profit_order":
-                            st.tp_order_id = str(o["id"])
-                            print(f"[sync] Found Active TP Order: {st.tp_order_id}")
-                    save_state()
+                            # Identify SL (Stop Loss Order)
+                            if o.get("stop_order_type") == "stop_loss_order":
+                                st.sl_order_id = str(o.get("id"))
+                                print(f"[sync] Found Active SL Order: {st.sl_order_id}")
+
+                            # Identify TP (Take Profit Order or Limit Order near Target)
+                            if o.get("stop_order_type") == "take_profit_order":
+                                st.tp_order_id = str(o.get("id"))
+                                print(f"[sync] Found Active TP Order: {st.tp_order_id}")
+                        save_state()
 
     except Exception as e:
         print(f"[sync] Error during sync: {e}")
@@ -879,6 +881,10 @@ def cancel_order_wrapper(order_id, symbol):
     info = PRODUCT_MAP.get(symbol)
     if not info or not order_id: return {"success": False}
 
+    # Skip placeholder IDs
+    if str(order_id).startswith("bracket-auto"):
+        return {"success": True, "message": "Skipped bracket placeholder"}
+
     if not ENABLE_LIVE_TRADING:
         print(f"[sim] Simulated Cancel Order {order_id} for {symbol}")
         return {"success": True}
@@ -914,6 +920,16 @@ def on_tick(symbol, ltp):
             # Check Breakout
         trigger = st.signal_candle["high"]
         if ltp > trigger:
+            # Pre-check: Ensure no existing position before placing bracket
+            # To avoid 'bracket_order_position_exists' if we raced or have zombie position
+            # We can use the cached state or fetch fresh. Fetching fresh is safer but adds latency.
+            # We rely on 'sync_positions' loop generally, but for entry safety:
+            if st.qty > 0:
+                print(f"[entry] ⚠️ Skipping Entry for {symbol}: Position already exists (Qty: {st.qty})")
+                st.status = "position" # Force update status
+                st.signal_candle = None
+                return
+
             qty = decide_qty(symbol, ltp)
 
             # Prepare SL/TP for Bracket
@@ -929,6 +945,11 @@ def on_tick(symbol, ltp):
             success = False
             if isinstance(resp, dict) and "result" in resp:
                 success = True
+            elif isinstance(resp, dict) and resp.get("error", {}).get("code") == "bracket_order_position_exists":
+                # Special handling: We might have entered already or user has position?
+                # Or we just need to place market order without bracket and attach later?
+                # For safety, we treat this as a failed entry but log distinct warning.
+                print(f"[entry] ⚠️ Failed: Bracket Order Position Exists. Possible manual position or sync lag.")
 
             if success:
                 st.status = "position"
@@ -1046,18 +1067,23 @@ def on_tick(symbol, ltp):
                 st.sl_trailed = True
 
                 # Update Exchange Order
-                if st.sl_order_id:
+                # If we have a real Bracket Order ID, we should technically EDIT it, but canceling/replacing is safer for now if not using 'edit_bracket' endpoint.
+                # However, if 'bracket-auto' is still the ID, we can't cancel.
+                # We need to rely on 'sync_positions' having updated the ID.
+                if st.sl_order_id and st.sl_order_id != "bracket-auto":
                     print(f"[trail] Cancelling Old Exchange SL {st.sl_order_id}...")
                     cancel_order_wrapper(st.sl_order_id, symbol)
 
-                # Place New SL at Entry Price
-                sl_side = "sell" # Long only strategy
-                sl_resp = place_stop_loss_order(symbol, st.qty, sl_side, st.stop_price)
-                if sl_resp.get("success", True) and "result" in sl_resp:
-                    st.sl_order_id = sl_resp["result"]["id"]
-                    print(f"✅ [trail] Breakeven Stop Loss Placed on Exchange | ID: {st.sl_order_id} | Trigger: {st.stop_price}")
+                    # Place New SL at Entry Price
+                    sl_side = "sell" # Long only strategy
+                    sl_resp = place_stop_loss_order(symbol, st.qty, sl_side, st.stop_price)
+                    if sl_resp.get("success", True) and "result" in sl_resp:
+                        st.sl_order_id = sl_resp["result"]["id"]
+                        print(f"✅ [trail] Breakeven Stop Loss Placed on Exchange | ID: {st.sl_order_id} | Trigger: {st.stop_price}")
+                    else:
+                        print(f"❌ [trail] Failed to place Breakeven SL: {sl_resp}")
                 else:
-                    print(f"❌ [trail] Failed to place Breakeven SL: {sl_resp}")
+                    print(f"[trail] ⚠️ Cannot update Exchange SL: Bracket ID not yet synced.")
 
 
 def save_state():
