@@ -494,9 +494,10 @@ def sync_positions():
 
             # API Call Success -> Calculate Broker Qty
             broker_qty = 0
-            for p in resp["result"]:
-                if int(p.get("product_id")) == int(pid):
-                    broker_qty = int(p.get("size", 0))
+            if isinstance(resp["result"], list):
+                for p in resp["result"]:
+                    if isinstance(p, dict) and int(p.get("product_id")) == int(pid):
+                        broker_qty = int(p.get("size", 0))
 
             bot_qty = st.qty
 
@@ -942,14 +943,21 @@ def on_tick(symbol, ltp):
             qty = decide_qty(symbol, ltp)
 
             if SL_MODE == "signal_low":
-                stop_loss_price = st.signal_candle["low"]
+                # Fine-tune: Subtract 1 tick size to be just below the low
+                info = PRODUCT_MAP.get(symbol)
+                tick_size = info["tick_size"] if info else 0.0
+                stop_loss_price = st.signal_candle["low"] - tick_size
             else:
                 # Try to find swing low
                 sl_swing = compute_prev_swing_low_for_entry(st, SWING_LOOKBACK, st.signal_candle["low"])
                 if not math.isnan(sl_swing) and sl_swing < ltp:
-                    stop_loss_price = sl_swing
+                    info = PRODUCT_MAP.get(symbol)
+                    tick_size = info["tick_size"] if info else 0.0
+                    stop_loss_price = sl_swing - tick_size
                 else:
-                    stop_loss_price = st.signal_candle["low"]
+                    info = PRODUCT_MAP.get(symbol)
+                    tick_size = info["tick_size"] if info else 0.0
+                    stop_loss_price = st.signal_candle["low"] - tick_size
 
             target_price = st.potential_target_price
 
@@ -1230,10 +1238,12 @@ def main():
                 quote = p.get("quoting_asset", {}).get("symbol", "")
                 is_inv = (settle != quote)
 
+                tick_size = p.get("tick_size", "0.0001")
                 PRODUCT_MAP[sym] = {
                     "id": pid,
                     "contract_value": float(cval),
-                    "is_inverse": is_inv
+                    "is_inverse": is_inv,
+                    "tick_size": float(tick_size)
                 }
                 ID_TO_SYMBOL[pid] = sym
                 print(f"[delta] Mapped {sym} -> ID {pid} | Val: {float(cval)} | Inv: {is_inv}")
