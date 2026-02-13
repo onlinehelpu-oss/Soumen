@@ -471,7 +471,8 @@ def sync_positions():
     if not ENABLE_LIVE_TRADING:
         return
 
-    print("[sync] Synchronizing with Delta Exchange positions...")
+    # Silent sync unless error or change
+    # print("[sync] Synchronizing with Delta Exchange positions...")
 
     # Iterate over symbols where we expect a position
     active_symbols = [s for s, st in SYMBOL_STATES.items() if st.status == "position"]
@@ -1383,8 +1384,8 @@ def main():
         sync_positions()
 
         now = time.time()
-        # Print heartbeat / update 24h stats only every minute (or timeframe) to avoid spam
-        if now - last_heartbeat_ts > 60:
+        # Print heartbeat / update 24h stats only every TIMEFRAME_MIN
+        if now - last_heartbeat_ts >= (TIMEFRAME_MIN * 60):
             last_heartbeat_ts = now
 
             # Refresh 24h ticker data via REST to ensure accuracy
