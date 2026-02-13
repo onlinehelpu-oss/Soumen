@@ -1017,16 +1017,74 @@ def on_tick(symbol, ltp):
 
     if not st: return
 
-    # ENTRY EXECUTION (REMOVED FROM HERE - MOVED TO TOP)
-    # The block below is now redundant for entry_pending, but kept structure for other statuses
+    # --- IMMEDIATE ENTRY CHECK (POST-CANDLE): Catch signals generated *this* tick ---
+    # If the candle manager just updated the status to 'entry_pending' (e.g., on candle close),
+    # we want to check for a breakout immediately with the current LTP,
+    # instead of waiting for the next tick (which could be seconds later).
     if st.status == "entry_pending":
-        # Check expiry (already checked above if trigger hit, but check again if no trigger)
-        if st.signal_expiry and ts > st.signal_expiry:
-            st.status = "watch"
-            st.signal_candle = None
-            return
+         # Check Breakout (Identical logic to Top Check)
+         if st.signal_candle and ltp > st.signal_candle["high"]:
+             # Check expiry first
+             if st.signal_expiry and ts > st.signal_expiry:
+                 st.status = "watch"
+                 st.signal_candle = None
+             elif st.qty == 0: # Ensure we haven't already entered (safety)
+                 trigger = st.signal_candle["high"]
+                 qty = decide_qty(symbol, ltp)
 
-        # Original Check Breakout block removed as it's now handled at the top of the function
+                 if SL_MODE == "signal_low":
+                     stop_loss_price = st.signal_candle["low"]
+                 else:
+                     sl_swing = compute_prev_swing_low_for_entry(st, SWING_LOOKBACK, st.signal_candle["low"])
+                     if not math.isnan(sl_swing) and sl_swing < ltp:
+                         stop_loss_price = sl_swing
+                     else:
+                         stop_loss_price = st.signal_candle["low"]
+
+                 target_price = st.potential_target_price
+
+                 print(f"[entry-immediate] Executing BUY {symbol} Qty: {qty} @ {ltp} (Break > {trigger})")
+
+                 # 1. Place Market Entry
+                 resp = place_market_order_wrapper(symbol, qty, "buy")
+
+                 if isinstance(resp, dict) and "result" in resp:
+                     st.status = "position"
+                     st.entry_price = ltp
+                     st.qty = qty
+                     st.target_price = target_price
+                     st.stop_price = stop_loss_price
+
+                     print(f"✅ [entry] ORDER FILLED {symbol} | Qty: {qty} | Entry Price: {ltp}")
+                     log_trade_event(symbol, "BUY", qty, ltp, resp)
+
+                     # 2. Place Stop Loss
+                     print(f"[entry] Placing Stop Loss Order @ {stop_loss_price}...")
+                     sl_side = "sell"
+                     sl_resp = place_stop_loss_order(symbol, qty, sl_side, stop_loss_price)
+                     if isinstance(sl_resp, dict) and "result" in sl_resp:
+                         st.sl_order_id = str(sl_resp["result"]["id"])
+                         print(f"✅ [entry] SL PLACED {symbol} | ID: {st.sl_order_id}")
+                     else:
+                         print(f"❌ [entry] SL FAILED {symbol}: {sl_resp}")
+
+                     # 3. Place Target
+                     print(f"[entry] Placing Target Order @ {target_price}...")
+                     tp_side = "sell"
+                     tp_resp = place_take_profit_market_order(symbol, qty, tp_side, target_price)
+                     if isinstance(tp_resp, dict) and "result" in tp_resp:
+                         st.tp_order_id = str(tp_resp["result"]["id"])
+                         print(f"✅ [entry] TP PLACED {symbol} | ID: {st.tp_order_id}")
+                     else:
+                         print(f"❌ [entry] TP FAILED {symbol}: {tp_resp}")
+
+                     if not st.data.empty and "atr" in st.data.columns:
+                         st.atr_at_entry = st.data["atr"].iloc[-1]
+
+                     save_state()
+                 else:
+                     print(f"[entry] Failed: {resp}")
+                     st.status = "watch"
 
     # EXIT EXECUTION
     if st.status == "position":
