@@ -700,11 +700,11 @@ def evaluate_on_new_candle(st):
         cond2 = ema_slow > ema_slow_prev
         cond3 = curr["open"] < min(ema_fast, ema_slow)
         cond4 = curr["close"] > (max(ema_fast, ema_slow) + EMA_BUFFER)
-        cond5 = curr["high"] > prev["high"]
+        # cond5 = curr["high"] > prev["high"] # Removed per request
         cond_green = (curr["close"] > curr["open"]) if REQUIRE_GREEN_SIGNAL else True
         ok_signal = bool(curr.get("ok_signal", True))
 
-        if cond1 and cond2 and cond3 and cond4 and cond5 and cond_green and ok_signal:
+        if cond1 and cond2 and cond3 and cond4 and cond_green and ok_signal:
             # Check Target
             target = compute_prev_swing_high_for_entry(st, SWING_HIGH_LOOKBACK, curr["high"])
 
