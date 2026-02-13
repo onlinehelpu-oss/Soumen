@@ -488,15 +488,32 @@ def sync_positions():
             resp = CLIENT.get_positions(product_id=pid)
 
             # Check if API call was successful
-            if not (isinstance(resp, dict) and "result" in resp and isinstance(resp["result"], list)):
+            if not (isinstance(resp, dict) and "result" in resp):
                 print(f"[sync] Failed to fetch positions for {sym}: {resp}. Skipping sync for this symbol.")
                 continue
 
-                # API Call Success -> Calculate Broker Qty
+            # Normalize result (list or dict)
+            results = resp["result"]
+            if isinstance(results, dict):
+                results = [results]
+            elif not isinstance(results, list):
+                print(f"[sync] Unexpected position format for {sym}: {type(results)}. Skipping.")
+                continue
+
+            # API Call Success -> Calculate Broker Qty
             broker_qty = 0
-            for p in resp["result"]:
-                if int(p.get("product_id")) == int(pid):
-                    broker_qty = int(p.get("size", 0))
+            for p in results:
+                if not isinstance(p, dict): continue
+
+                # If product_id matches OR if single-item dict result (implied match)
+                p_id = p.get("product_id")
+                if p_id is not None:
+                    if int(p_id) == int(pid):
+                        broker_qty = int(p.get("size", 0))
+                else:
+                    # Fallback: if we have a single result without product_id, assume it's the requested one
+                    if len(results) == 1 and isinstance(resp["result"], dict):
+                         broker_qty = int(p.get("size", 0))
 
             bot_qty = st.qty
 
