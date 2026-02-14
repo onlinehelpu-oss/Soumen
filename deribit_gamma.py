@@ -56,7 +56,7 @@ GLOBAL_TP_PCT = 0.45      # 45% of collected credit
 GLOBAL_SL_PCT = -0.35     # -35% of collected credit
 LEG_BLOWOUT_MULT = 2.5    # 2.5x credit loss on single leg -> flatten
 MAX_JUMP_PCT = 0.80       # 80% jump in price -> flatten
-WS_TIMEOUT_SEC = 5        # 5s disconnect -> flatten
+WS_TIMEOUT_SEC = 15       # 15s disconnect -> flatten
 EXPIRY_CLOSE_MIN = 30     # Close positions 30 mins before expiry
 FIXED_QTY = 1.0           # 1 Contract
 
@@ -255,7 +255,10 @@ class DeribitWS:
 
     def on_open(self, ws):
         print(f"[ws] Connected to Deribit ({self.url})")
+        self.last_message_time = time.time()
         self.send_auth()
+        # Subscribe to public heartbeat channel to ensure message flow
+        self.subscribe(["deribit_price_index.btc_usd"])
 
     def on_message(self, ws, message):
         self.last_message_time = time.time()
@@ -273,6 +276,9 @@ class DeribitWS:
                     "user.trades.any.any.100ms"
                 ]
                 self.subscribe_private(channels)
+
+            if "method" in data and data["method"] == "heartbeat":
+                return # Just keep alive
 
             self.on_message_callback(data)
 
