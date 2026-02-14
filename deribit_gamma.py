@@ -310,11 +310,11 @@ class GammaScalper:
         instruments = self.client.get_instruments(currency="BTC", kind="option")
         if not instruments: return None, None
 
-        now = dt.utcnow()
+        now = dt.now(datetime.timezone.utc)
         candidates = []
         for i in instruments:
             exp_ts = i['expiration_timestamp'] / 1000.0
-            exp_dt = dt.utcfromtimestamp(exp_ts)
+            exp_dt = dt.fromtimestamp(exp_ts, datetime.timezone.utc)
             if exp_dt > now:
                 candidates.append((i, exp_dt))
 
@@ -413,6 +413,7 @@ class GammaScalper:
                 BOT_STATE["collected_credit"] = (c_price + p_price)
                 BOT_STATE["initial_entry_done"] = True
                 BOT_STATE["status"] = "monitoring"
+                BOT_STATE["expiry"] = expiry
 
                 # Subscribe
                 self.ws.subscribe([
@@ -446,6 +447,7 @@ class GammaScalper:
                         "reset_price": p_price,
                         "qty": FIXED_QTY
                     }
+                    BOT_STATE["expiry"] = expiry
                     self.ws.subscribe([
                         f"ticker.{call_leg['instrument_name']}.100ms",
                         f"ticker.{put_leg['instrument_name']}.100ms"
@@ -721,7 +723,7 @@ def main():
 
     while True:
         try:
-            now = dt.utcnow()
+            now = dt.now(datetime.timezone.utc)
             now_str = now.strftime("%H:%M")
 
             # WS Watchdog (Safety)
@@ -772,6 +774,15 @@ def main():
                     sys.exit(0)
                 if pnl_pct <= GLOBAL_SL_PCT:
                     print(f"[exit] GLOBAL SL HIT ({pnl_pct*100:.1f}%). Closing All.")
+                    if ENABLE_LIVE_TRADING:
+                        client.close_all(BOT_STATE["legs"])
+                    sys.exit(0)
+
+            # Time-Based Exit (< 30 min to expiry)
+            if BOT_STATE.get("expiry"):
+                mins_to_expiry = (BOT_STATE["expiry"] - now).total_seconds() / 60
+                if mins_to_expiry < EXPIRY_CLOSE_MIN:
+                    print(f"[exit] EXPIRY CLOSE ({mins_to_expiry:.1f} min left). Closing All.")
                     if ENABLE_LIVE_TRADING:
                         client.close_all(BOT_STATE["legs"])
                     sys.exit(0)
