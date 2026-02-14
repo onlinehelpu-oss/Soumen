@@ -280,6 +280,9 @@ class DeribitWS:
             if "method" in data and data["method"] == "heartbeat":
                 return # Just keep alive
 
+            if "error" in data:
+                print(f"[ws] API Error: {data['error']}")
+
             self.on_message_callback(data)
 
         except Exception as e:
@@ -690,6 +693,10 @@ def main():
     print(f"--- Deribit Gamma Scalper ---")
     print(f"Mode: {'REAL TRADING' if ENABLE_LIVE_TRADING else 'SIMULATION'}")
     print(f"Network: {'TESTNET' if USE_TESTNET else 'MAINNET'}")
+
+    if not API_KEY or not API_SECRET:
+        print("⚠️  WARNING: API Credentials Missing! Bot will run in Public-Only mode (limited functionality).")
+        print("   Set DERIBIT_API_KEY and DERIBIT_API_SECRET env vars or use --api-key/--api-secret args.")
 
     client = DeribitClient(API_KEY, API_SECRET, testnet=USE_TESTNET)
 
