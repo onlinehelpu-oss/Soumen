@@ -47,14 +47,12 @@ DERIBIT_MAINNET_WS = "wss://www.deribit.com/ws/api/v2"
 DERIBIT_TESTNET_WS = "wss://test.deribit.com/ws/api/v2"
 
 # STRATEGY PARAMETERS (Defaults)
-ENTRY_TIME_UTC = "13:00"  # 13:00 UTC (18:30 IST)
+ENTRY_TIME_UTC = "18:30"  # 18:30 UTC (6:30 PM Exchange Time)
 ENTRY_DELTA = 0.18
 ADJUST_THRESHOLD = 1.30   # 30% premium increase triggers adjustment
-COMPRESSION_WIDTH = 500   # Strike width to trigger Iron Fly
-IRON_FLY_WING_WIDTH = 500 # Width of wings for Iron Fly
 GLOBAL_TP_PCT = 0.45      # 45% of collected credit
 GLOBAL_SL_PCT = -0.35     # -35% of collected credit
-LEG_BLOWOUT_MULT = 2.5    # 2.5x credit loss on single leg -> flatten
+LEG_BLOWOUT_MULT = 1.6    # 60% premium increase -> flatten (Current > Ref * 1.6)
 MAX_JUMP_PCT = 0.80       # 80% jump in price -> flatten
 WS_TIMEOUT_SEC = 15       # 15s disconnect -> flatten
 EXPIRY_CLOSE_MIN = 30     # Close positions 30 mins before expiry
@@ -460,111 +458,112 @@ class GammaScalper:
 
     def adjust_position(self, leg_type, current_mid):
         with self.lock:
+            # leg_type is the TRIGGERED (Losing/High Premium) leg
             loser = BOT_STATE["legs"][leg_type]
             winner_type = "P" if leg_type == "C" else "C"
             winner = BOT_STATE["legs"][winner_type]
 
-            print(f"[adjust] >>> ADJUSTMENT TRIGGERED on {leg_type} leg <<<")
-            print(f"  Loser: {loser['instrument']} | Reset Price: {loser['reset_price']} | Current: {current_mid}")
+            # Premium Equalization Strategy:
+            # 1. Keep Loser Open.
+            # 2. Close Winner (at Market).
+            # 3. Sell New Winner (same side as closed winner) @ Premium ~= Loser's Current Premium.
+
+            print(f"[adjust] >>> ADJUSTMENT TRIGGERED on {leg_type} (Loser) <<<")
+            print(f"  Loser Premium: {current_mid} (Ref: {loser['reset_price']})")
 
             winner_mid = self.tickers.get(winner["instrument"], {}).get("mid_price", winner["reset_price"])
 
+            # 1. Close Winner
             if not ENABLE_LIVE_TRADING:
-                # Close Loser
-                pnl = (loser["entry_price"] - current_mid) * loser["qty"]
+                pnl = (winner["entry_price"] - winner_mid) * winner["qty"]
                 BOT_STATE["realized_pnl"] += pnl
-                log_trade_event("CLOSE", loser['instrument'], current_mid, loser['qty'], "Adjustment Close", pnl)
-                print(f"[sim] Closed Loser. PnL: {pnl:.6f}")
+                log_trade_event("CLOSE", winner['instrument'], winner_mid, winner['qty'], "Winner Close (Eq)", pnl)
+                print(f"[sim] Closed Winner {winner['instrument']}. PnL: {pnl:.6f}")
+            else:
+                print(f"[real] Closing Winner {winner['instrument']}...")
+                self.client.close_position(winner['instrument'])
+                # PnL updated via on_user_trade
 
-                # Open New Leg
-                target_premium = winner_mid
-                print(f"[adjust] Finding new {leg_type} leg @ ~{target_premium:.6f}")
+            # 2. Find New Winner (Same side as old Winner)
+            # Target Premium = Loser's Current Premium (current_mid)
+            target_premium = current_mid
+            print(f"[adjust] Finding New {winner_type} (Winner Side) @ ~{target_premium:.6f}")
 
-                instrs, _ = self.get_0dte_expiry()
-                if not instrs: return
+            instrs, _ = self.get_0dte_expiry()
+            if not instrs: return
 
-                summaries = self.client.request("GET", "public/get_book_summary_by_currency", {"currency": "BTC", "kind": "option"})
-                if "result" not in summaries: return
-                summary_map = {s['instrument_name']: s for s in summaries['result']}
+            summaries = self.client.request("GET", "public/get_book_summary_by_currency", {"currency": "BTC", "kind": "option"})
+            if "result" not in summaries: return
+            summary_map = {s['instrument_name']: s for s in summaries['result']}
 
-                candidates = [i for i in instrs if i['option_type'] == ('call' if leg_type == 'C' else 'put')]
+            # Filter for Winner Side
+            candidates = [i for i in instrs if i['option_type'] == ('call' if winner_type == 'C' else 'put')]
 
-                best_instr = None
-                min_diff = 1.0
-                best_price = 0.0
+            best_instr = None
+            min_diff = 1e9
+            best_price = 0.0
 
-                for i in candidates:
-                    s = summary_map.get(i['instrument_name'])
-                    if s:
-                        p = s.get('mid_price') or s.get('mark_price') or 0
-                        if abs(p - target_premium) < min_diff:
-                            min_diff = abs(p - target_premium)
-                            best_instr = i
-                            best_price = p
+            for i in candidates:
+                # Strike must not overlap? "Strike must not overlap with existing strike"
+                # If we sell a Put, its strike must be < Call strike.
+                # If we sell a Call, its strike must be > Put strike.
+                loser_strike = loser["strike"]
+                if winner_type == "C" and i["strike"] <= loser_strike: continue # Inverted/Straddle
+                if winner_type == "P" and i["strike"] >= loser_strike: continue
 
-                if best_instr:
-                    print(f"[sim] New Leg: {best_instr['instrument_name']} @ {best_price:.6f}")
-                    BOT_STATE["legs"][leg_type] = {
+                s = summary_map.get(i['instrument_name'])
+                if s:
+                    p = s.get('mid_price') or s.get('mark_price') or 0
+                    if abs(p - target_premium) < min_diff:
+                        min_diff = abs(p - target_premium)
+                        best_instr = i
+                        best_price = p
+
+            # 3. Sell New Winner
+            if best_instr:
+                if not ENABLE_LIVE_TRADING:
+                    print(f"[sim] New Winner: {best_instr['instrument_name']} @ {best_price:.6f}")
+                    BOT_STATE["legs"][winner_type] = {
                         "instrument": best_instr['instrument_name'],
                         "strike": best_instr['strike'],
                         "entry_price": best_price,
                         "reset_price": best_price,
-                        "qty": loser["qty"]
+                        "qty": winner["qty"]
                     }
                     BOT_STATE["collected_credit"] += best_price
-                    log_trade_event("OPEN", best_instr['instrument_name'], best_price, loser['qty'], "Adjustment Open")
+                    log_trade_event("OPEN", best_instr['instrument_name'], best_price, winner['qty'], "New Winner Open")
 
                     self.ws.subscribe([f"ticker.{best_instr['instrument_name']}.100ms"])
-            else:
-                # Real execution
-                print(f"[real] Closing Loser {loser['instrument']}...")
-                self.client.close_position(loser['instrument'])
+                else:
+                    print(f"[real] Opening New Winner {best_instr['instrument_name']} @ ~{best_price:.6f}")
+                    resp = self.client.place_order(best_instr['instrument_name'], winner['qty'], "sell", "market")
+                    if "result" in resp:
+                        BOT_STATE["legs"][winner_type] = {
+                            "instrument": best_instr['instrument_name'],
+                            "strike": best_instr['strike'],
+                            "entry_price": best_price,
+                            "reset_price": best_price,
+                            "qty": winner["qty"]
+                        }
+                        # collected_credit updated via trade
+                        self.ws.subscribe([f"ticker.{best_instr['instrument_name']}.100ms"])
+                    else:
+                        print(f"[real] Failed to open new winner: {resp}")
 
-                # Find New Leg
-                instrs, _ = self.get_0dte_expiry()
-                if instrs:
-                    summaries = self.client.request("GET", "public/get_book_summary_by_currency", {"currency": "BTC", "kind": "option"})
-                    if "result" in summaries:
-                        summary_map = {s['instrument_name']: s for s in summaries['result']}
-                        candidates = [i for i in instrs if i['option_type'] == ('call' if leg_type == 'C' else 'put')]
+            # 4. Reset Loser Reference to Current (to avoid loop)
+            print(f"[adjust] Resetting Loser ({leg_type}) Reference: {loser['reset_price']} -> {current_mid}")
+            BOT_STATE["legs"][leg_type]["reset_price"] = current_mid
 
-                        target_premium = winner_mid
-                        best_instr = None
-                        min_diff = 1.0
-                        best_price = 0.0
-
-                        for i in candidates:
-                            s = summary_map.get(i['instrument_name'])
-                            if s:
-                                p = s.get('mid_price') or s.get('mark_price') or 0
-                                if abs(p - target_premium) < min_diff:
-                                    min_diff = abs(p - target_premium)
-                                    best_instr = i
-                                    best_price = p
-
-                        if best_instr:
-                            print(f"[real] Opening New Leg {best_instr['instrument_name']} @ ~{best_price:.6f}")
-                            resp = self.client.place_order(best_instr['instrument_name'], loser['qty'], "sell", "market")
-                            if "result" in resp:
-                                BOT_STATE["legs"][leg_type] = {
-                                    "instrument": best_instr['instrument_name'],
-                                    "strike": best_instr['strike'],
-                                    "entry_price": best_price, # Approx, real fill needed from ws trades
-                                    "reset_price": best_price,
-                                    "qty": loser["qty"]
-                                }
-                                # collected_credit and PnL will be updated by on_user_trade (fill listener)
-                                self.ws.subscribe([f"ticker.{best_instr['instrument_name']}.100ms"])
-                            else:
-                                print(f"[real] Failed to open new leg: {resp}")
-
-            # Check Compression
+            # Check Compression (Straddle)
             c_strike = BOT_STATE["legs"]["C"]["strike"]
             p_strike = BOT_STATE["legs"]["P"]["strike"]
-            width = abs(c_strike - p_strike)
-            print(f"[adjust] New Width: {width} (Threshold: {COMPRESSION_WIDTH})")
 
-            if width <= COMPRESSION_WIDTH and BOT_STATE["status"] != "iron_fly":
+            # "If Call Strike == Put Strike" (or crossed)
+            # Actually, we filtered crossing above. But if we couldn't find a non-crossing leg?
+            # Or if spreads are tight.
+            # Strategy: "If Call Strike == Put Strike... Short ATM Straddle... Convert to Iron Fly"
+
+            if c_strike <= p_strike:
                 self.convert_to_iron_fly()
 
     def convert_to_iron_fly(self):
@@ -572,15 +571,28 @@ class GammaScalper:
         idx = self.client.get_index_price()
         if not idx: return
 
-        # Round wing width to nearest 500
-        wing_width = round(IRON_FLY_WING_WIDTH / 500) * 500
-        if wing_width < 500: wing_width = 500
+        # Calculate Total ATM Premium
+        c_prem = self.tickers.get(BOT_STATE["legs"]["C"]["instrument"], {}).get("mid_price", 0)
+        p_prem = self.tickers.get(BOT_STATE["legs"]["P"]["instrument"], {}).get("mid_price", 0)
+        total_atm_prem = c_prem + p_prem
+
+        # Width = Total ATM Premium (in Index points)
+        # Note: Deribit premiums are in BTC. Need to convert to USD/Index Points?
+        # "Buy Call at (ATM Strike + TotalATM)" implies TotalATM is in Strike units (USD).
+        # Deribit BTC options: Premium in BTC * Index = USD Value? No.
+        # Strike is in USD. Premium is in BTC.
+        # If strategy says "Call at ATM + TotalATM", it usually implies Premium in Points.
+        # Premium in USD = Premium(BTC) * Index.
+
+        total_atm_usd = total_atm_prem * idx
+        width = round(total_atm_usd / 500) * 500
+        if width < 500: width = 500
 
         atm = round(idx / 500) * 500
-        w_call = atm + wing_width
-        w_put = atm - wing_width
+        w_call = atm + width
+        w_put = atm - width
 
-        print(f"[hedge] ATM: {atm} | Wing Width: {wing_width} | Targets: C{w_call} / P{w_put}")
+        print(f"[hedge] ATM: {atm} | Total Prem: {total_atm_prem:.4f} BTC (~${total_atm_usd:.0f}) | Width: {width} | Targets: C{w_call} / P{w_put}")
 
         instrs, _ = self.get_0dte_expiry()
         wc_instr = next((i for i in instrs if i['strike'] == w_call and i['option_type'] == 'call'), None)
@@ -627,9 +639,11 @@ class GammaScalper:
                         entry = leg["entry_price"]
                         # Short PnL = Entry - Current
                         # Loss = Current - Entry
-                        loss = mid - entry
-                        if loss > (entry * LEG_BLOWOUT_MULT):
-                            print(f"[safety] 🚨 LEG BLOWOUT {inst}: Loss {loss:.6f} > 2.5x Credit {entry:.6f}")
+                        # Check "Premium increases by 60% from reference"
+                        # Current > Reference * 1.6
+                        ref = leg.get("reset_price", entry)
+                        if mid > (ref * LEG_BLOWOUT_MULT):
+                            print(f"[safety] 🚨 LEG BLOWOUT {inst}: Premium {mid:.6f} > {LEG_BLOWOUT_MULT}x Ref {ref:.6f}")
                             if ENABLE_LIVE_TRADING:
                                  self.client.close_all(BOT_STATE["legs"])
                                  sys.exit(1)
@@ -681,8 +695,8 @@ class GammaScalper:
 
 def main():
     global API_KEY, API_SECRET, USE_TESTNET, ENABLE_LIVE_TRADING
-    global ENTRY_TIME_UTC, ENTRY_DELTA, ADJUST_THRESHOLD, COMPRESSION_WIDTH
-    global IRON_FLY_WING_WIDTH, GLOBAL_TP_PCT, GLOBAL_SL_PCT, LEG_BLOWOUT_MULT
+    global ENTRY_TIME_UTC, ENTRY_DELTA, ADJUST_THRESHOLD
+    global GLOBAL_TP_PCT, GLOBAL_SL_PCT, LEG_BLOWOUT_MULT
     global MAX_JUMP_PCT, WS_TIMEOUT_SEC, EXPIRY_CLOSE_MIN, FIXED_QTY
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -695,11 +709,9 @@ def main():
     parser.add_argument("--entry-time", default=ENTRY_TIME_UTC, help="UTC Time to enter trade (HH:MM)")
     parser.add_argument("--entry-delta", type=float, default=ENTRY_DELTA, help="Target Delta for entry legs")
     parser.add_argument("--adjust-threshold", type=float, default=ADJUST_THRESHOLD, help="Premium multiplier to trigger adjustment (e.g. 1.30)")
-    parser.add_argument("--compression-width", type=int, default=COMPRESSION_WIDTH, help="Strike width to trigger Iron Fly")
-    parser.add_argument("--wing-width", type=int, default=IRON_FLY_WING_WIDTH, help="Width of wings for Iron Fly")
     parser.add_argument("--tp-pct", type=float, default=GLOBAL_TP_PCT, help="Global Take Profit % of credit (e.g. 0.45)")
     parser.add_argument("--sl-pct", type=float, default=GLOBAL_SL_PCT, help="Global Stop Loss % of credit (e.g. -0.35)")
-    parser.add_argument("--blowout-mult", type=float, default=LEG_BLOWOUT_MULT, help="Leg Blowout Multiplier (Exit if loss > mult * credit)")
+    parser.add_argument("--blowout-mult", type=float, default=LEG_BLOWOUT_MULT, help="Leg Blowout Multiplier (Exit if price > mult * ref)")
     parser.add_argument("--jump-pct", type=float, default=MAX_JUMP_PCT, help="Emergency exit if price jumps > this %")
     parser.add_argument("--ws-timeout", type=int, default=WS_TIMEOUT_SEC, help="WebSocket timeout in seconds")
     parser.add_argument("--expiry-close-min", type=int, default=EXPIRY_CLOSE_MIN, help="Minutes before expiry to close all positions")
@@ -716,8 +728,6 @@ def main():
     ENTRY_TIME_UTC = args.entry_time
     ENTRY_DELTA = args.entry_delta
     ADJUST_THRESHOLD = args.adjust_threshold
-    COMPRESSION_WIDTH = args.compression_width
-    IRON_FLY_WING_WIDTH = args.wing_width
     GLOBAL_TP_PCT = args.tp_pct
     GLOBAL_SL_PCT = args.sl_pct
     LEG_BLOWOUT_MULT = args.blowout_mult
