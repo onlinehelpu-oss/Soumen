@@ -156,26 +156,41 @@ class GammaBot:
                 self.symbol_map[t['symbol']] = t['product_id']
                 self.tickers[t['symbol']] = t
 
-                # Check Spot
-                if t['symbol'] == "BTCUSDT" or t['symbol'] == "BTC-USDT": # Sometimes symbol names vary
-                     self.cached_spot = float(t.get('spot_price', 0) or t.get('mark_price', 0))
+                # Check Spot - Need to be specific about which ticker
+                if t['symbol'] == "BTC_USDT" or t['symbol'] == "BTC-USDT":
+                     self.cached_spot = float(t.get('spot_price', 0) or t.get('mark_price', 0) or 0)
+                # If still 0, check if it's the right spot symbol?
+                if self.cached_spot == 0 and t['contract_type'] == "spot_price" and "BTC" in t['symbol']:
+                     self.cached_spot = float(t.get('spot_price', 0) or t.get('mark_price', 0) or 0)
 
         self.log(f"Loaded {len(self.products)} products.")
 
-        # Fallback: If cached_spot is still 0, try fetching it explicitly
-        if self.cached_spot == 0.0:
-            self.log("Fetching Spot Price explicitly...")
-            spot_ticker = self.client.get_ticker("BTCUSDT")
+        # Fallback: If cached_spot is still 0, try fetching explicit spot ticker
+        if self.cached_spot < 1000: # BTC < 1000 is definitely wrong
+            self.log("Fetching Spot Price explicitly (BTC_USDT)...")
+            spot_ticker = self.client.get_ticker("BTC_USDT")
             if spot_ticker and spot_ticker.get('result'):
                 res = spot_ticker['result'][0]
-                self.cached_spot = float(res.get('spot_price', 0) or res.get('mark_price', 0))
-                # Add to tickers cache so it's there for updates
-                self.tickers["BTCUSDT"] = res
+                price = float(res.get('spot_price', 0) or res.get('mark_price', 0) or 0)
+                if price > 1000:
+                    self.cached_spot = price
+                    self.tickers["BTC_USDT"] = res
 
-        if self.cached_spot > 0:
+            # Try BTC-USDT
+            if self.cached_spot < 1000:
+                self.log("Fetching Spot Price explicitly (BTC-USDT)...")
+                spot_ticker = self.client.get_ticker("BTC-USDT")
+                if spot_ticker and spot_ticker.get('result'):
+                    res = spot_ticker['result'][0]
+                    price = float(res.get('spot_price', 0) or res.get('mark_price', 0) or 0)
+                    if price > 1000:
+                        self.cached_spot = price
+                        self.tickers["BTC-USDT"] = res
+
+        if self.cached_spot > 1000:
             self.log(f"Initial Spot Price: {self.cached_spot}")
         else:
-            self.log("WARNING: Could not determine initial Spot Price. Option Chain will wait for WS.")
+            self.log(f"WARNING: Initial Spot Price invalid ({self.cached_spot}). Waiting for WS.")
 
         target_date = self.get_0dte_expiry_date()
         symbols_to_sub = []
@@ -185,11 +200,10 @@ class GammaBot:
                 if info and info['date'] == target_date:
                     symbols_to_sub.append(sym)
 
-        symbols_to_sub.append("BTCUSDT")
+        symbols_to_sub.append("BTC_USDT")
         self.initial_subscription_list = symbols_to_sub
         self.log(f"Identified {len(symbols_to_sub)} 0DTE BTC options to monitor.")
 
-        # Initial Print
         self.print_status_table()
 
     def get_0dte_expiry_date(self):
@@ -216,15 +230,17 @@ class GammaBot:
         try:
             data = json.loads(message)
             if data.get('type') == 'v2/ticker':
-                if 'symbol' in data and 'mark_price' in data:
+                if 'symbol' in data:
                     with self.lock:
                         sym = data['symbol']
                         if sym not in self.tickers:
                             self.tickers[sym] = {}
                         self.tickers[sym].update(data)
 
-                        if sym == "BTCUSDT":
-                            self.cached_spot = float(data.get('spot_price', 0) or data.get('mark_price', 0))
+                        if "BTC" in sym and ("USDT" in sym or "-USDT" in sym) and data.get('contract_type') == 'spot':
+                             price = float(data.get('spot_price', 0) or data.get('mark_price', 0) or 0)
+                             if price > 1000:
+                                 self.cached_spot = price
 
                         self.on_tick(sym)
         except Exception as e:
@@ -243,7 +259,7 @@ class GammaBot:
             for i in range(0, len(self.initial_subscription_list), chunk_size):
                 self.subscribe(self.initial_subscription_list[i:i+chunk_size])
         else:
-            self.subscribe(["BTCUSDT"])
+            self.subscribe(["BTC_USDT"])
 
     def subscribe(self, symbols):
         if not self.ws: return
@@ -278,12 +294,20 @@ class GammaBot:
         if not t: return 0.0
 
         quotes = t.get('quotes', {})
-        bid = float(quotes.get('best_bid', 0)) if quotes else float(t.get('best_bid', 0) or 0)
-        ask = float(quotes.get('best_ask', 0)) if quotes else float(t.get('best_ask', 0) or 0)
+        try:
+            bid = float(quotes.get('best_bid') or t.get('best_bid') or 0)
+            ask = float(quotes.get('best_ask') or t.get('best_ask') or 0)
+        except (ValueError, TypeError):
+            bid = 0.0
+            ask = 0.0
 
         if bid > 0 and ask > 0:
             return (bid + ask) / 2
-        return float(t.get('mark_price', 0))
+
+        try:
+            return float(t.get('mark_price') or 0)
+        except (ValueError, TypeError):
+            return 0.0
 
     # --- Output & Display ---
     def print_status_table(self):
@@ -294,15 +318,8 @@ class GammaBot:
         self.last_print_time = now
 
         spot = self.cached_spot
-        if spot == 0:
-            # Last ditch attempt to find spot in tickers
-            t = self.tickers.get("BTCUSDT")
-            if t:
-                spot = float(t.get('spot_price', 0) or t.get('mark_price', 0))
-                self.cached_spot = spot
-
-        if spot == 0:
-            return # Still 0, cannot print ATM
+        if spot < 1000: # Safety check
+            return
 
         atm_strike = int(round(spot / 100.0) * 100)
 
@@ -339,7 +356,10 @@ class GammaBot:
 
         if not strikes: return
 
-        closest_idx = min(range(len(strikes)), key=lambda i: abs(strikes[i] - atm_strike))
+        try:
+            closest_idx = min(range(len(strikes)), key=lambda i: abs(strikes[i] - atm_strike))
+        except ValueError:
+            return # Empty sequence
 
         start_idx = max(0, closest_idx - 8)
         end_idx = min(len(strikes), closest_idx + 9)
@@ -352,18 +372,25 @@ class GammaBot:
             p = row_data.get('P', {})
 
             c_ltp = self.get_mid_price(c.get('symbol')) if c else 0.0
+
+            # Safe access for greeks
             c_greeks = c.get('greeks') or {}
-            c_delta = float(c_greeks.get('delta', 0))
-            c_gamma = float(c_greeks.get('gamma', 0))
-            c_iv = float(c.get('quotes', {}).get('mark_iv', 0) or 0) * 100
-            c_oi = int(float(c.get('oi_contracts', 0) or 0))
+            c_delta = float(c_greeks.get('delta') or 0)
+            c_gamma = float(c_greeks.get('gamma') or 0)
+
+            # Safe access for quotes
+            c_quotes = c.get('quotes') or {}
+            c_iv = float(c_quotes.get('mark_iv') or 0) * 100
+            c_oi = int(float(c.get('oi_contracts') or 0))
 
             p_ltp = self.get_mid_price(p.get('symbol')) if p else 0.0
             p_greeks = p.get('greeks') or {}
-            p_delta = float(p_greeks.get('delta', 0))
-            p_gamma = float(p_greeks.get('gamma', 0))
-            p_iv = float(p.get('quotes', {}).get('mark_iv', 0) or 0) * 100
-            p_oi = int(float(p.get('oi_contracts', 0) or 0))
+            p_delta = float(p_greeks.get('delta') or 0)
+            p_gamma = float(p_greeks.get('gamma') or 0)
+
+            p_quotes = p.get('quotes') or {}
+            p_iv = float(p_quotes.get('mark_iv') or 0) * 100
+            p_oi = int(float(p.get('oi_contracts') or 0))
 
             c_str = f"{c_ltp:8.2f} {c_delta:8.4f} {c_gamma:8.6f} {c_iv:8.2f} {c_oi:10,}"
             p_str = f"{p_ltp:8.2f} {p_delta:8.4f} {p_gamma:8.6f} {p_iv:8.2f} {p_oi:10,}"
