@@ -54,7 +54,7 @@ COMPRESSION_WIDTH = 400   # Strike width to trigger Iron Fly (Default: 400 per r
 IRON_FLY_WING_WIDTH = 500 # Fallback width
 GLOBAL_TP_PCT = 0.45      # 45% of collected credit
 GLOBAL_SL_PCT = -0.35     # -35% of collected credit
-LEG_BLOWOUT_MULT = 2.5    # 2.5x credit loss -> flatten
+LEG_BLOWOUT_MULT = 1.6    # 1.6x premium increase (60%) -> flatten
 MAX_JUMP_PCT = 0.80       # 80% jump in price -> flatten
 WS_TIMEOUT_SEC = 5        # 5s disconnect -> flatten (Strict Rule 7)
 EXPIRY_CLOSE_MIN = 30     # Close positions 30 mins before expiry
@@ -746,7 +746,7 @@ def main():
     parser.add_argument("--wing-width", type=int, default=IRON_FLY_WING_WIDTH, help="Width of wings for Iron Fly")
     parser.add_argument("--tp-pct", type=float, default=GLOBAL_TP_PCT, help="Global Take Profit %% of credit (e.g. 0.45)")
     parser.add_argument("--sl-pct", type=float, default=GLOBAL_SL_PCT, help="Global Stop Loss %% of credit (e.g. -0.35)")
-    parser.add_argument("--blowout-mult", type=float, default=LEG_BLOWOUT_MULT, help="Leg Blowout Multiplier (Exit if price > mult * ref)")
+    parser.add_argument("--blowout-mult", type=float, default=LEG_BLOWOUT_MULT, help="Leg Blowout Multiplier (Exit if price > mult * ref, default 1.6 for 60%% increase)")
     parser.add_argument("--jump-pct", type=float, default=MAX_JUMP_PCT, help="Emergency exit if price jumps > this %%")
     parser.add_argument("--ws-timeout", type=int, default=WS_TIMEOUT_SEC, help="WebSocket timeout in seconds")
     parser.add_argument("--expiry-close-min", type=int, default=EXPIRY_CLOSE_MIN, help="Minutes before expiry to close all positions")
