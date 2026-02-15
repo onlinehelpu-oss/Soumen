@@ -787,13 +787,11 @@ if __name__ == "__main__":
     if not secret: secret = os.environ.get("DELTA_API_SECRET")
 
     # 3. Fallback to Hardcoded Keys (User Request)
-    # Keys removed for security. Please use environment variables or CLI arguments.
-    if not key: key = ""
-    if not secret: secret = ""
+    if not key: key = "MaujYnOjgsqbsfcyjlI7kdlJVzeo6I"
+    if not secret: secret = "olNXyDJv9pCn3MKTktpbUB4E0lMPJ67eNVVGKddqpcutlsiXg97PJjHLm7AS"
 
     if not key or not secret:
         print("No API Credentials found. Forcing Dry Run.")
-        print("To enable Live Trading, use: python \"Sort strangle BTC.py\" --key \"YOUR_KEY\" --secret \"YOUR_SECRET\"")
         args.dry_run = True
         key = "test"
         secret = "test"
