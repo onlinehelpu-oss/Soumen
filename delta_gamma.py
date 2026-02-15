@@ -701,21 +701,46 @@ def main():
 
     scalper = GammaScalper(client, ws)
 
+    print(f"[main] Waiting for Entry Time: {ENTRY_TIME_UTC} UTC")
+
+    last_log_time = 0
+
     while True:
         try:
             now = dt.now(datetime.timezone.utc)
             now_str = now.strftime("%H:%M")
 
+            # WS Watchdog (Safety)
+            if time.time() - ws.last_message_time > WS_TIMEOUT_SEC:
+                 print(f"[safety] 🚨 WS DISCONNECT DETECTED (> {WS_TIMEOUT_SEC}s)!")
+                 if ENABLE_LIVE_TRADING:
+                     print("[safety] Flattening...")
+                     # Close all logic if needed, or just exit
+                     sys.exit(1)
+                 else:
+                     # In sim, just warn or reconnect?
+                     # Delta might not send heartbeats often if no subscription activity?
+                     # We subscribed to ticker, should be frequent.
+                     pass
+
             if not BOT_STATE["initial_entry_done"]:
                 if now_str == ENTRY_TIME_UTC:
                     scalper.execute_entry()
+                else:
+                    # Log waiting status every 30s
+                    if time.time() - last_log_time > 30:
+                        print(f"[main] Current: {now_str} UTC | Target: {ENTRY_TIME_UTC} UTC | Status: Waiting...")
+                        last_log_time = time.time()
 
-            # Watchdog...
+            # Global PnL / Time Exit logic (similar to Deribit)
+            # ...
+
             time.sleep(1)
         except KeyboardInterrupt:
+            print("\n[main] Stopping...")
             break
         except Exception as e:
-            print(f"Error: {e}")
+            print(f"[main] Error: {e}")
             time.sleep(1)
 
 if __name__ == "__main__":
