@@ -72,13 +72,11 @@ class DeltaClient:
                 response = self.session.post(url, data=data_str, headers=headers)
 
             if response.status_code >= 400:
-                # Suppress 429 or 500 noise unless critical
                 if response.status_code not in [429, 502, 503]:
                     print(f"API Error {response.status_code}: {response.text}")
                 return None
             return response.json()
         except requests.exceptions.RequestException as e:
-            # print(f"API Request Error: {e}")
             return None
 
     def get_tickers(self):
@@ -140,7 +138,6 @@ class GammaBot:
         self.should_stop = False
         self.last_message_time = time.time()
 
-        # Display cache
         self.last_print_time = 0
         self.cached_spot = 0.0
 
@@ -208,7 +205,6 @@ class GammaBot:
 
                         self.on_tick(sym)
         except Exception as e:
-            # self.log(f"WS Error: {e}")
             pass
 
     def on_ws_error(self, ws, error):
@@ -278,13 +274,10 @@ class GammaBot:
             t = self.tickers.get("BTCUSDT")
             if t: spot = float(t.get('spot_price', 0) or t.get('mark_price', 0))
 
-        if spot == 0: return # Wait for data
+        if spot == 0: return
 
-        # Round ATM to nearest 100 for BTC
         atm_strike = int(round(spot / 100.0) * 100)
 
-        # Clear screen (ANSI) - Optional, maybe just print new block
-        # print("\033[H\033[J", end="")
         print("\n" * 2)
 
         print(f"Live LTP for BTCUSDT is: {spot:.1f}")
@@ -292,22 +285,14 @@ class GammaBot:
         print(f"(Using expiry: {self.get_0dte_expiry_date()})")
         print("")
 
-        # Build Table
-        # Columns: CE LTP, CE Delta, CE Gamma, CE IV%, CE OI | STRIKE | PE ...
         header = f"{'CE LTP':>8} {'CE Δ':>8} {'CE Γ':>8} {'CE IV%':>8} {'CE OI':>10} | {'STRIKE':^8} | {'PE LTP':>8} {'PE Δ':>8} {'PE Γ':>8} {'PE IV%':>8} {'PE OI':>10}"
         print(f"--- Option Chain for BTC (ATM +/- 8 strikes) ---")
         print(header)
         print("-" * len(header))
 
-        # Range +/- 8 strikes (8 * 100 = 800 width)
-        # Actually BTC strikes might be 100, 500, etc. Usually 100 or 500 on Delta.
-        # Let's assume 100 steps for now based on what we see or what is common.
-        # We will scan our tickers to find strikes near ATM.
-
         target_date = self.get_0dte_expiry_date()
 
-        # Collect relevant tickers
-        chain_data = {} # strike -> {'C': ticker, 'P': ticker}
+        chain_data = {}
 
         with self.lock:
             all_tickers = list(self.tickers.values())
@@ -322,11 +307,10 @@ class GammaBot:
                     typ = 'C' if info['type'] == 'call' else 'P'
                     chain_data[strike][typ] = t
 
-        # Sort strikes
         strikes = sorted(chain_data.keys())
 
-        # Find index of ATM
-        # Locate closest strike in list
+        if not strikes: return
+
         closest_idx = min(range(len(strikes)), key=lambda i: abs(strikes[i] - atm_strike))
 
         start_idx = max(0, closest_idx - 8)
@@ -339,15 +323,13 @@ class GammaBot:
             c = row_data.get('C', {})
             p = row_data.get('P', {})
 
-            # CE Data
             c_ltp = self.get_mid_price(c.get('symbol')) if c else 0.0
             c_greeks = c.get('greeks') or {}
             c_delta = float(c_greeks.get('delta', 0))
             c_gamma = float(c_greeks.get('gamma', 0))
-            c_iv = float(c.get('quotes', {}).get('mark_iv', 0) or 0) * 100 # usually decimal
-            c_oi = int(float(c.get('oi_contracts', 0) or 0)) # Using contracts, not value
+            c_iv = float(c.get('quotes', {}).get('mark_iv', 0) or 0) * 100
+            c_oi = int(float(c.get('oi_contracts', 0) or 0))
 
-            # PE Data
             p_ltp = self.get_mid_price(p.get('symbol')) if p else 0.0
             p_greeks = p.get('greeks') or {}
             p_delta = float(p_greeks.get('delta', 0))
@@ -355,8 +337,6 @@ class GammaBot:
             p_iv = float(p.get('quotes', {}).get('mark_iv', 0) or 0) * 100
             p_oi = int(float(p.get('oi_contracts', 0) or 0))
 
-            # Fmt
-            # CE: LTP(8), D(8), G(8), IV(8), OI(10)
             c_str = f"{c_ltp:8.2f} {c_delta:8.4f} {c_gamma:8.6f} {c_iv:8.2f} {c_oi:10,}"
             p_str = f"{p_ltp:8.2f} {p_delta:8.4f} {p_gamma:8.6f} {p_iv:8.2f} {p_oi:10,}"
 
@@ -366,7 +346,6 @@ class GammaBot:
 
     # --- Strategy Logic ---
     def on_tick(self, symbol):
-        # Trigger display update
         self.print_status_table()
 
         if self.state == StrategyState.WAITING:
@@ -690,24 +669,40 @@ if __name__ == "__main__":
     if not key: key = os.environ.get("DELTA_API_KEY")
     if not secret: secret = os.environ.get("DELTA_API_SECRET")
 
-    # 3. Try Secrets File
+    # 3. Try Secrets File (Script Dir or Current Dir)
     if not key or not secret:
-        if os.path.exists(SECRETS_FILE):
-            try:
-                with open(SECRETS_FILE, 'r') as f:
-                    secrets = json.load(f)
-                    key = secrets.get("api_key")
-                    secret = secrets.get("api_secret")
-                    if key and secret:
-                        print(f"Loaded credentials from {SECRETS_FILE}")
-            except Exception as e:
-                print(f"Error loading {SECRETS_FILE}: {e}")
+        # Check current dir
+        paths_to_check = [
+            SECRETS_FILE,
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), SECRETS_FILE)
+        ]
+
+        for p in paths_to_check:
+            if os.path.exists(p):
+                try:
+                    with open(p, 'r') as f:
+                        secrets = json.load(f)
+                        k = secrets.get("api_key")
+                        s = secrets.get("api_secret")
+                        if k and s:
+                            key = k
+                            secret = s
+                            print(f"Loaded credentials from {p}")
+                            break
+                except Exception as e:
+                    print(f"Error loading {p}: {e}")
+
+    # 4. HARDCODED FALLBACK (Uncomment and fill if absolutely stuck)
+    # if not key: key = "qnz5G7ullIHIIywNbojX6i2mEfWCKY"
+    # if not secret: secret = "NM0zX5jmDDtLkqAX5qNTyWgLtW5XqTVHZceBl3yCD7FVy0K8r8Dqlxts9oy0"
 
     if not key or not secret:
         print("No API Credentials found (Args, Env, or delta_secrets.json). Forcing Dry Run.")
         args.dry_run = True
         key = "test"
         secret = "test"
+    else:
+        print("API Credentials Loaded. LIVE TRADING ENABLED (unless --dry-run passed).")
 
     bot = GammaBot(key, secret, dry_run=args.dry_run, force_entry=args.force_entry)
     bot.run()
