@@ -793,6 +793,7 @@ if __name__ == "__main__":
 
     if not key or not secret:
         print("No API Credentials found. Forcing Dry Run.")
+        print("To enable Live Trading, use: python \"Sort strangle BTC.py\" --key \"YOUR_KEY\" --secret \"YOUR_SECRET\"")
         args.dry_run = True
         key = "test"
         secret = "test"
