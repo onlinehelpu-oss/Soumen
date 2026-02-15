@@ -1,0 +1,569 @@
+import time
+import json
+import hmac
+import hashlib
+import requests
+import threading
+import sys
+import os
+import argparse
+from urllib.parse import urlencode
+from datetime import datetime, timezone, timedelta
+import websocket
+
+# Configuration
+API_URL = "https://api.delta.exchange"
+WS_URL = "wss://socket.delta.exchange"
+
+# Strategy Defaults
+ENTRY_TIME_UTC_START = "13:00"
+ENTRY_TIME_UTC_END = "13:05"
+ENTRY_DELTA = 0.18
+ADJUST_TRIGGER = 1.30  # 30% increase
+COMPRESSION_WIDTH = 400
+PROFIT_TARGET = 0.45
+STOP_LOSS = -0.35
+LEG_MAX_LOSS = 2.5
+CONTRACT_SIZE = 1
+
+class DeltaClient:
+    def __init__(self, api_key, api_secret, base_url=API_URL):
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.base_url = base_url
+        self.session = requests.Session()
+
+    def _generate_signature(self, method, endpoint, payload):
+        timestamp = str(int(time.time()))
+        if method == "GET":
+            query_string = urlencode(payload) if payload else ""
+            message = method + timestamp + endpoint + query_string
+        else:
+            body = json.dumps(payload, separators=(',', ':')) if payload else ""
+            message = method + timestamp + endpoint + body
+
+        signature = hmac.new(
+            self.api_secret.encode('utf-8'),
+            message.encode('utf-8'),
+            hashlib.sha256
+        ).hexdigest()
+
+        return signature, timestamp
+
+    def request(self, method, endpoint, params=None, payload=None):
+        url = self.base_url + endpoint
+
+        data_str = json.dumps(payload, separators=(',', ':')) if payload else None
+
+        signature, timestamp = self._generate_signature(method, endpoint, params if method == "GET" else payload)
+        headers = {
+            "api-key": self.api_key,
+            "signature": signature,
+            "timestamp": timestamp,
+            "Content-Type": "application/json"
+        }
+
+        try:
+            if method == "GET":
+                response = self.session.get(url, params=params, headers=headers)
+            else:
+                response = self.session.post(url, data=data_str, headers=headers)
+
+            if response.status_code >= 400:
+                print(f"API Error {response.status_code}: {response.text}")
+                return None
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"API Request Error: {e}")
+            return None
+
+    def get_tickers(self):
+        return self.request("GET", "/v2/tickers")
+
+    def get_ticker(self, symbol):
+        return self.request("GET", "/v2/tickers", params={"symbol": symbol})
+
+    def place_order(self, product_id, size, side, order_type="market_order", limit_price=None):
+        payload = {
+            "product_id": int(product_id),
+            "size": int(size),
+            "side": side,
+            "order_type": order_type,
+            "limit_price": str(limit_price) if limit_price else None,
+            "time_in_force": "ioc" if order_type == "market_order" else "gtc"
+        }
+        return self.request("POST", "/v2/orders", payload=payload)
+
+    def cancel_order(self, product_id, order_id):
+        payload = {
+            "product_id": int(product_id),
+            "order_id": int(order_id)
+        }
+        return self.request("DELETE", "/v2/orders", payload=payload)
+
+    def get_index_price(self, symbol="BTC"):
+        t = self.get_ticker(f"{symbol}USDT")
+        if t and t.get('result'):
+            return float(t['result'][0]['spot_price'])
+        return None
+
+class StrategyState:
+    WAITING = "WAITING"
+    STRANGLE_OPEN = "STRANGLE_OPEN"
+    COMPRESSING = "COMPRESSING"
+    IRON_FLY = "IRON_FLY"
+    EXITED = "EXITED"
+
+class GammaBot:
+    def __init__(self, api_key, api_secret, dry_run=False):
+        self.client = DeltaClient(api_key, api_secret)
+        self.dry_run = dry_run
+        self.state = StrategyState.WAITING
+
+        self.positions = {}
+        self.cumulative_credit = 0.0
+        self.realized_pnl = 0.0
+
+        self.tickers = {}
+        self.products = {}
+        self.symbol_map = {}
+        self.initial_subscription_list = []
+
+        self.lock = threading.RLock() # Changed to RLock to fix deadlock
+        self.ws = None
+        self.ws_thread = None
+        self.should_stop = False
+        self.last_message_time = time.time()
+
+    def log(self, msg):
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
+
+    def send_alert(self, msg):
+        # Placeholder for Telegram/Discord alerting
+        self.log(f"ALERT: {msg}")
+
+    def load_products(self):
+        self.log("Loading products...")
+        tickers = self.client.get_tickers()
+        if tickers and tickers.get('result'):
+            for t in tickers['result']:
+                self.products[t['product_id']] = t
+                self.symbol_map[t['symbol']] = t['product_id']
+                self.tickers[t['symbol']] = t
+        self.log(f"Loaded {len(self.products)} products.")
+
+        target_date = self.get_0dte_expiry_date()
+        symbols_to_sub = []
+        for sym, t in self.tickers.items():
+            if t.get('underlying_asset_symbol') == 'BTC' and t.get('contract_type') in ['call_options', 'put_options']:
+                info = self.parse_symbol(sym)
+                if info and info['date'] == target_date:
+                    symbols_to_sub.append(sym)
+
+        symbols_to_sub.append("BTCUSDT")
+        self.initial_subscription_list = symbols_to_sub
+        self.log(f"Identified {len(symbols_to_sub)} 0DTE BTC options to monitor.")
+
+    def get_0dte_expiry_date(self):
+        today = datetime.now(timezone.utc)
+        return today.strftime("%d%m%y")
+
+    def parse_symbol(self, symbol):
+        parts = symbol.split('-')
+        if len(parts) >= 4:
+            try:
+                return {
+                    'type': 'call' if parts[0] == 'C' else 'put',
+                    'asset': parts[1],
+                    'strike': float(parts[2]),
+                    'date': parts[3]
+                }
+            except:
+                return None
+        return None
+
+    # --- WebSocket Handling ---
+    def on_ws_message(self, ws, message):
+        self.last_message_time = time.time()
+        try:
+            data = json.loads(message)
+            if data.get('type') == 'v2/ticker':
+                if 'symbol' in data and 'mark_price' in data:
+                    with self.lock:
+                        sym = data['symbol']
+                        if sym not in self.tickers:
+                            self.tickers[sym] = {}
+                        self.tickers[sym].update(data)
+                        self.on_tick(sym)
+        except Exception as e:
+            self.log(f"WS Error: {e}")
+
+    def on_ws_error(self, ws, error):
+        self.log(f"WS Error: {error}")
+
+    def on_ws_close(self, ws, close_status_code, close_msg):
+        self.log("WS Closed")
+
+    def on_ws_open(self, ws):
+        self.log("WS Open")
+        if self.initial_subscription_list:
+            chunk_size = 50
+            for i in range(0, len(self.initial_subscription_list), chunk_size):
+                self.subscribe(self.initial_subscription_list[i:i+chunk_size])
+        else:
+            self.subscribe(["BTCUSDT"])
+
+    def subscribe(self, symbols):
+        if not self.ws: return
+        payload = {
+            "type": "subscribe",
+            "payload": {
+                "channels": [
+                    {
+                        "name": "v2/ticker",
+                        "symbols": symbols
+                    }
+                ]
+            }
+        }
+        self.ws.send(json.dumps(payload))
+
+    def start_ws(self):
+        self.ws = websocket.WebSocketApp(
+            WS_URL,
+            on_open=self.on_ws_open,
+            on_message=self.on_ws_message,
+            on_error=self.on_ws_error,
+            on_close=self.on_ws_close
+        )
+        self.ws_thread = threading.Thread(target=self.ws.run_forever)
+        self.ws_thread.daemon = True
+        self.ws_thread.start()
+
+    # --- Market Data Helpers ---
+    def get_mid_price(self, symbol):
+        t = self.tickers.get(symbol)
+        if not t: return 0.0
+
+        quotes = t.get('quotes', {})
+        bid = float(quotes.get('best_bid', 0)) if quotes else float(t.get('best_bid', 0) or 0)
+        ask = float(quotes.get('best_ask', 0)) if quotes else float(t.get('best_ask', 0) or 0)
+
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2
+        return float(t.get('mark_price', 0))
+
+    # --- Strategy Logic ---
+    def on_tick(self, symbol):
+        if self.state == StrategyState.WAITING:
+            now = datetime.now(timezone.utc).strftime("%H:%M")
+            if ENTRY_TIME_UTC_START <= now <= ENTRY_TIME_UTC_END:
+                if not self.positions:
+                    self.enter_initial_positions()
+
+        elif self.state in [StrategyState.STRANGLE_OPEN, StrategyState.COMPRESSING]:
+            self.check_adjustments()
+            self.check_compression()
+            self.check_global_pnl()
+
+        elif self.state == StrategyState.IRON_FLY:
+            self.check_global_pnl()
+
+    def find_entry_candidates(self):
+        candidates = []
+        target_date = self.get_0dte_expiry_date()
+
+        with self.lock:
+            items = list(self.tickers.values())
+
+        for t in items:
+            if t.get('contract_type') in ['call_options', 'put_options'] and t.get('underlying_asset_symbol') == 'BTC':
+                info = self.parse_symbol(t['symbol'])
+                if info and info['date'] == target_date:
+                    greeks = t.get('greeks')
+                    delta = float(greeks['delta']) if greeks and 'delta' in greeks else 0.0
+                    if delta == 0.0: continue
+
+                    t['parsed_strike'] = info['strike']
+                    t['parsed_delta'] = delta
+                    candidates.append(t)
+
+        if not candidates:
+            return None, None
+
+        calls = [c for c in candidates if c['contract_type'] == 'call_options']
+        puts = [p for p in candidates if p['contract_type'] == 'put_options']
+
+        calls.sort(key=lambda x: abs(abs(x['parsed_delta']) - ENTRY_DELTA))
+        puts.sort(key=lambda x: abs(abs(x['parsed_delta']) - ENTRY_DELTA))
+
+        best_call = calls[0] if calls else None
+        best_put = puts[0] if puts else None
+
+        return best_call, best_put
+
+    def enter_initial_positions(self):
+        self.send_alert("Attempting Initial Entry...")
+        call, put = self.find_entry_candidates()
+
+        if not call or not put:
+            self.log("No suitable candidates found yet.")
+            return
+
+        self.log(f"Selected: {call['symbol']} (Delta {call.get('parsed_delta')}) & {put['symbol']} (Delta {put.get('parsed_delta')})")
+
+        if self.execute_trade(call, "sell", "call") and self.execute_trade(put, "sell", "put"):
+            self.state = StrategyState.STRANGLE_OPEN
+            self.send_alert("Strangle Entered Successfully.")
+
+    def execute_trade(self, ticker, action, leg_name):
+        symbol = ticker['symbol']
+        product_id = ticker['product_id']
+        price = self.get_mid_price(symbol)
+        if price == 0: price = float(ticker.get('mark_price', 0))
+
+        self.log(f"{action.upper()} {symbol} @ {price}")
+
+        if not self.dry_run:
+            side = "sell" if action == "sell" else "buy"
+            resp = self.client.place_order(product_id, CONTRACT_SIZE, side)
+            if not resp or (not resp.get('result') and not resp.get('success')):
+                 self.log(f"Order Failed: {resp}")
+                 return False
+
+        if action == "sell":
+            self.positions[leg_name] = {
+                'symbol': symbol,
+                'product_id': product_id,
+                'entry_price': price,
+                'last_reset_price': price,
+                'size': CONTRACT_SIZE,
+                'strike': ticker.get('parsed_strike', 0)
+            }
+            if not leg_name.startswith('long_'):
+                self.cumulative_credit += (price * CONTRACT_SIZE)
+        else:
+            if leg_name in self.positions:
+                pos = self.positions[leg_name]
+                if leg_name.startswith('long_'):
+                     pnl = (price - pos['entry_price']) * pos['size']
+                else:
+                     pnl = (pos['entry_price'] - price) * pos['size']
+
+                self.realized_pnl += pnl
+                del self.positions[leg_name]
+
+        return True
+
+    def check_adjustments(self):
+        triggered_leg = None
+        for leg in ['call', 'put']:
+            if leg not in self.positions: continue
+            pos = self.positions[leg]
+            curr_price = self.get_mid_price(pos['symbol'])
+
+            if curr_price >= pos['last_reset_price'] * ADJUST_TRIGGER:
+                self.send_alert(f"Trigger! {leg.upper()} premium {curr_price:.4f} >= {pos['last_reset_price']:.4f} * 1.3")
+                triggered_leg = leg
+                break
+
+        if triggered_leg:
+            winning_leg = triggered_leg
+            losing_leg = 'put' if winning_leg == 'call' else 'call'
+            self.perform_adjustment(winning_leg, losing_leg)
+
+    def perform_adjustment(self, winning_leg, losing_leg):
+        self.send_alert(f"Adjusting: Keeping {winning_leg}, Rolling {losing_leg}")
+
+        if losing_leg in self.positions:
+            pos = self.positions[losing_leg]
+            ticker = self.tickers.get(pos['symbol'])
+            self.execute_trade(ticker, "buy", losing_leg)
+
+        winning_pos = self.positions[winning_leg]
+        winning_price = self.get_mid_price(winning_pos['symbol'])
+
+        new_ticker = self.find_ticker_by_premium(losing_leg, winning_price)
+        if new_ticker:
+            self.send_alert(f"Rolling into {new_ticker['symbol']} (Target Premium: {winning_price})")
+            self.execute_trade(new_ticker, "sell", losing_leg)
+            self.state = StrategyState.COMPRESSING
+        else:
+            self.send_alert("CRITICAL: Could not find new leg to roll into!")
+
+    def find_ticker_by_premium(self, leg_type, target_premium):
+        contract_type = 'call_options' if leg_type == 'call' else 'put_options'
+        target_date = self.get_0dte_expiry_date()
+
+        best_ticker = None
+        min_diff = float('inf')
+
+        with self.lock:
+            candidates = list(self.tickers.values())
+
+        for t in candidates:
+            if t.get('contract_type') == contract_type and t.get('underlying_asset_symbol') == 'BTC':
+                info = self.parse_symbol(t['symbol'])
+                if info and info['date'] == target_date:
+                    price = self.get_mid_price(t['symbol'])
+                    diff = abs(price - target_premium)
+                    if diff < min_diff:
+                        min_diff = diff
+                        best_ticker = t
+                        best_ticker['parsed_strike'] = info['strike']
+
+        return best_ticker
+
+    def check_compression(self):
+        if 'call' in self.positions and 'put' in self.positions:
+            c_strike = self.positions['call']['strike']
+            p_strike = self.positions['put']['strike']
+            spread = abs(c_strike - p_strike)
+
+            spot = self.client.get_index_price()
+            if not spot: return
+
+            c_dist = abs(c_strike - spot) / spot
+            p_dist = abs(p_strike - spot) / spot
+
+            if spread <= COMPRESSION_WIDTH and c_dist < 0.02 and p_dist < 0.02:
+                self.send_alert(f"Compression Complete (Spread {spread}). Executing Final Hedge.")
+                self.execute_iron_fly_hedge(spot)
+
+    def execute_iron_fly_hedge(self, spot):
+        c_prem = self.get_mid_price(self.positions['call']['symbol'])
+        p_prem = self.get_mid_price(self.positions['put']['symbol'])
+        width = c_prem + p_prem
+
+        c_wing_strike = spot + width
+        p_wing_strike = spot - width
+
+        c_wing = self.find_closest_strike('call', c_wing_strike)
+        p_wing = self.find_closest_strike('put', p_wing_strike)
+
+        if c_wing and p_wing:
+            self.send_alert(f"Buying Wings: {c_wing['symbol']} & {p_wing['symbol']}")
+            self.execute_trade(c_wing, "buy", "long_call")
+            self.execute_trade(p_wing, "buy", "long_put")
+
+            self.state = StrategyState.IRON_FLY
+        else:
+            self.send_alert("Could not find wings!")
+
+    def find_closest_strike(self, leg_type, target_strike):
+        contract_type = 'call_options' if leg_type == 'call' else 'put_options'
+        target_date = self.get_0dte_expiry_date()
+
+        best = None
+        min_dist = float('inf')
+
+        with self.lock:
+             candidates = list(self.tickers.values())
+
+        for t in candidates:
+             if t.get('contract_type') == contract_type and t.get('underlying_asset_symbol') == 'BTC':
+                info = self.parse_symbol(t['symbol'])
+                if info and info['date'] == target_date:
+                    dist = abs(info['strike'] - target_strike)
+                    if dist < min_dist:
+                        min_dist = dist
+                        best = t
+                        best['parsed_strike'] = info['strike']
+        return best
+
+    def check_global_pnl(self):
+        unrealized = 0.0
+
+        for leg, pos in list(self.positions.items()):
+            curr = self.get_mid_price(pos['symbol'])
+            is_long = leg.startswith('long_')
+
+            if is_long:
+                pnl = (curr - pos['entry_price']) * pos['size']
+            else:
+                pnl = (pos['entry_price'] - curr) * pos['size']
+
+            unrealized += pnl
+
+            if not is_long:
+                if pnl < -LEG_MAX_LOSS * (pos['entry_price'] * pos['size']):
+                    self.send_alert(f"EMERGENCY EXIT: Leg {leg} loss exceeded limit!")
+                    self.flatten_all()
+                    return
+
+        net_pnl = self.realized_pnl + unrealized
+
+        if self.cumulative_credit > 0:
+            roi = net_pnl / self.cumulative_credit
+
+            if int(time.time()) % 60 == 0:
+                 self.log(f"Status: Net PnL: {net_pnl:.2f} (ROI: {roi*100:.1f}%) | CumCredit: {self.cumulative_credit:.2f}")
+
+            if roi >= PROFIT_TARGET:
+                self.send_alert(f"Take Profit Hit! (+{roi*100:.1f}%)")
+                self.flatten_all()
+            elif roi <= STOP_LOSS:
+                self.send_alert(f"Stop Loss Hit! ({roi*100:.1f}%)")
+                self.flatten_all()
+
+    def flatten_all(self):
+        self.send_alert("FLATTENING ALL POSITIONS")
+        for leg in list(self.positions.keys()):
+            pos = self.positions[leg]
+            ticker = self.tickers.get(pos['symbol'])
+            is_long = leg.startswith('long_')
+            action = "sell" if is_long else "buy"
+            self.execute_trade(ticker, action, leg)
+
+        self.state = StrategyState.EXITED
+        self.should_stop = True
+
+    def run(self):
+        self.load_products()
+        self.start_ws()
+
+        self.log("Bot Running. Press Ctrl+C to stop.")
+        self.last_message_time = time.time()
+
+        try:
+            while not self.should_stop:
+                time.sleep(1)
+
+                # Heartbeat check for WebSocket
+                if time.time() - self.last_message_time > 10: # > 5s check + buffer
+                    self.send_alert("WARNING: WebSocket Heartbeat Lost (> 10s). Flattening.")
+                    self.flatten_all()
+
+                if os.path.exists("TRIGGER_ENTRY"):
+                    self.log("Manual Trigger Detected")
+                    if not self.positions:
+                        self.enter_initial_positions()
+                    os.remove("TRIGGER_ENTRY")
+
+                if os.path.exists("STOP_BOT"):
+                    self.flatten_all()
+                    os.remove("STOP_BOT")
+
+        except KeyboardInterrupt:
+            self.log("Stopping...")
+        finally:
+            if self.ws: self.ws.close()
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--key", help="API Key")
+    parser.add_argument("--secret", help="API Secret")
+    parser.add_argument("--dry-run", action="store_true", help="Dry Run Mode")
+    args = parser.parse_args()
+
+    key = args.key or os.environ.get("DELTA_API_KEY")
+    secret = args.secret or os.environ.get("DELTA_API_SECRET")
+
+    if not key or not secret:
+        print("No API Credentials found. Forcing Dry Run.")
+        args.dry_run = True
+        key = "test"
+        secret = "test"
+
+    bot = GammaBot(key, secret, dry_run=args.dry_run)
+    bot.run()
