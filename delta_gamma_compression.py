@@ -793,6 +793,10 @@ if __name__ == "__main__":
         args.dry_run = True
         key = "test"
         secret = "test"
+    else:
+        # Masked Key Log
+        masked_key = key[:4] + "*" * (len(key) - 8) + key[-4:] if len(key) > 8 else "****"
+        print(f"Using API Key: {masked_key}")
 
     bot = GammaBot(key, secret, dry_run=args.dry_run, force_entry=args.force_entry)
     bot.run()
