@@ -217,6 +217,9 @@ class DeribitWS:
         return self.id_counter
 
     def send_auth(self):
+        if not self.api_key or not self.api_secret:
+            return
+
         msg = {
             "jsonrpc": "2.0",
             "id": self._next_id(),
@@ -256,7 +259,12 @@ class DeribitWS:
     def on_open(self, ws):
         print(f"[ws] Connected to Deribit ({self.url})")
         self.last_message_time = time.time()
-        self.send_auth()
+
+        if self.api_key and self.api_secret:
+            self.send_auth()
+        else:
+            print("[ws] No credentials provided. Skipping Auth (Public Only).")
+
         # Subscribe to public heartbeat channel to ensure message flow
         self.subscribe(["deribit_price_index.btc_usd"])
 
