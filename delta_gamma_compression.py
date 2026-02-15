@@ -115,9 +115,10 @@ class StrategyState:
     EXITED = "EXITED"
 
 class GammaBot:
-    def __init__(self, api_key, api_secret, dry_run=False):
+    def __init__(self, api_key, api_secret, dry_run=False, force_entry=False):
         self.client = DeltaClient(api_key, api_secret)
         self.dry_run = dry_run
+        self.force_entry = force_entry
         self.state = StrategyState.WAITING
 
         self.positions = {}
@@ -129,7 +130,7 @@ class GammaBot:
         self.symbol_map = {}
         self.initial_subscription_list = []
 
-        self.lock = threading.RLock() # Changed to RLock to fix deadlock
+        self.lock = threading.RLock()
         self.ws = None
         self.ws_thread = None
         self.should_stop = False
@@ -139,7 +140,6 @@ class GammaBot:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
     def send_alert(self, msg):
-        # Placeholder for Telegram/Discord alerting
         self.log(f"ALERT: {msg}")
 
     def load_products(self):
@@ -256,10 +256,14 @@ class GammaBot:
     # --- Strategy Logic ---
     def on_tick(self, symbol):
         if self.state == StrategyState.WAITING:
-            now = datetime.now(timezone.utc).strftime("%H:%M")
-            if ENTRY_TIME_UTC_START <= now <= ENTRY_TIME_UTC_END:
+            now_utc = datetime.now(timezone.utc).strftime("%H:%M")
+            should_enter = (ENTRY_TIME_UTC_START <= now_utc <= ENTRY_TIME_UTC_END) or self.force_entry
+
+            if should_enter:
                 if not self.positions:
                     self.enter_initial_positions()
+                    if self.force_entry:
+                        self.force_entry = False  # Reset force flag after entry
 
         elif self.state in [StrategyState.STRANGLE_OPEN, StrategyState.COMPRESSING]:
             self.check_adjustments()
@@ -523,6 +527,16 @@ class GammaBot:
         self.start_ws()
 
         self.log("Bot Running. Press Ctrl+C to stop.")
+
+        now_utc = datetime.now(timezone.utc).strftime("%H:%M")
+        self.log(f"Current UTC Time: {now_utc}")
+        self.log(f"Scheduled Entry: {ENTRY_TIME_UTC_START} - {ENTRY_TIME_UTC_END}")
+
+        if self.force_entry:
+            self.log("Force Entry Enabled: Will attempt entry immediately.")
+        else:
+            self.log("Waiting for entry time (or use --force-entry to bypass)...")
+
         self.last_message_time = time.time()
 
         try:
@@ -554,6 +568,7 @@ if __name__ == "__main__":
     parser.add_argument("--key", help="API Key")
     parser.add_argument("--secret", help="API Secret")
     parser.add_argument("--dry-run", action="store_true", help="Dry Run Mode")
+    parser.add_argument("--force-entry", action="store_true", help="Force Entry Immediately (Bypass Time Check)")
     args = parser.parse_args()
 
     key = args.key or os.environ.get("DELTA_API_KEY")
@@ -565,5 +580,5 @@ if __name__ == "__main__":
         key = "test"
         secret = "test"
 
-    bot = GammaBot(key, secret, dry_run=args.dry_run)
+    bot = GammaBot(key, secret, dry_run=args.dry_run, force_entry=args.force_entry)
     bot.run()
