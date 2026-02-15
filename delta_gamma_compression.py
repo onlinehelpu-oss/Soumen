@@ -156,11 +156,26 @@ class GammaBot:
                 self.symbol_map[t['symbol']] = t['product_id']
                 self.tickers[t['symbol']] = t
 
-                # Check if it's the spot ticker to initialize cached_spot
-                if t['symbol'] == "BTCUSDT":
+                # Check Spot
+                if t['symbol'] == "BTCUSDT" or t['symbol'] == "BTC-USDT": # Sometimes symbol names vary
                      self.cached_spot = float(t.get('spot_price', 0) or t.get('mark_price', 0))
 
         self.log(f"Loaded {len(self.products)} products.")
+
+        # Fallback: If cached_spot is still 0, try fetching it explicitly
+        if self.cached_spot == 0.0:
+            self.log("Fetching Spot Price explicitly...")
+            spot_ticker = self.client.get_ticker("BTCUSDT")
+            if spot_ticker and spot_ticker.get('result'):
+                res = spot_ticker['result'][0]
+                self.cached_spot = float(res.get('spot_price', 0) or res.get('mark_price', 0))
+                # Add to tickers cache so it's there for updates
+                self.tickers["BTCUSDT"] = res
+
+        if self.cached_spot > 0:
+            self.log(f"Initial Spot Price: {self.cached_spot}")
+        else:
+            self.log("WARNING: Could not determine initial Spot Price. Option Chain will wait for WS.")
 
         target_date = self.get_0dte_expiry_date()
         symbols_to_sub = []
@@ -174,7 +189,7 @@ class GammaBot:
         self.initial_subscription_list = symbols_to_sub
         self.log(f"Identified {len(symbols_to_sub)} 0DTE BTC options to monitor.")
 
-        # Initial Print of Option Chain (using cached data from REST load)
+        # Initial Print
         self.print_status_table()
 
     def get_0dte_expiry_date(self):
@@ -280,10 +295,14 @@ class GammaBot:
 
         spot = self.cached_spot
         if spot == 0:
+            # Last ditch attempt to find spot in tickers
             t = self.tickers.get("BTCUSDT")
-            if t: spot = float(t.get('spot_price', 0) or t.get('mark_price', 0))
+            if t:
+                spot = float(t.get('spot_price', 0) or t.get('mark_price', 0))
+                self.cached_spot = spot
 
-        if spot == 0: return
+        if spot == 0:
+            return # Still 0, cannot print ATM
 
         atm_strike = int(round(spot / 100.0) * 100)
 
