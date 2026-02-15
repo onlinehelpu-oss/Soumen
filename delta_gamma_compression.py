@@ -16,8 +16,8 @@ API_URL = "https://api.delta.exchange"
 WS_URL = "wss://socket.delta.exchange"
 
 # Strategy Defaults
-ENTRY_TIME_UTC_START = "13:00"
-ENTRY_TIME_UTC_END = "13:05"
+ENTRY_TIME_UTC_START = "00:00"
+ENTRY_TIME_UTC_END = "23:59"
 ENTRY_DELTA = 0.18
 ADJUST_TRIGGER = 1.30  # 30% increase
 COMPRESSION_WIDTH = 400
