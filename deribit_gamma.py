@@ -50,13 +50,13 @@ DERIBIT_TESTNET_WS = "wss://test.deribit.com/ws/api/v2"
 ENTRY_TIME_UTC = "13:00"  # 13:00 UTC (18:30 IST)
 ENTRY_DELTA = 0.18
 ADJUST_THRESHOLD = 1.30   # 30% premium increase triggers adjustment
-COMPRESSION_WIDTH = 500   # Strike width to trigger Iron Fly
-IRON_FLY_WING_WIDTH = 500 # Width of wings for Iron Fly
+COMPRESSION_WIDTH = 400   # Strike width to trigger Iron Fly (Default: 400 per rules)
+IRON_FLY_WING_WIDTH = 500 # Fallback width
 GLOBAL_TP_PCT = 0.45      # 45% of collected credit
 GLOBAL_SL_PCT = -0.35     # -35% of collected credit
 LEG_BLOWOUT_MULT = 2.5    # 2.5x credit loss -> flatten
 MAX_JUMP_PCT = 0.80       # 80% jump in price -> flatten
-WS_TIMEOUT_SEC = 5        # 5s disconnect -> flatten
+WS_TIMEOUT_SEC = 5        # 5s disconnect -> flatten (Strict Rule 7)
 EXPIRY_CLOSE_MIN = 30     # Close positions 30 mins before expiry
 FIXED_QTY = 1.0           # 1 Contract
 
@@ -583,16 +583,51 @@ class GammaScalper:
         idx = self.client.get_index_price()
         if not idx: return
 
-        # Strategy: "Buy 1 x (ATM strike + 500) Call", "Buy 1 x (ATM strike - 500) Put"
-        # Using IRON_FLY_WING_WIDTH parameter (default 500)
-
         atm = round(idx / 500) * 500
-        w_call = atm + IRON_FLY_WING_WIDTH
-        w_put = atm - IRON_FLY_WING_WIDTH
 
-        print(f"[hedge] ATM: {atm} | Wing Width: {IRON_FLY_WING_WIDTH} | Targets: C{w_call} / P{w_put}")
+        # Get ATM mid prices for dynamic wing sizing
+        # Since we might not have ATM tickers subscribed, we need to fetch them or estimate.
+        # Ideally, we look at the chain again or query ticker for ATM.
 
         instrs, _ = self.get_0dte_expiry()
+        if not instrs: return
+
+        atm_call = next((i for i in instrs if i['strike'] == atm and i['option_type'] == 'call'), None)
+        atm_put = next((i for i in instrs if i['strike'] == atm and i['option_type'] == 'put'), None)
+
+        total_prem_usd = 0
+
+        if atm_call and atm_put:
+            # Need prices. Quick fetch.
+            # We can use the book summary we likely fetched recently or just fetch ticker for these 2.
+            # For speed/simplicity in this function, let's fetch ticker.
+            try:
+                c_tick = self.client.get_ticker(atm_call['instrument_name'])
+                p_tick = self.client.get_ticker(atm_put['instrument_name'])
+
+                c_mid = (c_tick.get('best_bid_price', 0) + c_tick.get('best_ask_price', 0)) / 2 or c_tick.get('mark_price')
+                p_mid = (p_tick.get('best_bid_price', 0) + p_tick.get('best_ask_price', 0)) / 2 or p_tick.get('mark_price')
+
+                total_prem_btc = c_mid + p_mid
+                total_prem_usd = total_prem_btc * idx
+                print(f"[hedge] ATM Premiums: C={c_mid:.4f} P={p_mid:.4f} | Total: {total_prem_btc:.4f} BTC (~${total_prem_usd:.0f})")
+            except Exception as e:
+                print(f"[hedge] Failed to fetch ATM prices: {e}")
+
+        # Calculate dynamic width (Premium-Scaled)
+        # "Buy 1 x call at strike = ATM_strike + round(total_short_premium)"
+        # Default to 500 if calc fails or is too small
+
+        if total_prem_usd > 0:
+            width = round(total_prem_usd / 500) * 500
+            if width < 500: width = 500
+        else:
+            width = 500 # Fallback
+
+        w_call = atm + width
+        w_put = atm - width
+
+        print(f"[hedge] ATM: {atm} | Wing Width: {width} (Dynamic) | Targets: C{w_call} / P{w_put}")
         wc_instr = next((i for i in instrs if i['strike'] == w_call and i['option_type'] == 'call'), None)
         wp_instr = next((i for i in instrs if i['strike'] == w_put and i['option_type'] == 'put'), None)
 
