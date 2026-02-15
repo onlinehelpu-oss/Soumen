@@ -12,8 +12,8 @@ from datetime import datetime, timezone, timedelta
 import websocket
 
 # Configuration
-API_URL = "https://api.delta.exchange"
-WS_URL = "wss://socket.delta.exchange"
+API_URL = "https://api.india.delta.exchange"
+WS_URL = "wss://socket.india.delta.exchange"
 SECRETS_FILE = "delta_secrets.json"
 
 # Strategy Defaults
