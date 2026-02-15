@@ -93,9 +93,11 @@ class DeltaClient:
             "size": int(size),
             "side": side,
             "order_type": order_type,
-            "limit_price": str(limit_price) if limit_price else None,
             "time_in_force": "ioc" if order_type == "market_order" else "gtc"
         }
+        if limit_price:
+            payload["limit_price"] = str(limit_price)
+
         return self.request("POST", "/v2/orders", payload=payload)
 
     def cancel_order(self, product_id, order_id):
@@ -785,8 +787,9 @@ if __name__ == "__main__":
     if not secret: secret = os.environ.get("DELTA_API_SECRET")
 
     # 3. Fallback to Hardcoded Keys (User Request)
-    if not key: key = "MaujYnOjgsqbsfcyjlI7kdlJVzeo6I"
-    if not secret: secret = "olNXyDJv9pCn3MKTktpbUB4E0lMPJ67eNVVGKddqpcutlsiXg97PJjHLm7AS"
+    # Keys removed for security. Please use environment variables or CLI arguments.
+    if not key: key = ""
+    if not secret: secret = ""
 
     if not key or not secret:
         print("No API Credentials found. Forcing Dry Run.")
