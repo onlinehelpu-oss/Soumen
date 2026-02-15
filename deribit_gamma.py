@@ -46,7 +46,7 @@ DERIBIT_TESTNET_URL = "https://test.deribit.com"
 DERIBIT_MAINNET_WS = "wss://www.deribit.com/ws/api/v2"
 DERIBIT_TESTNET_WS = "wss://test.deribit.com/ws/api/v2"
 
-# STRATEGY PARAMETERS
+# STRATEGY PARAMETERS (Defaults)
 ENTRY_TIME_UTC = "13:00"  # 13:00 UTC (18:30 IST)
 ENTRY_DELTA = 0.18
 ADJUST_THRESHOLD = 1.30   # 30% premium increase triggers adjustment
@@ -675,18 +675,50 @@ class GammaScalper:
 
 def main():
     global API_KEY, API_SECRET, USE_TESTNET, ENABLE_LIVE_TRADING
+    global ENTRY_TIME_UTC, ENTRY_DELTA, ADJUST_THRESHOLD, COMPRESSION_WIDTH
+    global IRON_FLY_WING_WIDTH, GLOBAL_TP_PCT, GLOBAL_SL_PCT, LEG_BLOWOUT_MULT
+    global MAX_JUMP_PCT, WS_TIMEOUT_SEC, EXPIRY_CLOSE_MIN, FIXED_QTY
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--api-key", default=API_KEY)
-    parser.add_argument("--api-secret", default=API_SECRET)
-    parser.add_argument("--testnet", action="store_true")
-    parser.add_argument("--live", action="store_true", help="Enable Real Orders")
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("--api-key", default=API_KEY, help="Deribit API Key")
+    parser.add_argument("--api-secret", default=API_SECRET, help="Deribit API Secret")
+    parser.add_argument("--testnet", action="store_true", help="Use Testnet instead of Mainnet")
+    parser.add_argument("--live", action="store_true", help="Enable Real Orders (Default: Simulation)")
+
+    # Strategy Params
+    parser.add_argument("--entry-time", default=ENTRY_TIME_UTC, help="UTC Time to enter trade (HH:MM)")
+    parser.add_argument("--entry-delta", type=float, default=ENTRY_DELTA, help="Target Delta for entry legs")
+    parser.add_argument("--adjust-threshold", type=float, default=ADJUST_THRESHOLD, help="Premium multiplier to trigger adjustment (e.g. 1.30)")
+    parser.add_argument("--compression-width", type=int, default=COMPRESSION_WIDTH, help="Strike width to trigger Iron Fly")
+    parser.add_argument("--wing-width", type=int, default=IRON_FLY_WING_WIDTH, help="Width of wings for Iron Fly")
+    parser.add_argument("--tp-pct", type=float, default=GLOBAL_TP_PCT, help="Global Take Profit % of credit (e.g. 0.45)")
+    parser.add_argument("--sl-pct", type=float, default=GLOBAL_SL_PCT, help="Global Stop Loss % of credit (e.g. -0.35)")
+    parser.add_argument("--blowout-mult", type=float, default=LEG_BLOWOUT_MULT, help="Leg Blowout Multiplier (Exit if loss > mult * credit)")
+    parser.add_argument("--jump-pct", type=float, default=MAX_JUMP_PCT, help="Emergency exit if price jumps > this %")
+    parser.add_argument("--ws-timeout", type=int, default=WS_TIMEOUT_SEC, help="WebSocket timeout in seconds")
+    parser.add_argument("--expiry-close-min", type=int, default=EXPIRY_CLOSE_MIN, help="Minutes before expiry to close all positions")
+    parser.add_argument("--qty", type=float, default=FIXED_QTY, help="Trade Quantity (Contracts)")
+
     args = parser.parse_args()
 
     API_KEY = args.api_key
     API_SECRET = args.api_secret
     USE_TESTNET = args.testnet or USE_TESTNET
     ENABLE_LIVE_TRADING = args.live
+
+    # Apply Args
+    ENTRY_TIME_UTC = args.entry_time
+    ENTRY_DELTA = args.entry_delta
+    ADJUST_THRESHOLD = args.adjust_threshold
+    COMPRESSION_WIDTH = args.compression_width
+    IRON_FLY_WING_WIDTH = args.wing_width
+    GLOBAL_TP_PCT = args.tp_pct
+    GLOBAL_SL_PCT = args.sl_pct
+    LEG_BLOWOUT_MULT = args.blowout_mult
+    MAX_JUMP_PCT = args.jump_pct
+    WS_TIMEOUT_SEC = args.ws_timeout
+    EXPIRY_CLOSE_MIN = args.expiry_close_min
+    FIXED_QTY = args.qty
 
     url = DERIBIT_TESTNET_WS if USE_TESTNET else DERIBIT_MAINNET_WS
 
