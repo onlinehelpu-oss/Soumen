@@ -155,6 +155,11 @@ class GammaBot:
                 self.products[t['product_id']] = t
                 self.symbol_map[t['symbol']] = t['product_id']
                 self.tickers[t['symbol']] = t
+
+                # Check if it's the spot ticker to initialize cached_spot
+                if t['symbol'] == "BTCUSDT":
+                     self.cached_spot = float(t.get('spot_price', 0) or t.get('mark_price', 0))
+
         self.log(f"Loaded {len(self.products)} products.")
 
         target_date = self.get_0dte_expiry_date()
@@ -168,6 +173,9 @@ class GammaBot:
         symbols_to_sub.append("BTCUSDT")
         self.initial_subscription_list = symbols_to_sub
         self.log(f"Identified {len(symbols_to_sub)} 0DTE BTC options to monitor.")
+
+        # Initial Print of Option Chain (using cached data from REST load)
+        self.print_status_table()
 
     def get_0dte_expiry_date(self):
         today = datetime.now(timezone.utc)
@@ -265,7 +273,8 @@ class GammaBot:
     # --- Output & Display ---
     def print_status_table(self):
         now = time.time()
-        if now - self.last_print_time < PRINT_INTERVAL:
+        # Force print if this is the first time (last_print_time == 0)
+        if self.last_print_time != 0 and (now - self.last_print_time < PRINT_INTERVAL):
             return
         self.last_print_time = now
 
@@ -692,9 +701,9 @@ if __name__ == "__main__":
                 except Exception as e:
                     print(f"Error loading {p}: {e}")
 
-    # 4. HARDCODED FALLBACK (Uncomment and fill if absolutely stuck)
-    # if not key: key = "qnz5G7ullIHIIywNbojX6i2mEfWCKY"
-    # if not secret: secret = "NM0zX5jmDDtLkqAX5qNTyWgLtW5XqTVHZceBl3yCD7FVy0K8r8Dqlxts9oy0"
+    # 4. HARDCODED FALLBACK (Last Resort)
+    if not key: key = "qnz5G7ullIHIIywNbojX6i2mEfWCKY"
+    if not secret: secret = "NM0zX5jmDDtLkqAX5qNTyWgLtW5XqTVHZceBl3yCD7FVy0K8r8Dqlxts9oy0"
 
     if not key or not secret:
         print("No API Credentials found (Args, Env, or delta_secrets.json). Forcing Dry Run.")
