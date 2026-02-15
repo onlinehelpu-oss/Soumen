@@ -14,7 +14,6 @@ import websocket
 # Configuration
 API_URL = "https://api.delta.exchange"
 WS_URL = "wss://socket.delta.exchange"
-SECRETS_FILE = "delta_secrets.json"
 
 # Strategy Defaults
 ENTRY_TIME_UTC_START = "13:00"
@@ -785,21 +784,12 @@ if __name__ == "__main__":
     if not key: key = os.environ.get("DELTA_API_KEY")
     if not secret: secret = os.environ.get("DELTA_API_SECRET")
 
-    # 3. Try Secrets File
-    if not key or not secret:
-        if os.path.exists(SECRETS_FILE):
-            try:
-                with open(SECRETS_FILE, 'r') as f:
-                    secrets = json.load(f)
-                    key = secrets.get("api_key")
-                    secret = secrets.get("api_secret")
-                    if key and secret:
-                        print(f"Loaded credentials from {SECRETS_FILE}")
-            except Exception as e:
-                print(f"Error loading {SECRETS_FILE}: {e}")
+    # 3. Fallback to Hardcoded Keys (User Request)
+    if not key: key = "qnz5G7ullIHIIywNbojX6i2mEfWCKY"
+    if not secret: secret = "NM0zX5jmDDtLkqAX5qNTyWgLtW5XqTVHZceBl3yCD7FVy0K8r8Dqlxts9oy0"
 
     if not key or not secret:
-        print("No API Credentials found (Args, Env, or delta_secrets.json). Forcing Dry Run.")
+        print("No API Credentials found. Forcing Dry Run.")
         args.dry_run = True
         key = "test"
         secret = "test"
