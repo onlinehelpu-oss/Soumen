@@ -47,14 +47,16 @@ DERIBIT_MAINNET_WS = "wss://www.deribit.com/ws/api/v2"
 DERIBIT_TESTNET_WS = "wss://test.deribit.com/ws/api/v2"
 
 # STRATEGY PARAMETERS (Defaults)
-ENTRY_TIME_UTC = "18:30"  # 18:30 UTC (6:30 PM Exchange Time)
+ENTRY_TIME_UTC = "13:00"  # 13:00 UTC (18:30 IST)
 ENTRY_DELTA = 0.18
 ADJUST_THRESHOLD = 1.30   # 30% premium increase triggers adjustment
+COMPRESSION_WIDTH = 500   # Strike width to trigger Iron Fly
+IRON_FLY_WING_WIDTH = 500 # Width of wings for Iron Fly
 GLOBAL_TP_PCT = 0.45      # 45% of collected credit
 GLOBAL_SL_PCT = -0.35     # -35% of collected credit
-LEG_BLOWOUT_MULT = 1.6    # 60% premium increase -> flatten (Current > Ref * 1.6)
+LEG_BLOWOUT_MULT = 2.5    # 2.5x credit loss -> flatten
 MAX_JUMP_PCT = 0.80       # 80% jump in price -> flatten
-WS_TIMEOUT_SEC = 15       # 15s disconnect -> flatten
+WS_TIMEOUT_SEC = 5        # 5s disconnect -> flatten
 EXPIRY_CLOSE_MIN = 30     # Close positions 30 mins before expiry
 FIXED_QTY = 1.0           # 1 Contract
 
@@ -419,7 +421,9 @@ class GammaScalper:
                 # Subscribe
                 self.ws.subscribe([
                     f"ticker.{call_leg['instrument_name']}.100ms",
-                    f"ticker.{put_leg['instrument_name']}.100ms"
+                    f"ticker.{put_leg['instrument_name']}.100ms",
+                    f"book.{call_leg['instrument_name']}.none.10.100ms",
+                    f"book.{put_leg['instrument_name']}.none.10.100ms"
                 ])
                 log_trade_event("ENTRY", f"{call_leg['instrument_name']}+{put_leg['instrument_name']}", c_price+p_price, FIXED_QTY, "Initial Strangle")
             else:
@@ -451,7 +455,9 @@ class GammaScalper:
                     BOT_STATE["expiry"] = expiry
                     self.ws.subscribe([
                         f"ticker.{call_leg['instrument_name']}.100ms",
-                        f"ticker.{put_leg['instrument_name']}.100ms"
+                        f"ticker.{put_leg['instrument_name']}.100ms",
+                        f"book.{call_leg['instrument_name']}.none.10.100ms",
+                        f"book.{put_leg['instrument_name']}.none.10.100ms"
                     ])
                 else:
                     print(f"[real] Order placement failed: {c_resp} {p_resp}")
@@ -533,7 +539,10 @@ class GammaScalper:
                     BOT_STATE["collected_credit"] += best_price
                     log_trade_event("OPEN", best_instr['instrument_name'], best_price, winner['qty'], "New Winner Open")
 
-                    self.ws.subscribe([f"ticker.{best_instr['instrument_name']}.100ms"])
+                    self.ws.subscribe([
+                        f"ticker.{best_instr['instrument_name']}.100ms",
+                        f"book.{best_instr['instrument_name']}.none.10.100ms"
+                    ])
                 else:
                     print(f"[real] Opening New Winner {best_instr['instrument_name']} @ ~{best_price:.6f}")
                     resp = self.client.place_order(best_instr['instrument_name'], winner['qty'], "sell", "market")
@@ -546,7 +555,10 @@ class GammaScalper:
                             "qty": winner["qty"]
                         }
                         # collected_credit updated via trade
-                        self.ws.subscribe([f"ticker.{best_instr['instrument_name']}.100ms"])
+                        self.ws.subscribe([
+                            f"ticker.{best_instr['instrument_name']}.100ms",
+                            f"book.{best_instr['instrument_name']}.none.10.100ms"
+                        ])
                     else:
                         print(f"[real] Failed to open new winner: {resp}")
 
@@ -554,16 +566,16 @@ class GammaScalper:
             print(f"[adjust] Resetting Loser ({leg_type}) Reference: {loser['reset_price']} -> {current_mid}")
             BOT_STATE["legs"][leg_type]["reset_price"] = current_mid
 
-            # Check Compression (Straddle)
+            # Check Compression (Straddle or Tight Width)
             c_strike = BOT_STATE["legs"]["C"]["strike"]
             p_strike = BOT_STATE["legs"]["P"]["strike"]
+            width = abs(c_strike - p_strike)
 
-            # "If Call Strike == Put Strike" (or crossed)
-            # Actually, we filtered crossing above. But if we couldn't find a non-crossing leg?
-            # Or if spreads are tight.
-            # Strategy: "If Call Strike == Put Strike... Short ATM Straddle... Convert to Iron Fly"
+            # Strategy: "When |short_call_strike - short_put_strike| <= 300 (or 500)"
+            # OR "If Call Strike == Put Strike"
 
-            if c_strike <= p_strike:
+            if c_strike <= p_strike or width <= COMPRESSION_WIDTH:
+                print(f"[adjust] Compression Trigger: C{c_strike} P{p_strike} (Width {width})")
                 self.convert_to_iron_fly()
 
     def convert_to_iron_fly(self):
@@ -571,28 +583,14 @@ class GammaScalper:
         idx = self.client.get_index_price()
         if not idx: return
 
-        # Calculate Total ATM Premium
-        c_prem = self.tickers.get(BOT_STATE["legs"]["C"]["instrument"], {}).get("mid_price", 0)
-        p_prem = self.tickers.get(BOT_STATE["legs"]["P"]["instrument"], {}).get("mid_price", 0)
-        total_atm_prem = c_prem + p_prem
-
-        # Width = Total ATM Premium (in Index points)
-        # Note: Deribit premiums are in BTC. Need to convert to USD/Index Points?
-        # "Buy Call at (ATM Strike + TotalATM)" implies TotalATM is in Strike units (USD).
-        # Deribit BTC options: Premium in BTC * Index = USD Value? No.
-        # Strike is in USD. Premium is in BTC.
-        # If strategy says "Call at ATM + TotalATM", it usually implies Premium in Points.
-        # Premium in USD = Premium(BTC) * Index.
-
-        total_atm_usd = total_atm_prem * idx
-        width = round(total_atm_usd / 500) * 500
-        if width < 500: width = 500
+        # Strategy: "Buy 1 x (ATM strike + 500) Call", "Buy 1 x (ATM strike - 500) Put"
+        # Using IRON_FLY_WING_WIDTH parameter (default 500)
 
         atm = round(idx / 500) * 500
-        w_call = atm + width
-        w_put = atm - width
+        w_call = atm + IRON_FLY_WING_WIDTH
+        w_put = atm - IRON_FLY_WING_WIDTH
 
-        print(f"[hedge] ATM: {atm} | Total Prem: {total_atm_prem:.4f} BTC (~${total_atm_usd:.0f}) | Width: {width} | Targets: C{w_call} / P{w_put}")
+        print(f"[hedge] ATM: {atm} | Wing Width: {IRON_FLY_WING_WIDTH} | Targets: C{w_call} / P{w_put}")
 
         instrs, _ = self.get_0dte_expiry()
         wc_instr = next((i for i in instrs if i['strike'] == w_call and i['option_type'] == 'call'), None)
@@ -695,8 +693,8 @@ class GammaScalper:
 
 def main():
     global API_KEY, API_SECRET, USE_TESTNET, ENABLE_LIVE_TRADING
-    global ENTRY_TIME_UTC, ENTRY_DELTA, ADJUST_THRESHOLD
-    global GLOBAL_TP_PCT, GLOBAL_SL_PCT, LEG_BLOWOUT_MULT
+    global ENTRY_TIME_UTC, ENTRY_DELTA, ADJUST_THRESHOLD, COMPRESSION_WIDTH
+    global IRON_FLY_WING_WIDTH, GLOBAL_TP_PCT, GLOBAL_SL_PCT, LEG_BLOWOUT_MULT
     global MAX_JUMP_PCT, WS_TIMEOUT_SEC, EXPIRY_CLOSE_MIN, FIXED_QTY
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -709,6 +707,8 @@ def main():
     parser.add_argument("--entry-time", default=ENTRY_TIME_UTC, help="UTC Time to enter trade (HH:MM)")
     parser.add_argument("--entry-delta", type=float, default=ENTRY_DELTA, help="Target Delta for entry legs")
     parser.add_argument("--adjust-threshold", type=float, default=ADJUST_THRESHOLD, help="Premium multiplier to trigger adjustment (e.g. 1.30)")
+    parser.add_argument("--compression-width", type=int, default=COMPRESSION_WIDTH, help="Strike width to trigger Iron Fly")
+    parser.add_argument("--wing-width", type=int, default=IRON_FLY_WING_WIDTH, help="Width of wings for Iron Fly")
     parser.add_argument("--tp-pct", type=float, default=GLOBAL_TP_PCT, help="Global Take Profit % of credit (e.g. 0.45)")
     parser.add_argument("--sl-pct", type=float, default=GLOBAL_SL_PCT, help="Global Stop Loss % of credit (e.g. -0.35)")
     parser.add_argument("--blowout-mult", type=float, default=LEG_BLOWOUT_MULT, help="Leg Blowout Multiplier (Exit if price > mult * ref)")
@@ -728,6 +728,8 @@ def main():
     ENTRY_TIME_UTC = args.entry_time
     ENTRY_DELTA = args.entry_delta
     ADJUST_THRESHOLD = args.adjust_threshold
+    COMPRESSION_WIDTH = args.compression_width
+    IRON_FLY_WING_WIDTH = args.wing_width
     GLOBAL_TP_PCT = args.tp_pct
     GLOBAL_SL_PCT = args.sl_pct
     LEG_BLOWOUT_MULT = args.blowout_mult
