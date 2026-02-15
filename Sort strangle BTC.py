@@ -582,6 +582,9 @@ class GammaBot:
         winning_pos = self.positions[winning_leg]
         winning_price = self.get_mid_price(winning_pos['symbol'])
 
+        # Update winning leg's last_reset_price to current price to prevent immediate re-trigger
+        self.positions[winning_leg]['last_reset_price'] = winning_price
+
         if losing_leg in self.positions:
             pos = self.positions[losing_leg]
             ticker = self.tickers.get(pos['symbol'])
