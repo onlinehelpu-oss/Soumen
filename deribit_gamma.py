@@ -572,9 +572,15 @@ class GammaScalper:
         idx = self.client.get_index_price()
         if not idx: return
 
+        # Round wing width to nearest 500
+        wing_width = round(IRON_FLY_WING_WIDTH / 500) * 500
+        if wing_width < 500: wing_width = 500
+
         atm = round(idx / 500) * 500
-        w_call = atm + IRON_FLY_WING_WIDTH
-        w_put = atm - IRON_FLY_WING_WIDTH
+        w_call = atm + wing_width
+        w_put = atm - wing_width
+
+        print(f"[hedge] ATM: {atm} | Wing Width: {wing_width} | Targets: C{w_call} / P{w_put}")
 
         instrs, _ = self.get_0dte_expiry()
         wc_instr = next((i for i in instrs if i['strike'] == w_call and i['option_type'] == 'call'), None)
