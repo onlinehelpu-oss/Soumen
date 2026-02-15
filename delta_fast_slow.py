@@ -57,9 +57,20 @@ import websocket
 
 # ---------------------------- CONFIGURATION ----------------------------
 # DELTA EXCHANGE CREDENTIALS
-# Try to load from Environment Variables first, otherwise use provided default
+# Try to load from Environment Variables first, then secrets.json
 API_KEY = os.getenv("DELTA_API_KEY", "")
 API_SECRET = os.getenv("DELTA_API_SECRET", "")
+
+if not API_KEY or not API_SECRET:
+    try:
+        if os.path.exists("secrets.json"):
+            with open("secrets.json", "r") as f:
+                secrets = json.load(f)
+                API_KEY = secrets.get("DELTA_API_KEY", secrets.get("api_key", API_KEY))
+                API_SECRET = secrets.get("DELTA_API_SECRET", secrets.get("api_secret", API_SECRET))
+                print("[init] Loaded credentials from secrets.json")
+    except Exception as e:
+        print(f"[init] Failed to load secrets.json: {e}")
 
 # --- TRADING ENVIRONMENT ---
 USE_TESTNET = False  # Set True for Testnet
