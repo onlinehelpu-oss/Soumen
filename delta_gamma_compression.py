@@ -26,6 +26,7 @@ PROFIT_TARGET = 0.45
 STOP_LOSS = -0.35
 LEG_MAX_LOSS = 2.5
 CONTRACT_SIZE = 1
+PRINT_INTERVAL = 3  # Seconds
 
 class DeltaClient:
     def __init__(self, api_key, api_secret, base_url=API_URL):
@@ -71,11 +72,13 @@ class DeltaClient:
                 response = self.session.post(url, data=data_str, headers=headers)
 
             if response.status_code >= 400:
-                print(f"API Error {response.status_code}: {response.text}")
+                # Suppress 429 or 500 noise unless critical
+                if response.status_code not in [429, 502, 503]:
+                    print(f"API Error {response.status_code}: {response.text}")
                 return None
             return response.json()
         except requests.exceptions.RequestException as e:
-            print(f"API Request Error: {e}")
+            # print(f"API Request Error: {e}")
             return None
 
     def get_tickers(self):
@@ -137,6 +140,10 @@ class GammaBot:
         self.should_stop = False
         self.last_message_time = time.time()
 
+        # Display cache
+        self.last_print_time = 0
+        self.cached_spot = 0.0
+
     def log(self, msg):
         print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
@@ -195,9 +202,14 @@ class GammaBot:
                         if sym not in self.tickers:
                             self.tickers[sym] = {}
                         self.tickers[sym].update(data)
+
+                        if sym == "BTCUSDT":
+                            self.cached_spot = float(data.get('spot_price', 0) or data.get('mark_price', 0))
+
                         self.on_tick(sym)
         except Exception as e:
-            self.log(f"WS Error: {e}")
+            # self.log(f"WS Error: {e}")
+            pass
 
     def on_ws_error(self, ws, error):
         self.log(f"WS Error: {error}")
@@ -254,8 +266,109 @@ class GammaBot:
             return (bid + ask) / 2
         return float(t.get('mark_price', 0))
 
+    # --- Output & Display ---
+    def print_status_table(self):
+        now = time.time()
+        if now - self.last_print_time < PRINT_INTERVAL:
+            return
+        self.last_print_time = now
+
+        spot = self.cached_spot
+        if spot == 0:
+            t = self.tickers.get("BTCUSDT")
+            if t: spot = float(t.get('spot_price', 0) or t.get('mark_price', 0))
+
+        if spot == 0: return # Wait for data
+
+        # Round ATM to nearest 100 for BTC
+        atm_strike = int(round(spot / 100.0) * 100)
+
+        # Clear screen (ANSI) - Optional, maybe just print new block
+        # print("\033[H\033[J", end="")
+        print("\n" * 2)
+
+        print(f"Live LTP for BTCUSDT is: {spot:.1f}")
+        print(f"ATM strike is: {atm_strike}")
+        print(f"(Using expiry: {self.get_0dte_expiry_date()})")
+        print("")
+
+        # Build Table
+        # Columns: CE LTP, CE Delta, CE Gamma, CE IV%, CE OI | STRIKE | PE ...
+        header = f"{'CE LTP':>8} {'CE Δ':>8} {'CE Γ':>8} {'CE IV%':>8} {'CE OI':>10} | {'STRIKE':^8} | {'PE LTP':>8} {'PE Δ':>8} {'PE Γ':>8} {'PE IV%':>8} {'PE OI':>10}"
+        print(f"--- Option Chain for BTC (ATM +/- 8 strikes) ---")
+        print(header)
+        print("-" * len(header))
+
+        # Range +/- 8 strikes (8 * 100 = 800 width)
+        # Actually BTC strikes might be 100, 500, etc. Usually 100 or 500 on Delta.
+        # Let's assume 100 steps for now based on what we see or what is common.
+        # We will scan our tickers to find strikes near ATM.
+
+        target_date = self.get_0dte_expiry_date()
+
+        # Collect relevant tickers
+        chain_data = {} # strike -> {'C': ticker, 'P': ticker}
+
+        with self.lock:
+            all_tickers = list(self.tickers.values())
+
+        for t in all_tickers:
+            if t.get('underlying_asset_symbol') == 'BTC' and t.get('contract_type') in ['call_options', 'put_options']:
+                info = self.parse_symbol(t['symbol'])
+                if info and info['date'] == target_date:
+                    strike = int(info['strike'])
+                    if strike not in chain_data: chain_data[strike] = {}
+
+                    typ = 'C' if info['type'] == 'call' else 'P'
+                    chain_data[strike][typ] = t
+
+        # Sort strikes
+        strikes = sorted(chain_data.keys())
+
+        # Find index of ATM
+        # Locate closest strike in list
+        closest_idx = min(range(len(strikes)), key=lambda i: abs(strikes[i] - atm_strike))
+
+        start_idx = max(0, closest_idx - 8)
+        end_idx = min(len(strikes), closest_idx + 9)
+
+        subset_strikes = strikes[start_idx:end_idx]
+
+        for k in subset_strikes:
+            row_data = chain_data[k]
+            c = row_data.get('C', {})
+            p = row_data.get('P', {})
+
+            # CE Data
+            c_ltp = self.get_mid_price(c.get('symbol')) if c else 0.0
+            c_greeks = c.get('greeks') or {}
+            c_delta = float(c_greeks.get('delta', 0))
+            c_gamma = float(c_greeks.get('gamma', 0))
+            c_iv = float(c.get('quotes', {}).get('mark_iv', 0) or 0) * 100 # usually decimal
+            c_oi = int(float(c.get('oi_contracts', 0) or 0)) # Using contracts, not value
+
+            # PE Data
+            p_ltp = self.get_mid_price(p.get('symbol')) if p else 0.0
+            p_greeks = p.get('greeks') or {}
+            p_delta = float(p_greeks.get('delta', 0))
+            p_gamma = float(p_greeks.get('gamma', 0))
+            p_iv = float(p.get('quotes', {}).get('mark_iv', 0) or 0) * 100
+            p_oi = int(float(p.get('oi_contracts', 0) or 0))
+
+            # Fmt
+            # CE: LTP(8), D(8), G(8), IV(8), OI(10)
+            c_str = f"{c_ltp:8.2f} {c_delta:8.4f} {c_gamma:8.6f} {c_iv:8.2f} {c_oi:10,}"
+            p_str = f"{p_ltp:8.2f} {p_delta:8.4f} {p_gamma:8.6f} {p_iv:8.2f} {p_oi:10,}"
+
+            print(f"{c_str} | {k:^8} | {p_str}")
+
+        print("")
+
     # --- Strategy Logic ---
     def on_tick(self, symbol):
+        # Trigger display update
+        self.print_status_table()
+
         if self.state == StrategyState.WAITING:
             now_utc = datetime.now(timezone.utc).strftime("%H:%M")
             should_enter = (ENTRY_TIME_UTC_START <= now_utc <= ENTRY_TIME_UTC_END) or self.force_entry
@@ -264,7 +377,7 @@ class GammaBot:
                 if not self.positions:
                     self.enter_initial_positions()
                     if self.force_entry:
-                        self.force_entry = False  # Reset force flag after entry
+                        self.force_entry = False
 
         elif self.state in [StrategyState.STRANGLE_OPEN, StrategyState.COMPRESSING]:
             self.check_adjustments()
@@ -501,9 +614,6 @@ class GammaBot:
         if self.cumulative_credit > 0:
             roi = net_pnl / self.cumulative_credit
 
-            if int(time.time()) % 60 == 0:
-                 self.log(f"Status: Net PnL: {net_pnl:.2f} (ROI: {roi*100:.1f}%) | CumCredit: {self.cumulative_credit:.2f}")
-
             if roi >= PROFIT_TARGET:
                 self.send_alert(f"Take Profit Hit! (+{roi*100:.1f}%)")
                 self.flatten_all()
@@ -545,7 +655,7 @@ class GammaBot:
                 time.sleep(1)
 
                 # Heartbeat check for WebSocket
-                if time.time() - self.last_message_time > 10: # > 5s check + buffer
+                if time.time() - self.last_message_time > 10:
                     self.send_alert("WARNING: WebSocket Heartbeat Lost (> 10s). Flattening.")
                     self.flatten_all()
 
