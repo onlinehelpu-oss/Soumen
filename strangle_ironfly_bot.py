@@ -40,7 +40,7 @@ class DeltaClient:
         timestamp = str(int(time.time()))
         if method == "GET":
             query_string = urlencode(payload) if payload else ""
-            message = method + timestamp + endpoint + query_string
+            message = method + timestamp + endpoint + ("?" + query_string if query_string else "")
         else:
             body = json.dumps(payload, separators=(',', ':')) if payload else ""
             message = method + timestamp + endpoint + body
