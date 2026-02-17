@@ -762,6 +762,33 @@ def evaluate_on_new_candle(st):
             print(f"[exit-signal] 🔴 EXIT SIGNAL {st.symbol} | Low: {curr['low']} | Wait for break < Low")
 
 
+def calculate_pnl(symbol, entry_price, exit_price, qty):
+    """
+    Calculates estimated PnL in USD (or Quote Currency) based on contract type.
+    """
+    if entry_price == 0: return 0.0
+    info = PRODUCT_MAP.get(symbol)
+    if not info: return 0.0
+
+    try:
+        c_val = float(info.get("contract_value", 1.0))
+        is_inv = info.get("is_inverse", False)
+
+        if is_inv:
+            # Inverse Futures (Coin Margined)
+            # PnL in Coin = Qty * CVal * (1/Entry - 1/Exit)
+            # Estimated USD PnL = PnL_Coin * Exit_Price
+            # = Qty * CVal * (Exit_Price/Entry_Price - 1)
+            return qty * c_val * ((exit_price / entry_price) - 1.0)
+        else:
+            # Linear Futures (USDT Margined)
+            # PnL in USDT = Qty * CVal * (Exit - Entry)
+            return qty * c_val * (exit_price - entry_price)
+    except Exception as e:
+        print(f"[pnl] Error calculating PnL for {symbol}: {e}")
+        return 0.0
+
+
 def decide_qty(symbol, price):
     # Allocation based
     if price <= 0: return 0
@@ -1045,7 +1072,7 @@ def on_tick(symbol, ltp):
 
             resp = place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
             if isinstance(resp, dict) and "result" in resp:
-                pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
+                pnl = calculate_pnl(symbol, st.entry_price, ltp, st.qty)
                 print(f"✅ [exit] TARGET FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
                 st.status = "watch"
                 st.qty = 0
@@ -1078,7 +1105,7 @@ def on_tick(symbol, ltp):
 
             resp = place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
             if isinstance(resp, dict) and "result" in resp:
-                pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
+                pnl = calculate_pnl(symbol, st.entry_price, ltp, st.qty)
                 print(f"✅ [exit] STOPLOSS FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
                 st.status = "watch"
                 st.qty = 0
@@ -1112,7 +1139,7 @@ def on_tick(symbol, ltp):
 
                 resp = place_market_order_wrapper(symbol, st.qty, "sell", reduce_only=True)
                 if isinstance(resp, dict) and "result" in resp:
-                    pnl = (ltp - st.entry_price) * st.qty if st.entry_price > 0 else 0
+                    pnl = calculate_pnl(symbol, st.entry_price, ltp, st.qty)
                     print(f"✅ [exit] EMA EXIT FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
                     st.status = "watch"
                     log_trade_event(symbol, "SELL_EMA", st.qty, ltp, resp)
