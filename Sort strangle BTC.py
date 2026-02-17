@@ -183,6 +183,9 @@ class GammaBot:
         self.log(f"Identified {len(symbols_to_sub)} BTC options for expiry {target_date} to monitor.")
 
     def sync_existing_positions(self):
+        if self.dry_run:
+            return
+
         self.log("Syncing existing positions...")
         resp = self.client.get_positions()
         if not resp or not resp.get('result'):
