@@ -82,7 +82,7 @@ ENTRY_SLOW_EMA = 15
 MIN_RANGE_PCT = 0.0
 EMA_BUFFER = 0.0
 REQUIRE_GREEN_SIGNAL = True
-MIN_CHANGE_PCT = 10.0  # Minimum 24h change percentage to trade
+MIN_CHANGE_PCT = 5.0  # Minimum 24h change percentage to trade
 
 # SYMBOLS TO TRADE
 SYMBOLS = []
@@ -1352,8 +1352,8 @@ def parse_args():
                         help="Trade Allocation Amount (default: 275.0)")
     parser.add_argument("--alloc-pct", type=float, default=ALLOC_PCT,
                         help="Trade Allocation %% of Wallet Balance (default: 0.0, overrides --allocation)")
-    parser.add_argument("--min-change-pct", type=float, default=10.0,
-                        help="Minimum 24h change %% to trade (default: 10.0)")
+    parser.add_argument("--min-change-pct", type=float, default=5.0,
+                        help="Minimum 24h change %% to trade (default: 5.0)")
     return parser.parse_args()
 
 
