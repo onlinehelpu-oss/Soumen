@@ -756,20 +756,23 @@ class GammaBot:
             positions_data = self.client.get_positions(params={"underlying_asset_symbol": "BTC"})
             if not positions_data:
                 self.log("No positions data received.")
-                return
+                return False
 
             if not isinstance(positions_data, dict) or 'result' not in positions_data:
                 self.log(f"Unexpected positions format: {positions_data}")
-                return
+                return False
 
             results = positions_data.get('result', [])
-            if not results:
-                self.log("No open positions found in response.")
-                return
 
+            # Even if empty, it's a success (valid empty state)
             # Reset internal state
             self.positions = {}
             self.cumulative_credit = 0.0
+
+            if not results:
+                self.log("No open positions found in response.")
+                # Return True because we successfully confirmed there are no positions
+                return True
 
             for p in results:
                 try:
@@ -851,12 +854,18 @@ class GammaBot:
             self.log(f"State restored to: {self.state}")
             self.log(f"Reconstructed Cumulative Credit: {self.cumulative_credit}")
 
+            return True
+
         except Exception as e:
             self.log(f"Error syncing positions: {e}")
+            return False
 
     def run(self):
         self.load_products()
-        self.sync_positions()
+        if not self.sync_positions():
+            self.log("CRITICAL: Failed to sync positions. Exiting to prevent duplicate orders.")
+            return
+
         self.start_ws()
 
         self.log("Bot Running. Press Ctrl+C to stop.")
