@@ -399,9 +399,12 @@ class GammaBot:
         if curr_mid > 0:
             last_mid = self.last_mid_prices.get(symbol, curr_mid)
             if last_mid > 0 and curr_mid / last_mid > 1.80:
-                self.send_alert(f"SUDDEN JUMP DETECTED (>80%) on {symbol}. Flattening!")
-                self.flatten_all()
-                return
+                # Only panic if we hold this position
+                is_held = any(p['symbol'] == symbol for p in self.positions.values())
+                if is_held:
+                    self.send_alert(f"SUDDEN JUMP DETECTED (>80%) on {symbol}. Flattening!")
+                    self.flatten_all()
+                    return
             self.last_mid_prices[symbol] = curr_mid
 
         if self.state == StrategyState.WAITING:
