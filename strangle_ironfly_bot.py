@@ -114,8 +114,8 @@ class DeltaClient:
             return float(t['result'][0]['spot_price'])
         return None
 
-    def get_positions(self):
-        return self.request("GET", "/v2/positions")
+    def get_positions(self, params=None):
+        return self.request("GET", "/v2/positions", params=params)
 
 
 class StrategyState:
@@ -753,7 +753,7 @@ class GammaBot:
     def sync_positions(self):
         self.log("Syncing positions from exchange...")
         try:
-            positions_data = self.client.get_positions()
+            positions_data = self.client.get_positions(params={"underlying_asset_symbol": "BTC"})
             if not positions_data:
                 self.log("No positions data received.")
                 return
