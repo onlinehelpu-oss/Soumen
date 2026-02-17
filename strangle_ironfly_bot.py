@@ -754,62 +754,83 @@ class GammaBot:
         self.log("Syncing positions from exchange...")
         try:
             positions_data = self.client.get_positions()
-            if not positions_data or not positions_data.get('result'):
-                self.log("No open positions found.")
+            if not positions_data:
+                self.log("No positions data received.")
+                return
+
+            if not isinstance(positions_data, dict) or 'result' not in positions_data:
+                self.log(f"Unexpected positions format: {positions_data}")
+                return
+
+            results = positions_data.get('result', [])
+            if not results:
+                self.log("No open positions found in response.")
                 return
 
             # Reset internal state
             self.positions = {}
             self.cumulative_credit = 0.0
 
-            for p in positions_data['result']:
-                raw_size = float(p['size'])
-                if raw_size == 0: continue
+            for p in results:
+                try:
+                    raw_size = float(p.get('size', 0))
+                    if raw_size == 0: continue
 
-                symbol = p['symbol']
-                product_id = int(p['product_id'])
-                entry_price = float(p['entry_price'])
+                    symbol = p.get('symbol')
+                    if not symbol: continue
 
-                # Determine direction safely
-                # Check for explicit 'side' field first
-                side = p.get('side')  # 'buy'/'sell' or 'long'/'short'
-                if side:
-                    is_long = side.lower() in ['buy', 'long']
-                    abs_size = int(abs(raw_size))
-                else:
-                    # Fallback to signed size
-                    is_long = raw_size > 0
-                    abs_size = int(abs(raw_size))
+                    product_id = int(p.get('product_id', 0))
+                    entry_price = float(p.get('entry_price', 0))
 
-                # Only care about BTC Options
-                info = self.parse_symbol(symbol)
-                if not info: continue  # Not an option or parse error
-                if info['asset'] != 'BTC': continue
+                    # Determine direction safely
+                    # Check for explicit 'side' field first
+                    side = p.get('side')  # 'buy'/'sell' or 'long'/'short'
+                    if side:
+                        is_long = side.lower() in ['buy', 'long']
+                        abs_size = int(abs(raw_size))
+                    else:
+                        # Fallback to signed size
+                        is_long = raw_size > 0
+                        abs_size = int(abs(raw_size))
 
-                # Determine leg type
-                is_call = info['type'] == 'call'
-                strike = info['strike']
+                    # Only care about BTC Options
+                    info = self.parse_symbol(symbol)
+                    if not info:
+                        # self.log(f"Skipping non-parseable symbol: {symbol}")
+                        continue  # Not an option or parse error
 
-                leg_name = ""
-                if is_long:
-                    leg_name = "long_call" if is_call else "long_put"
-                else:
-                    leg_name = "call" if is_call else "put"
+                    if info['asset'] != 'BTC':
+                        # self.log(f"Skipping non-BTC symbol: {symbol}")
+                        continue
 
-                self.positions[leg_name] = {
-                    'symbol': symbol,
-                    'product_id': product_id,
-                    'entry_price': entry_price,
-                    'last_reset_price': entry_price,  # Optimistic: assume we start monitoring from entry
-                    'size': abs_size,
-                    'strike': strike
-                }
+                    # Determine leg type
+                    is_call = info['type'] == 'call'
+                    strike = info['strike']
 
-                self.log(f"Restored position: {leg_name} ({symbol}) Size: {abs_size} @ {entry_price}")
+                    leg_name = ""
+                    if is_long:
+                        leg_name = "long_call" if is_call else "long_put"
+                    else:
+                        leg_name = "call" if is_call else "put"
 
-                # Reconstruct Credit (Approximate)
-                if not is_long:
-                    self.cumulative_credit += (entry_price * abs_size)
+                    self.positions[leg_name] = {
+                        'symbol': symbol,
+                        'product_id': product_id,
+                        'entry_price': entry_price,
+                        'last_reset_price': entry_price,  # Optimistic: assume we start monitoring from entry
+                        'size': abs_size,
+                        'strike': strike
+                    }
+
+                    self.log(f"Restored position: {leg_name} ({symbol}) Size: {abs_size} @ {entry_price}")
+
+                    # Reconstruct Credit (Approximate)
+                    if not is_long:
+                        self.cumulative_credit += (entry_price * abs_size)
+
+                except Exception as e:
+                    self.log(f"Error processing position {p}: {e}")
+                    continue
 
             # Update State
             has_short_call = 'call' in self.positions
