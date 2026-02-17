@@ -1367,7 +1367,7 @@ def scan_for_new_opportunities(ws_client):
                             # Add to Maps
                             PRODUCT_MAP[sym] = valid_products[sym]
                             ID_TO_SYMBOL[valid_products[sym]["id"]] = sym
-                            SYMBOLS.append(sym)
+                            # SYMBOLS.append(sym) # Handled by ws_client.subscribe
                             SYMBOL_STATES[sym] = SymbolState(sym)
                             SYMBOL_STATES[sym].ltp_change_24h = chg
                             if "volume" in t:
