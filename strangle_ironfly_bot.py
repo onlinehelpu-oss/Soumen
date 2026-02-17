@@ -615,9 +615,31 @@ class GammaBot:
             self.send_alert(f"Rolling into {new_ticker['symbol']} (Target Premium: {winning_price})")
             # Open new Short leg
             self.execute_trade(new_ticker, "sell", losing_leg)
+
+            # Print global PnL update after adjustment
+            self.print_global_pnl_summary()
+
             # Check for compression completion logic handled in separate loop
         else:
             self.send_alert("CRITICAL: Could not find new leg to roll into!")
+
+    def print_global_pnl_summary(self):
+        unrealized = 0.0
+        for leg, pos in self.positions.items():
+            curr = self.get_mid_price(pos['symbol'])
+            is_long = leg.startswith('long_')
+            if is_long:
+                pnl = (curr - pos['entry_price']) * pos['size']
+            else:
+                pnl = (pos['entry_price'] - curr) * pos['size']
+            unrealized += pnl
+
+        net_pnl = self.realized_pnl + unrealized
+        self.log(f"--- GLOBAL PnL UPDATE ---")
+        self.log(f"Realized PnL: {self.realized_pnl:.2f}")
+        self.log(f"Unrealized PnL: {unrealized:.2f}")
+        self.log(f"TOTAL PnL: {net_pnl:.2f}")
+        self.log(f"-------------------------")
 
     def find_ticker_by_premium(self, leg_type, target_premium):
         contract_type = 'call_options' if leg_type == 'call' else 'put_options'
