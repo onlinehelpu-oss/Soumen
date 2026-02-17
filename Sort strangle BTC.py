@@ -588,14 +588,26 @@ class GammaBot:
         # Update winning leg's last_reset_price to current price to prevent immediate re-trigger
         self.positions[winning_leg]['last_reset_price'] = winning_price
 
-        if losing_leg in self.positions:
-            pos = self.positions[losing_leg]
-            ticker = self.tickers.get(pos['symbol'])
-            # Close losing leg (Short) -> Buy to close
-            self.execute_trade(ticker, "buy", losing_leg)
 
         new_ticker = self.find_ticker_by_premium(losing_leg, winning_price)
         if new_ticker:
+            # Optimization: Prevent wash trade if rolling into same symbol
+            if losing_leg in self.positions and self.positions[losing_leg]['symbol'] == new_ticker['symbol']:
+                self.send_alert(f"Best match is current position ({new_ticker['symbol']}). Holding to save commission.")
+                # We update the winning leg reset price at the top, so we are good.
+                # We might want to update the losing leg's reset price too?
+                # Actually, strategy checks 'last_reset_price' against current price.
+                # If we don't trade, the losing leg's 'last_reset_price' stays old.
+                # If it's old (e.g. 43.0), and price moves to 44.0, it might trigger 30% again?
+                # No, the trigger is for specific legs. If losing leg (Call) didn't trigger, it's fine.
+                return
+
+            if losing_leg in self.positions:
+                pos = self.positions[losing_leg]
+                ticker = self.tickers.get(pos['symbol'])
+                # Close losing leg (Short) -> Buy to close
+                self.execute_trade(ticker, "buy", losing_leg)
+
             self.send_alert(f"Rolling into {new_ticker['symbol']} (Target Premium: {winning_price})")
             # Open new Short leg
             self.execute_trade(new_ticker, "sell", losing_leg)
