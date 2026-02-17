@@ -113,6 +113,9 @@ class DeltaClient:
             return float(t['result'][0]['spot_price'])
         return None
 
+    def get_positions(self):
+        return self.request("GET", "/v2/orders/position")
+
 
 class StrategyState:
     WAITING = "WAITING"
@@ -178,6 +181,58 @@ class GammaBot:
         symbols_to_sub.append("BTCUSDT")
         self.initial_subscription_list = symbols_to_sub
         self.log(f"Identified {len(symbols_to_sub)} BTC options for expiry {target_date} to monitor.")
+
+    def sync_existing_positions(self):
+        self.log("Syncing existing positions...")
+        resp = self.client.get_positions()
+        if not resp or not resp.get('result'):
+            return
+
+        for p in resp['result']:
+            if float(p['size']) == 0: continue
+
+            # Identify if it's a relevant option
+            # Assuming product_symbol format: C-BTC-68400-170226
+            symbol = p['product_symbol']
+            info = self.parse_symbol(symbol)
+            if not info or info['asset'] != 'BTC': continue
+
+            # Map to leg logic
+            # Delta Exchange API returns size: positive for Long, negative for Short
+            size = float(p['size'])
+            is_long = size > 0
+
+            base_type = 'call' if info['type'] == 'call' else 'put'
+
+            if is_long:
+                leg_key = f"long_{base_type}"
+            else:
+                leg_key = base_type
+
+            # Store in self.positions
+            self.positions[leg_key] = {
+                'symbol': symbol,
+                'product_id': p['product_id'],
+                'entry_price': float(p['entry_price']),
+                'last_reset_price': float(p['entry_price']),
+                'size': abs(size),
+                'strike': info['strike']
+            }
+            self.log(f"Recovered position: {leg_key.upper()} {symbol} @ {p['entry_price']}")
+
+        if self.positions:
+            # Determine state based on recovered legs
+            has_short = 'call' in self.positions or 'put' in self.positions
+            has_long = 'long_call' in self.positions or 'long_put' in self.positions
+
+            if has_long:
+                self.state = StrategyState.IRON_FLY
+            elif has_short:
+                self.state = StrategyState.STRANGLE_OPEN
+            else:
+                self.state = StrategyState.WAITING
+
+            self.log(f"State restored to {self.state}")
 
     def get_0dte_expiry_date(self):
         # Delta Exchange Daily Options expire at 12:00 UTC (approx).
@@ -748,6 +803,7 @@ class GammaBot:
 
     def run(self):
         self.load_products()
+        self.sync_existing_positions()
         self.start_ws()
 
         self.log("Bot Running. Press Ctrl+C to stop.")
@@ -805,11 +861,13 @@ if __name__ == "__main__":
     if not secret: secret = os.environ.get("DELTA_API_SECRET")
 
     # 3. Fallback to Hardcoded Keys (User Request)
-    if not key: key = "MaujYnOjgsqbsfcyjlI7kdlJVzeo6I"
-    if not secret: secret = "olNXyDJv9pCn3MKTktpbUB4E0lMPJ67eNVVGKddqpcutlsiXg97PJjHLm7AS"
+    # Keys removed for security. Please use environment variables or CLI arguments.
+    if not key: key = ""
+    if not secret: secret = ""
 
     if not key or not secret:
         print("No API Credentials found. Forcing Dry Run.")
+        print("To enable Live Trading, use: python \"Sort strangle BTC.py\" --key \"YOUR_KEY\" --secret \"YOUR_SECRET\"")
         args.dry_run = True
         key = "test"
         secret = "test"
