@@ -913,8 +913,9 @@ class GammaBot:
                 time.sleep(1)
 
                 # Heartbeat check for WebSocket
-                if time.time() - self.last_message_time > 10:
-                    self.send_alert("WARNING: WebSocket Heartbeat Lost (> 10s). Flattening.")
+                # Increased timeout to 60s to prevent premature flattening on minor network blips
+                if time.time() - self.last_message_time > 60:
+                    self.send_alert("WARNING: WebSocket Heartbeat Lost (> 60s). Flattening.")
                     self.flatten_all()
 
                 if os.path.exists("TRIGGER_ENTRY"):
