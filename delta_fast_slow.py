@@ -1352,8 +1352,8 @@ def parse_args():
                         help="Trade Allocation Amount (default: 275.0)")
     parser.add_argument("--alloc-pct", type=float, default=ALLOC_PCT,
                         help="Trade Allocation %% of Wallet Balance (default: 0.0, overrides --allocation)")
-    parser.add_argument("--min-change-pct", type=float, default=5.0,
-                        help="Minimum 24h change %% to trade (default: 5.0)")
+    parser.add_argument("--min-change-pct", type=float, default=MIN_CHANGE_PCT,
+                        help=f"Minimum 24h change %% to trade (default: {MIN_CHANGE_PCT})")
     return parser.parse_args()
 
 
