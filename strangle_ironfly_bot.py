@@ -804,7 +804,7 @@ class GammaBot:
                         # self.log(f"Skipping {p.get('symbol', 'Unknown')}: size 0")
                         continue
 
-                    symbol = p.get('symbol')
+                    symbol = p.get('symbol') or p.get('product_symbol')
                     if not symbol:
                         self.log(f"Skipping position without symbol: {p}")
                         continue
