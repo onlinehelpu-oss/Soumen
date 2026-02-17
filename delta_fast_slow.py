@@ -388,6 +388,29 @@ class DeltaWS:
         self.thread.daemon = True
         self.thread.start()
 
+    def subscribe(self, new_symbols):
+        if not self.ws or not self.ws.sock or not self.ws.sock.connected:
+            print("[ws] ⚠️ Cannot subscribe: WebSocket not connected")
+            return
+
+        payload = {
+            "type": "subscribe",
+            "payload": {
+                "channels": [
+                    {
+                        "name": "v2/ticker",
+                        "symbols": new_symbols
+                    }
+                ]
+            }
+        }
+        try:
+            self.ws.send(json.dumps(payload))
+            self.symbols.extend(new_symbols)
+            print(f"[ws] Subscribed to +{len(new_symbols)} new symbols")
+        except Exception as e:
+            print(f"[ws] Subscription failed: {e}")
+
     def on_open(self, ws):
         print(f"[ws] Connected to Delta Exchange ({self.url})")
         # Subscribe to ticker for all symbols
@@ -1175,6 +1198,140 @@ def load_state():
         except:
             pass
 
+
+def fetch_and_warmup_symbol(sym, product_info=None):
+    """
+    Fetches historical data for a symbol and initializes its indicators.
+    Can be used for new symbols found during runtime.
+    """
+    print(f"[warmup] Fetching history for new symbol: {sym}")
+    now_ts = int(time.time())
+    start_time = now_ts - (1000 * TIMEFRAME_MIN * 60)
+    res_str = str(TIMEFRAME_MIN)
+
+    try:
+        resp = CLIENT.get_history(sym, res_str, start_time, now_ts)
+        if resp and "result" in resp:
+            result = resp["result"]
+            data = []
+            # Check format (dict with lists)
+            if isinstance(result, dict) and "t" in result and len(result["t"]) > 0:
+                times = result["t"]
+                opens = result["o"]
+                highs = result["h"]
+                lows = result["l"]
+                closes = result["c"]
+                volumes = result["v"] if "v" in result else [0] * len(times)
+                count = len(times)
+
+                for i in range(count):
+                    ts = dt.fromtimestamp(times[i])
+                    data.append({
+                        "ts": ts,
+                        "open": float(opens[i]),
+                        "high": float(highs[i]),
+                        "low": float(lows[i]),
+                        "close": float(closes[i]),
+                        "volume": float(volumes[i])
+                    })
+            # Check format (list of dicts)
+            elif isinstance(result, list):
+                candles = result
+                count = len(candles)
+                for c in candles:
+                    ts = dt.fromtimestamp(c.get("time", c.get("t")))
+                    data.append({
+                        "ts": ts,
+                        "open": float(c.get("open", c.get("o"))),
+                        "high": float(c.get("high", c.get("h"))),
+                        "low": float(c.get("low", c.get("l"))),
+                        "close": float(c.get("close", c.get("c"))),
+                        "volume": float(c.get("volume", c.get("v", 0)))
+                    })
+
+            if data:
+                df = pd.DataFrame(data).set_index("ts").sort_index()
+                df.index.name = "datetime"
+                st = SYMBOL_STATES.get(sym)
+                if not st:
+                    st = SymbolState(sym)
+                    SYMBOL_STATES[sym] = st
+
+                st.data = compute_indicators(df)
+                if not df.empty:
+                    st.last_candle_ts = df.index[-1]
+                print(f"[warmup] Initialized {sym} with {len(df)} candles.")
+                return True
+    except Exception as e:
+        print(f"[warmup] Failed to fetch history for {sym}: {e}")
+    return False
+
+
+def scan_for_new_opportunities(ws_client):
+    """
+    Scans for new symbols meeting criteria and adds them dynamically.
+    """
+    print(f"[scan] Scanning for new Top Movers (> {MIN_CHANGE_PCT}%)...")
+    try:
+        # 1. Get Products to filter valid ones
+        products = CLIENT.get_products()
+        valid_products = {}
+        if "result" in products and isinstance(products["result"], list):
+            for p in products["result"]:
+                sym = p.get("symbol")
+                c_type = p.get("contract_type", "").lower()
+                is_active = p.get("state") == "live"
+                if is_active and ("perpetual" in c_type or "futures" in c_type):
+                    pid = p.get("id")
+                    cval = p.get("contract_value", "1")
+                    settle = p.get("settling_asset", {}).get("symbol", "")
+                    quote = p.get("quoting_asset", {}).get("symbol", "")
+                    is_inv = (settle != quote)
+                    valid_products[sym] = {
+                        "id": pid,
+                        "contract_value": float(cval),
+                        "is_inverse": is_inv
+                    }
+
+        # 2. Get Tickers
+        tickers = CLIENT.get_ticker_24h()
+        new_symbols = []
+
+        if tickers and "result" in tickers and isinstance(tickers["result"], list):
+            for t in tickers["result"]:
+                sym = t.get("symbol")
+                # Check eligibility
+                if sym in valid_products and sym not in SYMBOL_STATES:
+                    if "close" in t and "open" in t:
+                        c = float(t["close"])
+                        o = float(t["open"])
+                        chg = ((c - o) / o) * 100 if o > 0 else 0
+
+                        if chg >= MIN_CHANGE_PCT:
+                            # FOUND NEW SYMBOL
+                            print(f"[scan] 🌟 Found New Opportunity: {sym} (+{chg:.2f}%)")
+
+                            # Add to Maps
+                            PRODUCT_MAP[sym] = valid_products[sym]
+                            ID_TO_SYMBOL[valid_products[sym]["id"]] = sym
+                            SYMBOLS.append(sym)
+                            SYMBOL_STATES[sym] = SymbolState(sym)
+                            SYMBOL_STATES[sym].ltp_change_24h = chg
+                            if "volume" in t:
+                                SYMBOL_STATES[sym].volume_24h = float(t["volume"])
+
+                            # Warmup History immediately
+                            fetch_and_warmup_symbol(sym)
+                            new_symbols.append(sym)
+
+        # 3. Subscribe via WebSocket
+        if new_symbols and ws_client:
+            ws_client.subscribe(new_symbols)
+
+    except Exception as e:
+        print(f"[scan] Error scanning for new symbols: {e}")
+
+
             # ---------------------------- INITIALIZATION ----------------------------
 
 
@@ -1392,11 +1549,20 @@ def main():
 
     # Heartbeat loop
     last_heartbeat_time = time.time()
+    last_scan_time = time.time()
+    SCAN_INTERVAL = 300 # Scan for new symbols every 5 minutes
+
     while True:
         # Sync positions frequently (e.g. every 15s) to catch manual closes
         sync_positions()
 
         current_time = time.time()
+
+        # Periodic Scan for New Symbols
+        if current_time - last_scan_time >= SCAN_INTERVAL:
+            scan_for_new_opportunities(ws_client)
+            last_scan_time = current_time
+
         # Log heartbeat only every TIMEFRAME_MIN minutes
         if current_time - last_heartbeat_time >= TIMEFRAME_MIN * 60:
             last_heartbeat_time = current_time
