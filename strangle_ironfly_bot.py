@@ -763,6 +763,7 @@ class GammaBot:
                 return False
 
             results = positions_data.get('result', [])
+            self.log(f"Received {len(results)} raw positions.")
 
             # Even if empty, it's a success (valid empty state)
             # Reset internal state
@@ -777,10 +778,14 @@ class GammaBot:
             for p in results:
                 try:
                     raw_size = float(p.get('size', 0))
-                    if raw_size == 0: continue
+                    if raw_size == 0:
+                        # self.log(f"Skipping {p.get('symbol', 'Unknown')}: size 0")
+                        continue
 
                     symbol = p.get('symbol')
-                    if not symbol: continue
+                    if not symbol:
+                        self.log(f"Skipping position without symbol: {p}")
+                        continue
 
                     product_id = int(p.get('product_id', 0))
                     entry_price = float(p.get('entry_price', 0))
@@ -799,11 +804,11 @@ class GammaBot:
                     # Only care about BTC Options
                     info = self.parse_symbol(symbol)
                     if not info:
-                        # self.log(f"Skipping non-parseable symbol: {symbol}")
+                        self.log(f"Skipping non-parseable symbol: {symbol}")
                         continue  # Not an option or parse error
 
                     if info['asset'] != 'BTC':
-                        # self.log(f"Skipping non-BTC symbol: {symbol}")
+                        self.log(f"Skipping non-BTC symbol: {symbol}")
                         continue
 
                     # Determine leg type
