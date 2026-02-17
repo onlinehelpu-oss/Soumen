@@ -534,11 +534,8 @@ def sync_positions():
             if broker_qty == 0:
                 print(f"[sync] ⚠️ Manual Close Detected for {sym}. Resetting bot to WATCH.")
 
-                # Cancel lingering orders if any
-                if st.sl_order_id and st.sl_order_id != "bracket-auto":
-                    cancel_order_wrapper(st.sl_order_id, sym)
-                if st.tp_order_id and st.tp_order_id != "bracket-auto":
-                    cancel_order_wrapper(st.tp_order_id, sym)
+                # Cancel lingering orders if any - Use robust cancel all
+                cancel_all_open_orders(sym)
 
                 st.status = "watch"
                 st.qty = 0
@@ -969,6 +966,35 @@ def cancel_order_wrapper(order_id, symbol):
         return CLIENT.request("DELETE", "/v2/orders", payload=payload, auth=True)
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+def cancel_all_open_orders(symbol):
+    """
+    Cancels ALL open orders for a symbol.
+    Useful for cleaning up after a manual close.
+    """
+    info = PRODUCT_MAP.get(symbol)
+    if not info: return
+
+    try:
+        orders_resp = CLIENT.get_active_orders(product_id=info["id"])
+        if isinstance(orders_resp, dict) and "result" in orders_resp:
+            orders = orders_resp["result"]
+            if isinstance(orders, list) and len(orders) > 0:
+                print(f"[cleanup] Found {len(orders)} open orders for {symbol}. Cancelling ALL...")
+                count = 0
+                for o in orders:
+                    oid = o.get("id")
+                    if oid:
+                        resp = cancel_order_wrapper(oid, symbol)
+                        if isinstance(resp, dict) and (resp.get("success", False) or "result" in resp):
+                            count += 1
+                print(f"[cleanup] Cancelled {count} orders for {symbol}.")
+            else:
+                # No open orders found
+                pass
+    except Exception as e:
+        print(f"[cleanup] Failed to cancel orders for {symbol}: {e}")
 
 
 def on_tick(symbol, ltp):
