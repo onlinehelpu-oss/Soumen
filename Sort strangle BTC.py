@@ -725,10 +725,10 @@ class GammaBot:
             roi = net_pnl / self.cumulative_credit
 
             if roi >= PROFIT_TARGET:
-                self.send_alert(f"Take Profit Hit! (+{roi * 100:.1f}%)")
+                self.send_alert(f"Take Profit Hit! (+{roi * 100:.1f}% | PnL: {net_pnl:.2f})")
                 self.flatten_all()
             elif roi <= STOP_LOSS:
-                self.send_alert(f"Stop Loss Hit! ({roi * 100:.1f}%)")
+                self.send_alert(f"Stop Loss Hit! ({roi * 100:.1f}% | PnL: {net_pnl:.2f})")
                 self.flatten_all()
 
     def flatten_all(self):
