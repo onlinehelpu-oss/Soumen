@@ -363,6 +363,10 @@ def compute_indicators(df):
 
     # VWAP Calculation (Anchored Daily)
     if "volume" in df.columns:
+        if df["volume"].sum() == 0:
+            # All volumes are zero, VWAP will fallback to Close
+            pass
+
         # Avoid SettingWithCopyWarning if we are modifying slice (already copied above)
         pv = df["close"] * df["volume"]
         # Group by date to anchor VWAP
@@ -1292,7 +1296,15 @@ def fetch_and_warmup_symbol(sym, product_info=None):
                 highs = result["h"]
                 lows = result["l"]
                 closes = result["c"]
-                volumes = result["v"] if "v" in result else [0] * len(times)
+
+                # Check for 'v' or 'vol'
+                if "v" in result:
+                    volumes = result["v"]
+                elif "vol" in result:
+                    volumes = result["vol"]
+                else:
+                    volumes = [0] * len(times)
+
                 count = len(times)
 
                 for i in range(count):
@@ -1311,13 +1323,14 @@ def fetch_and_warmup_symbol(sym, product_info=None):
                 count = len(candles)
                 for c in candles:
                     ts = dt.fromtimestamp(c.get("time", c.get("t")))
+                    vol = c.get("volume", c.get("v", c.get("vol", 0)))
                     data.append({
                         "ts": ts,
                         "open": float(c.get("open", c.get("o"))),
                         "high": float(c.get("high", c.get("h"))),
                         "low": float(c.get("low", c.get("l"))),
                         "close": float(c.get("close", c.get("c"))),
-                        "volume": float(c.get("volume", c.get("v", 0)))
+                        "volume": float(vol)
                     })
 
             if data:
@@ -1528,7 +1541,14 @@ def main():
                     highs = result["h"]
                     lows = result["l"]
                     closes = result["c"]
-                    volumes = result["v"] if "v" in result else [0] * len(times)
+
+                    # Check for 'v' or 'vol'
+                    if "v" in result:
+                        volumes = result["v"]
+                    elif "vol" in result:
+                        volumes = result["vol"]
+                    else:
+                        volumes = [0] * len(times)
 
                     count = len(times)
                     print(f"[warmup] Loaded {count} candles for {sym}")
@@ -1560,13 +1580,14 @@ def main():
                         data = []
                         for c in candles:
                             ts = dt.fromtimestamp(c.get("time", c.get("t")))
+                            vol = c.get("volume", c.get("v", c.get("vol", 0)))
                             data.append({
                                 "ts": ts,
                                 "open": float(c.get("open", c.get("o"))),
                                 "high": float(c.get("high", c.get("h"))),
                                 "low": float(c.get("low", c.get("l"))),
                                 "close": float(c.get("close", c.get("c"))),
-                                "volume": float(c.get("volume", c.get("v", 0)))
+                                "volume": float(vol)
                             })
                         df = pd.DataFrame(data).set_index("ts").sort_index()
                         df.index.name = "datetime"
@@ -1665,6 +1686,7 @@ def main():
                 # Default to Neutral/Green if no data
                 trend_icon = "⚪"
                 vwap_val = 0.0
+                candle_vol = 0.0
                 if not st.data.empty:
                     last = st.data.iloc[-1]
                     # fast = float(last.get("ema_fast_entry", 0))
@@ -1673,7 +1695,15 @@ def main():
 
                     vwap_val = float(last.get("vwap", 0))
                     close = float(last.get("close", 0))
-                    trend_icon = "🟢" if close > vwap_val else "🔴"
+                    candle_vol = float(last.get("volume", 0))
+
+                    if close > vwap_val:
+                        trend_icon = "🟢"
+                    elif close < vwap_val:
+                        trend_icon = "🔴"
+                    else:
+                        # Identical values (likely 0 volume)
+                        trend_icon = "⚠️"
 
                     # Use close or cached ltp
                 ltp = 0.0
@@ -1682,7 +1712,7 @@ def main():
 
                 status = st.status
                 print(
-                    f"[heartbeat]   {trend_icon} {sym:<12} | LTP: $ {ltp:,.4f} | VWAP: $ {vwap_val:,.4f} | 24h Change: {'📈' if chg >= 0 else '📉'} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f} | Status: {status}")
+                    f"[heartbeat]   {trend_icon} {sym:<12} | LTP: $ {ltp:,.4f} | VWAP: $ {vwap_val:,.4f} | C.Vol: {candle_vol:.0f} | 24h: {chg:>6.2f}% | Status: {status}")
 
                 # Sleep a short duration for frequent sync checks
         time.sleep(15)
