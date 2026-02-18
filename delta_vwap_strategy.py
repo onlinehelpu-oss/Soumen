@@ -60,8 +60,8 @@ import websocket
 # ---------------------------- CONFIGURATION ----------------------------
 # DELTA EXCHANGE CREDENTIALS
 # Try to load from Environment Variables first, otherwise use provided default
-API_KEY = os.getenv("DELTA_API_KEY", "")
-API_SECRET = os.getenv("DELTA_API_SECRET", "")
+API_KEY = os.getenv("DELTA_API_KEY", "MaujYnOjgsqbsfcyjlI7kdlJVzeo6I")
+API_SECRET = os.getenv("DELTA_API_SECRET", "olNXyDJv9pCn3MKTktpbUB4E0lMPJ67eNVVGKddqpcutlsiXg97PJjHLm7AS")
 
 # --- TRADING ENVIRONMENT ---
 USE_TESTNET = False  # Set True for Testnet
