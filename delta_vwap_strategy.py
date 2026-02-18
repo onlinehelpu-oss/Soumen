@@ -288,6 +288,7 @@ class SymbolState:
         # 24h stats
         self.ltp_change_24h = 0.0
         self.volume_24h = 0.0
+        self.last_seen_vol_24h = 0.0 # Track previous volume to estimate candle volume
 
     # SYMBOL_STATES is initialized in main() after dynamic symbol selection
 
@@ -677,11 +678,25 @@ def on_completed_candle(symbol, candle):
 
     # If partial candle update, we might overwrite. But here we get COMPLETED candle.
     # Just append.
+
+    # Estimate volume from 24h ticker updates
+    current_24h_vol = st.volume_24h
+    estimated_vol = 0.0
+    if st.last_seen_vol_24h > 0:
+        delta = current_24h_vol - st.last_seen_vol_24h
+        if delta >= 0:
+            estimated_vol = delta
+
+    # Update snapshot for next candle
+    if current_24h_vol > 0:
+        st.last_seen_vol_24h = current_24h_vol
+
     new_data = {
         "open": float(candle["open"]),
         "high": float(candle["high"]),
         "low": float(candle["low"]),
-        "close": float(candle["close"])
+        "close": float(candle["close"]),
+        "volume": float(estimated_vol)
     }
 
     df = st.data
@@ -1507,7 +1522,9 @@ def main():
                         SYMBOL_STATES[sym] = SymbolState(sym)
                         SYMBOL_STATES[sym].ltp_change_24h = chg
                         if "volume" in t:
-                            SYMBOL_STATES[sym].volume_24h = float(t["volume"])
+                            vol = float(t["volume"])
+                            SYMBOL_STATES[sym].volume_24h = vol
+                            SYMBOL_STATES[sym].last_seen_vol_24h = vol # Init snapshot
 
                             # Add to PRODUCT_MAP
                         PRODUCT_MAP[sym] = valid_products[sym]
