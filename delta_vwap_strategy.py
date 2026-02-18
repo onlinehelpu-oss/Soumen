@@ -60,8 +60,8 @@ import websocket
 # ---------------------------- CONFIGURATION ----------------------------
 # DELTA EXCHANGE CREDENTIALS
 # Try to load from Environment Variables first, otherwise use provided default
-API_KEY = os.getenv("DELTA_API_KEY", "MaujYnOjgsqbsfcyjlI7kdlJVzeo6I")
-API_SECRET = os.getenv("DELTA_API_SECRET", "olNXyDJv9pCn3MKTktpbUB4E0lMPJ67eNVVGKddqpcutlsiXg97PJjHLm7AS")
+API_KEY = os.getenv("DELTA_API_KEY", "")
+API_SECRET = os.getenv("DELTA_API_SECRET", "")
 
 # --- TRADING ENVIRONMENT ---
 USE_TESTNET = False  # Set True for Testnet
@@ -84,6 +84,7 @@ MIN_RANGE_PCT = 0.0
 EMA_BUFFER = 0.0
 REQUIRE_GREEN_SIGNAL = True
 MIN_CHANGE_PCT = 5.0  # Minimum 24h change percentage to trade
+COOLDOWN_MINUTES = 30 # Cooldown period after exit before re-entering same symbol
 
 # SYMBOLS TO TRADE
 SYMBOLS = []
@@ -277,6 +278,7 @@ class SymbolState:
         self.last_failed_exit_ts = None
         self.sl_order_id = None  # Exchange-side Stop Loss ID
         self.tp_order_id = None  # Exchange-side Take Profit ID
+        self.last_exit_time = None # Timestamp of last trade exit for cooldown
 
         # Tracking
         self.last_candle_ts = None
@@ -564,6 +566,7 @@ def sync_positions():
                 st.stop_price = 0.0
                 st.sl_order_id = None
                 st.tp_order_id = None
+                st.last_exit_time = dt.now()
                 save_state()
                 continue
 
@@ -738,6 +741,11 @@ def evaluate_on_new_candle(st):
 
     # ENTRY SIGNAL
     if st.status == "watch":
+        # Check Cooldown
+        if st.last_exit_time:
+            if dt.now() < st.last_exit_time + timedelta(minutes=COOLDOWN_MINUTES):
+                return
+
         # NEW CONDITION (VWAP + Slow EMA)
         # 1. Candle closes above VWAP
         # 2. Slow EMA below VWAP
@@ -1139,6 +1147,7 @@ def on_tick(symbol, ltp):
                 print(f"✅ [exit] TARGET FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
                 st.status = "watch"
                 st.qty = 0
+                st.last_exit_time = dt.now()
                 log_trade_event(symbol, "SELL_TARGET", st.qty, ltp, resp)
                 save_state()
             elif isinstance(resp, dict) and resp.get("error", {}).get("code") == "no_position_for_reduce_only":
@@ -1147,6 +1156,7 @@ def on_tick(symbol, ltp):
                 st.qty = 0
                 st.sl_order_id = None
                 st.tp_order_id = None
+                st.last_exit_time = dt.now()
                 save_state()
             else:
                 print(f"❌ [exit] Target Exit Failed for {symbol}: {resp}")
@@ -1172,6 +1182,7 @@ def on_tick(symbol, ltp):
                 print(f"✅ [exit] STOPLOSS FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
                 st.status = "watch"
                 st.qty = 0
+                st.last_exit_time = dt.now()
                 log_trade_event(symbol, "SELL_SL", st.qty, ltp, resp)
                 save_state()
             elif isinstance(resp, dict) and resp.get("error", {}).get("code") == "no_position_for_reduce_only":
@@ -1180,6 +1191,7 @@ def on_tick(symbol, ltp):
                 st.qty = 0
                 st.sl_order_id = None
                 st.tp_order_id = None
+                st.last_exit_time = dt.now()
                 save_state()
             else:
                 print(f"❌ [exit] SL Exit Failed for {symbol}: {resp}")
@@ -1205,6 +1217,7 @@ def on_tick(symbol, ltp):
                     pnl = calculate_pnl(symbol, st.entry_price, ltp, st.qty)
                     print(f"✅ [exit] EMA EXIT FILLED {symbol} | Price: {ltp} | PnL: {pnl:.2f}")
                     st.status = "watch"
+                    st.last_exit_time = dt.now()
                     log_trade_event(symbol, "SELL_EMA", st.qty, ltp, resp)
                     save_state()
                 elif isinstance(resp, dict) and resp.get("error", {}).get("code") == "no_position_for_reduce_only":
@@ -1214,6 +1227,7 @@ def on_tick(symbol, ltp):
                     st.qty = 0
                     st.sl_order_id = None
                     st.tp_order_id = None
+                    st.last_exit_time = dt.now()
                     save_state()
                 else:
                     print(f"❌ [exit] EMA Exit Failed for {symbol}: {resp}")
