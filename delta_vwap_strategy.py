@@ -87,6 +87,10 @@ MIN_CHANGE_PCT = 5.0  # Minimum 24h change percentage to trade
 COOLDOWN_MINUTES = 30 # Cooldown period after exit before re-entering same symbol
 
 # SYMBOLS TO TRADE
+# If populated, the bot will ONLY trade these symbols and ignore MIN_CHANGE_PCT scanning.
+# Example: ["BTCUSD", "ETHUSD", "SOLUSD"]
+WHITELIST_SYMBOLS = []
+
 SYMBOLS = []
 
 LOG_FILE = "trade_log.csv"
@@ -1466,11 +1470,13 @@ def parse_args():
                         help="Trade Allocation %% of Wallet Balance (default: 0.0, overrides --allocation)")
     parser.add_argument("--min-change-pct", type=float, default=MIN_CHANGE_PCT,
                         help=f"Minimum 24h change %% to trade (default: {MIN_CHANGE_PCT})")
+    parser.add_argument("--whitelist", type=str, default="",
+                        help="Comma-separated list of symbols to trade (overrides scanning)")
     return parser.parse_args()
 
 
 def main():
-    global TIMEFRAME_MIN, EXIT_EMA, ENTRY_SLOW_EMA, MIN_RANGE_PCT, EMA_BUFFER, TRAIL_ATR_MULT, ALLOC_DEFAULT, ALLOC_PCT, MIN_CHANGE_PCT, SYMBOLS
+    global TIMEFRAME_MIN, EXIT_EMA, ENTRY_SLOW_EMA, MIN_RANGE_PCT, EMA_BUFFER, TRAIL_ATR_MULT, ALLOC_DEFAULT, ALLOC_PCT, MIN_CHANGE_PCT, SYMBOLS, WHITELIST_SYMBOLS
 
     args = parse_args()
     TIMEFRAME_MIN = args.timeframe
@@ -1483,6 +1489,9 @@ def main():
     ALLOC_DEFAULT = args.allocation
     ALLOC_PCT = args.alloc_pct
     MIN_CHANGE_PCT = args.min_change_pct
+
+    if args.whitelist:
+        WHITELIST_SYMBOLS = [s.strip() for s in args.whitelist.split(",") if s.strip()]
 
     print(f"[init] Checking server connectivity...")
     # Ping or simple get
@@ -1519,32 +1528,59 @@ def main():
                     "is_inverse": is_inv
                 }
 
-    print(f"[delta] Fetching 24h ticker data to find Top Movers (> {MIN_CHANGE_PCT}%)...")
-    tickers = CLIENT.get_ticker_24h()
-    if tickers and "result" in tickers and isinstance(tickers["result"], list):
-        for t in tickers["result"]:
-            sym = t.get("symbol")
-            if sym in valid_products:
-                if "close" in t and "open" in t:
-                    c = float(t["close"])
-                    o = float(t["open"])
-                    chg = ((c - o) / o) * 100 if o > 0 else 0
+    if WHITELIST_SYMBOLS:
+        print(f"[init] Using Whitelist: {WHITELIST_SYMBOLS}. Skipping top movers scan.")
+        tickers = CLIENT.get_ticker_24h()
+        if tickers and "result" in tickers and isinstance(tickers["result"], list):
+            for t in tickers["result"]:
+                sym = t.get("symbol")
+                if sym in WHITELIST_SYMBOLS and sym in valid_products:
+                    # Init State
+                    SYMBOLS.append(sym)
+                    SYMBOL_STATES[sym] = SymbolState(sym)
 
-                    if chg >= MIN_CHANGE_PCT:
-                        SYMBOLS.append(sym)
-                        # Initialize State
-                        SYMBOL_STATES[sym] = SymbolState(sym)
+                    if "close" in t and "open" in t:
+                        c = float(t["close"])
+                        o = float(t["open"])
+                        chg = ((c - o) / o) * 100 if o > 0 else 0
                         SYMBOL_STATES[sym].ltp_change_24h = chg
-                        if "volume" in t:
-                            vol = float(t["volume"])
-                            SYMBOL_STATES[sym].volume_24h = vol
-                            SYMBOL_STATES[sym].last_seen_vol_24h = vol # Init snapshot
 
-                            # Add to PRODUCT_MAP
-                        PRODUCT_MAP[sym] = valid_products[sym]
-                        ID_TO_SYMBOL[valid_products[sym]["id"]] = sym
+                    if "volume" in t:
+                        vol = float(t["volume"])
+                        SYMBOL_STATES[sym].volume_24h = vol
+                        SYMBOL_STATES[sym].last_seen_vol_24h = vol # Init snapshot
 
-                        print(f"[filter] Adding {sym} | Change: {chg:.2f}% | Vol: {SYMBOL_STATES[sym].volume_24h:.0f}")
+                    # Add to PRODUCT_MAP
+                    PRODUCT_MAP[sym] = valid_products[sym]
+                    ID_TO_SYMBOL[valid_products[sym]["id"]] = sym
+                    print(f"[whitelist] Adding {sym} | Vol: {SYMBOL_STATES[sym].volume_24h:.0f}")
+    else:
+        print(f"[delta] Fetching 24h ticker data to find Top Movers (> {MIN_CHANGE_PCT}%)...")
+        tickers = CLIENT.get_ticker_24h()
+        if tickers and "result" in tickers and isinstance(tickers["result"], list):
+            for t in tickers["result"]:
+                sym = t.get("symbol")
+                if sym in valid_products:
+                    if "close" in t and "open" in t:
+                        c = float(t["close"])
+                        o = float(t["open"])
+                        chg = ((c - o) / o) * 100 if o > 0 else 0
+
+                        if chg >= MIN_CHANGE_PCT:
+                            SYMBOLS.append(sym)
+                            # Initialize State
+                            SYMBOL_STATES[sym] = SymbolState(sym)
+                            SYMBOL_STATES[sym].ltp_change_24h = chg
+                            if "volume" in t:
+                                vol = float(t["volume"])
+                                SYMBOL_STATES[sym].volume_24h = vol
+                                SYMBOL_STATES[sym].last_seen_vol_24h = vol # Init snapshot
+
+                                # Add to PRODUCT_MAP
+                            PRODUCT_MAP[sym] = valid_products[sym]
+                            ID_TO_SYMBOL[valid_products[sym]["id"]] = sym
+
+                            print(f"[filter] Adding {sym} | Change: {chg:.2f}% | Vol: {SYMBOL_STATES[sym].volume_24h:.0f}")
 
     print(f"[init] Selected {len(SYMBOLS)} symbols matching criteria.")
 
@@ -1680,10 +1716,11 @@ def main():
 
         current_time = time.time()
 
-        # Periodic Scan for New Symbols
-        if current_time - last_scan_time >= SCAN_INTERVAL:
-            scan_for_new_opportunities(ws_client)
-            last_scan_time = current_time
+        # Periodic Scan for New Symbols (Only if whitelist is empty)
+        if not WHITELIST_SYMBOLS:
+            if current_time - last_scan_time >= SCAN_INTERVAL:
+                scan_for_new_opportunities(ws_client)
+                last_scan_time = current_time
 
             # Log heartbeat only every TIMEFRAME_MIN minutes
         if current_time - last_heartbeat_time >= TIMEFRAME_MIN * 60:
