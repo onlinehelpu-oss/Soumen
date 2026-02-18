@@ -1664,15 +1664,16 @@ def main():
                 # Calculate Trend Icon based on VWAP
                 # Default to Neutral/Green if no data
                 trend_icon = "⚪"
+                vwap_val = 0.0
                 if not st.data.empty:
                     last = st.data.iloc[-1]
                     # fast = float(last.get("ema_fast_entry", 0))
                     # slow = float(last.get("ema_slow_entry", 0))
                     # trend_icon = "🟢" if fast > slow else "🔴"
 
-                    vwap = float(last.get("vwap", 0))
+                    vwap_val = float(last.get("vwap", 0))
                     close = float(last.get("close", 0))
-                    trend_icon = "🟢" if close > vwap else "🔴"
+                    trend_icon = "🟢" if close > vwap_val else "🔴"
 
                     # Use close or cached ltp
                 ltp = 0.0
@@ -1681,7 +1682,7 @@ def main():
 
                 status = st.status
                 print(
-                    f"[heartbeat]   {trend_icon} {sym:<12} | LTP: $ {ltp:,.2f} | 24h Change: {'📈' if chg >= 0 else '📉'} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f} | Status: {status}")
+                    f"[heartbeat]   {trend_icon} {sym:<12} | LTP: $ {ltp:,.4f} | VWAP: $ {vwap_val:,.4f} | 24h Change: {'📈' if chg >= 0 else '📉'} {chg:>6.2f}% | Vol: {st.volume_24h:,.0f} | Status: {status}")
 
                 # Sleep a short duration for frequent sync checks
         time.sleep(15)
