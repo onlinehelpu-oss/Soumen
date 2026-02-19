@@ -502,7 +502,16 @@ def sync_positions():
 
             # Check if API call was successful
             if not (isinstance(resp, dict) and "result" in resp):
-                print(f"[sync] Failed to fetch positions for {sym}: {resp}. Skipping sync for this symbol.")
+                error_data = resp.get("error", {})
+                if error_data.get("code") == "ip_not_whitelisted_for_api_key":
+                    ip = error_data.get("context", {}).get("client_ip", "UNKNOWN")
+                    print(f"\n❌ [CRITICAL] IP NOT WHITELISTED for {sym}!")
+                    print(f"   Your API Key does not allow access from IP: {ip}")
+                    print(f"   👉 Action Required: Go to Delta Exchange -> API Settings -> Edit Key -> Add {ip} or Disable IP Whitelist.")
+                    # Sleep longer to avoid spamming logs
+                    time.sleep(10)
+                else:
+                    print(f"[sync] Failed to fetch positions for {sym}: {resp}. Skipping sync for this symbol.")
                 continue
 
                 # Normalize result (list or dict)
