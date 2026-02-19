@@ -1239,17 +1239,27 @@ def load_state():
             with open(STATE_DUMP, "r") as f:
                 data = json.load(f)
             for s, info in data.items():
-                if s in SYMBOL_STATES:
-                    st = SYMBOL_STATES[s]
-                    st.status = info.get("status", "watch")
-                    st.qty = info.get("qty", 0)
-                    st.entry_price = info.get("entry_price", 0.0)
-                    st.stop_price = info.get("stop_price", 0.0)
-                    st.target_price = info.get("target_price")
-                    st.sl_trailed = info.get("sl_trailed", False)
-                    st.gtt_order_id = info.get("gtt_order_id")
-        except:
-            pass
+                # If symbol not in current list (e.g. dropped below threshold), add it back
+                if s not in SYMBOL_STATES:
+                    print(f"[restore] Found active state for {s}, restoring...")
+                    SYMBOLS.append(s)
+                    SYMBOL_STATES[s] = SymbolState(s)
+
+                    # We need to ensure PRODUCT_MAP is populated for this symbol
+                    # This will be handled in main loop if not present, or we can fetch it now
+                    # But for now, just restoring state object
+
+                st = SYMBOL_STATES[s]
+                st.status = info.get("status", "watch")
+                st.qty = info.get("qty", 0)
+                st.entry_price = info.get("entry_price", 0.0)
+                st.stop_price = info.get("stop_price", 0.0)
+                st.target_price = info.get("target_price")
+                st.sl_trailed = info.get("sl_trailed", False)
+                st.sl_order_id = info.get("sl_order_id")
+                st.tp_order_id = info.get("tp_order_id")
+        except Exception as e:
+            print(f"[restore] Error loading state: {e}")
 
 
 def fetch_and_warmup_symbol(sym, product_info=None):
@@ -1460,6 +1470,17 @@ def main():
                     "is_inverse": is_inv
                 }
 
+    # 1. Restore Saved State (Active Positions)
+    print(f"[init] restoring saved state...")
+    load_state()
+
+    # Ensure PRODUCT_MAP is populated for restored symbols
+    for s in SYMBOLS:
+        if s not in PRODUCT_MAP and s in valid_products:
+            PRODUCT_MAP[s] = valid_products[s]
+            ID_TO_SYMBOL[valid_products[s]["id"]] = s
+            print(f"[restore] Mapped {s}")
+
     print(f"[delta] Fetching 24h ticker data to find Top Movers (> {MIN_CHANGE_PCT}%)...")
     tickers = CLIENT.get_ticker_24h()
     if tickers and "result" in tickers and isinstance(tickers["result"], list):
@@ -1470,6 +1491,13 @@ def main():
                     c = float(t["close"])
                     o = float(t["open"])
                     chg = ((c - o) / o) * 100 if o > 0 else 0
+
+                    # If symbol already in list (restored), just update stats
+                    if sym in SYMBOL_STATES:
+                        SYMBOL_STATES[sym].ltp_change_24h = chg
+                        if "volume" in t:
+                            SYMBOL_STATES[sym].volume_24h = float(t["volume"])
+                        continue
 
                     if chg >= MIN_CHANGE_PCT:
                         SYMBOLS.append(sym)
@@ -1485,7 +1513,7 @@ def main():
 
                         print(f"[filter] Adding {sym} | Change: {chg:.2f}% | Vol: {SYMBOL_STATES[sym].volume_24h:.0f}")
 
-    print(f"[init] Selected {len(SYMBOLS)} symbols matching criteria.")
+    print(f"[init] Selected {len(SYMBOLS)} symbols matching criteria (including restored positions).")
 
     print(f"[warmup] Fetching historical data...")
     now_ts = int(time.time())
@@ -1593,7 +1621,7 @@ def main():
     global CANDLE_MGR
     CANDLE_MGR = CandleManager(TIMEFRAME_MIN, on_completed_candle)
 
-    load_state()
+    # load_state() # Already loaded
 
     ws_client = DeltaWS(WS_URL, SYMBOLS, on_tick)
     print(f"[main] Starting WebSocket connection...")
