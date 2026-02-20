@@ -83,6 +83,7 @@ MIN_RANGE_PCT = 0.0
 EMA_BUFFER = 0.0
 REQUIRE_GREEN_SIGNAL = True
 MIN_CHANGE_PCT = 5.0  # Minimum 24h change percentage to trade
+MIN_TARGET_RR = 1.5   # Minimum Risk-Reward ratio for Target selection
 
 # SYMBOLS TO TRADE
 SYMBOLS = []
@@ -589,12 +590,16 @@ def sync_positions():
             print(f"[sync] Error during sync for {sym}: {e}")
 
 
-def compute_prev_swing_high_for_entry(state, lookback, reference_price):
+def compute_prev_swing_high_for_entry(state, lookback, reference_price, min_dist=0.0):
+    """
+    Finds previous swing high.
+    If min_dist > 0, it looks for a peak that is at least min_dist above reference_price.
+    If the most recent peak is too close, it looks further back.
+    """
     df = state.data
     if df is None or df.empty:
         return float("nan")
 
-        # Exclude current signal candle logic if needed, but here we just take tail
     # Code-1 logic:
     pivot_width = 2
     highs = df["high"].values[:-1]  # Exclude incomplete/latest? No, assume completed candles.
@@ -602,7 +607,7 @@ def compute_prev_swing_high_for_entry(state, lookback, reference_price):
     if len(highs) < lookback:
         return float(df["high"].max())
 
-        # We need a bit more history for pivots
+    # We need a bit more history for pivots
     peaks = []
     # Loop needs enough padding
     for i in range(pivot_width, len(highs) - pivot_width):
@@ -615,11 +620,20 @@ def compute_prev_swing_high_for_entry(state, lookback, reference_price):
         if is_peak:
             peaks.append(curr)
 
-    valid = [p for p in peaks if p > reference_price]
-    if valid:
-        return valid[-1]  # Most recent
+    # 1. Try to find a peak that meets the minimum distance requirement
+    # Peaks are chronological (old -> new)
+    valid_with_dist = [p for p in peaks if p > (reference_price + min_dist)]
+    if valid_with_dist:
+        return valid_with_dist[-1]  # Most recent valid peak with good RR
 
-    # Fallback to max high in lookback period if no fractal peak found
+    # 2. Fallback: If no peak gives enough room, try finding ANY peak above reference
+    # But if we are here, it means all peaks are "too near".
+    # To improve RR, we should pick the HIGHEST peak available, even if it's older.
+    valid_any = [p for p in peaks if p > reference_price]
+    if valid_any:
+        return float(max(valid_any))
+
+    # 3. Fallback to max high in lookback period if no fractal peak found
     recent_highs = highs[-lookback:]
     return float(np.max(recent_highs))
 
@@ -725,8 +739,14 @@ def evaluate_on_new_candle(st):
         ok_signal = bool(curr.get("ok_signal", True))
 
         if cond1 and cond2 and cond3 and cond4 and cond5 and cond_green and ok_signal:
+            # Determine preliminary Stop Loss (to calculate Risk)
+            # Note: actual SL logic might check swing low later, but we use signal low as baseline risk
+            sl_price_ref = curr["low"]
+            risk = curr["high"] - sl_price_ref
+            min_target_dist = risk * MIN_TARGET_RR if risk > 0 else 0
+
             # Check Target
-            target = compute_prev_swing_high_for_entry(st, SWING_HIGH_LOOKBACK, curr["high"])
+            target = compute_prev_swing_high_for_entry(st, SWING_HIGH_LOOKBACK, curr["high"], min_dist=min_target_dist)
 
             # Safety: Target must be higher than entry trigger (Signal High)
             # If target <= high, it means the swing high is below the breakout point (invalid trade)
@@ -1426,11 +1446,13 @@ def parse_args():
                         help="Trade Allocation %% of Wallet Balance (default: 0.0, overrides --allocation)")
     parser.add_argument("--min-change-pct", type=float, default=MIN_CHANGE_PCT,
                         help=f"Minimum 24h change %% to trade (default: {MIN_CHANGE_PCT})")
+    parser.add_argument("--min-target-rr", type=float, default=1.5,
+                        help="Minimum Risk-Reward Ratio for Target (default: 1.5)")
     return parser.parse_args()
 
 
 def main():
-    global TIMEFRAME_MIN, EXIT_EMA, ENTRY_FAST_EMA, ENTRY_SLOW_EMA, MIN_RANGE_PCT, EMA_BUFFER, TRAIL_ATR_MULT, ALLOC_DEFAULT, ALLOC_PCT, MIN_CHANGE_PCT, SYMBOLS
+    global TIMEFRAME_MIN, EXIT_EMA, ENTRY_FAST_EMA, ENTRY_SLOW_EMA, MIN_RANGE_PCT, EMA_BUFFER, TRAIL_ATR_MULT, ALLOC_DEFAULT, ALLOC_PCT, MIN_CHANGE_PCT, SYMBOLS, MIN_TARGET_RR
 
     args = parse_args()
     TIMEFRAME_MIN = args.timeframe
@@ -1443,6 +1465,7 @@ def main():
     ALLOC_DEFAULT = args.allocation
     ALLOC_PCT = args.alloc_pct
     MIN_CHANGE_PCT = args.min_change_pct
+    MIN_TARGET_RR = args.min_target_rr
 
     print(f"[init] Checking server connectivity...")
     # Ping or simple get
