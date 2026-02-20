@@ -745,7 +745,7 @@ def evaluate_on_new_candle(st):
                 st.qty = 0  # Calculated at entry
 
                 print(
-                    f"[signal] 🔵 ENTRY SIGNAL {st.symbol} | High: {curr['high']} | Target: {target:.2f} | Wait for break > High (Expires: {st.signal_expiry})")
+                    f"[signal] 🔵 ENTRY SIGNAL {st.symbol} | High: {curr['high']} | Target: {target} | Wait for break > High (Expires: {st.signal_expiry})")
 
                 # EXIT SIGNAL
     if st.status == "position":
