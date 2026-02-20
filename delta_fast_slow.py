@@ -190,8 +190,7 @@ class DeltaClient:
             resp = self.session.request(method, url, params=params, data=data_str,
                                         headers=headers, timeout=10)
             if resp.status_code not in (200, 201):
-                # print(f"[delta] HTTP {resp.status_code}: {resp.text}")
-                pass
+                print(f"[delta] HTTP {resp.status_code}: {resp.text}")
             return resp.json()
         except Exception as e:
             # _real_print(f"[delta] Request failed: {e}")
@@ -973,7 +972,8 @@ def cancel_order_wrapper(order_id, symbol):
         # The generic request wrapper needs updating if cancel uses DELETE
         # But we don't have a cancel wrapper yet.
         # Delta v2 Cancel: DELETE /v2/orders
-        payload = {"product_id": info["id"], "id": order_id}
+        # Ensure IDs are integers
+        payload = {"product_id": int(info["id"]), "id": int(order_id)}
         # Using request directly as we need DELETE method
         return CLIENT.request("DELETE", "/v2/orders", payload=payload, auth=True)
     except Exception as e:
@@ -1001,6 +1001,8 @@ def cancel_all_open_orders(symbol):
                         resp = cancel_order_wrapper(oid, symbol)
                         if isinstance(resp, dict) and (resp.get("success", False) or "result" in resp):
                             count += 1
+                        else:
+                            print(f"[cleanup] Failed to cancel order {oid}: {resp}")
                 print(f"[cleanup] Cancelled {count} orders for {symbol}.")
             else:
                 # No open orders found
