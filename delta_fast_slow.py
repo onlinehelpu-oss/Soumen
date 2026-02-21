@@ -126,6 +126,27 @@ def log_trade_event(symbol, action, qty, price, response):
     with open(LOG_FILE, "a") as f:
         f.write(f"{dt.now().isoformat()},{symbol},{action},{qty},{price},{json.dumps(response, default=str)}\n")
 
+
+def handle_api_error(resp, context_msg=""):
+    """
+    Parses API error responses and prints helpful messages.
+    Returns True if an error was handled/printed, False otherwise.
+    """
+    if isinstance(resp, dict) and "error" in resp:
+        error_data = resp["error"]
+        code = error_data.get("code")
+        if code == "ip_not_whitelisted_for_api_key":
+            ip = error_data.get("context", {}).get("client_ip", "UNKNOWN")
+            print(f"\n❌ [CRITICAL] IP NOT WHITELISTED! ({context_msg})")
+            print(f"   Your API Key does not allow access from current IP: {ip}")
+            print(f"   👉 SOLUTION: Go to Delta Exchange -> API Settings -> Edit Key -> DISABLE 'IP Access Restriction'.")
+            print(f"   (This allows the bot to run from any IP, which is required if your IP changes dynamically.)\n")
+            return True
+        else:
+            print(f"❌ {context_msg} Failed: {resp}")
+            return True
+    return False
+
         # ---------------------------- DELTA CLIENT ----------------------------
 
 
@@ -1074,7 +1095,7 @@ def on_tick(symbol, ltp):
                     st.sl_order_id = str(sl_resp["result"]["id"])
                     print(f"✅ [entry] SL PLACED {symbol} | ID: {st.sl_order_id}")
                 else:
-                    print(f"❌ [entry] SL FAILED {symbol}: {sl_resp}")
+                    handle_api_error(sl_resp, f"[entry] SL {symbol}")
 
                     # 3. Place Target (Take Profit Market)
                 print(f"[entry] Placing Target Order @ {target_price}...")
@@ -1084,7 +1105,7 @@ def on_tick(symbol, ltp):
                     st.tp_order_id = str(tp_resp["result"]["id"])
                     print(f"✅ [entry] TP PLACED {symbol} | ID: {st.tp_order_id}")
                 else:
-                    print(f"❌ [entry] TP FAILED {symbol}: {tp_resp}")
+                    handle_api_error(tp_resp, f"[entry] TP {symbol}")
 
                     # ATR Trailing setup
                 if not st.data.empty and "atr" in st.data.columns:
@@ -1092,7 +1113,7 @@ def on_tick(symbol, ltp):
 
                 save_state()
             else:
-                print(f"[entry] Failed: {resp}")
+                handle_api_error(resp, "[entry]")
                 st.status = "watch"
 
                 # EXIT EXECUTION
@@ -1126,7 +1147,7 @@ def on_tick(symbol, ltp):
                 st.tp_order_id = None
                 save_state()
             else:
-                print(f"❌ [exit] Target Exit Failed for {symbol}: {resp}")
+                handle_api_error(resp, f"[exit] Target {symbol}")
             return
 
             # Stop Loss (Internal Backup + Exchange GTT Handling)
@@ -1159,7 +1180,7 @@ def on_tick(symbol, ltp):
                 st.tp_order_id = None
                 save_state()
             else:
-                print(f"❌ [exit] SL Exit Failed for {symbol}: {resp}")
+                handle_api_error(resp, f"[exit] SL {symbol}")
             return
 
             # EMA Exit
@@ -1193,7 +1214,7 @@ def on_tick(symbol, ltp):
                     st.tp_order_id = None
                     save_state()
                 else:
-                    print(f"❌ [exit] EMA Exit Failed for {symbol}: {resp}")
+                    handle_api_error(resp, f"[exit] EMA {symbol}")
                 return
 
                 # Trailing SL (Move to Breakeven)
