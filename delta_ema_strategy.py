@@ -222,11 +222,31 @@ class DeltaClient:
         resp = self.request("GET", "/v2/products")
         # Fallback for India endpoint issues
         if isinstance(resp, dict) and not resp.get("success", False) and "api.india.delta.exchange" in self.base_url:
-            print("[delta] get_products failed on India endpoint, trying global...")
+            print("[delta] get_products failed on India endpoint, trying to reconstruct from tickers...")
             try:
-                return requests.get("https://api.delta.exchange/v2/products", timeout=10).json()
+                # Use tickers from the SAME endpoint (India) to build product list
+                # This ensures we get the correct symbols (e.g. PIPPINUSD) which might not exist on Global
+                tickers = self.request("GET", "/v2/tickers")
+                if isinstance(tickers, dict) and tickers.get("success") and "result" in tickers:
+                    products = []
+                    for t in tickers["result"]:
+                        # Map ticker fields to product fields
+                        # We need: id, symbol, contract_value, contract_type, state, settling_asset
+                        if "product_id" in t:
+                            p = {
+                                "id": t["product_id"],
+                                "symbol": t.get("symbol"),
+                                "contract_value": t.get("contract_value"),
+                                "contract_type": t.get("contract_type"),
+                                "state": "live",  # Assume live if present in tickers
+                                "settling_asset": {"symbol": "USDT"}, # Default assumption
+                                "quoting_asset": {"symbol": "USDT"}
+                            }
+                            products.append(p)
+                    print(f"[delta] Successfully reconstructed {len(products)} products from tickers.")
+                    return {"success": True, "result": products}
             except Exception as e:
-                print(f"[delta] Global fallback failed: {e}")
+                print(f"[delta] Ticker fallback failed: {e}")
         return resp
 
     def get_history(self, symbol, resolution, start, end):
