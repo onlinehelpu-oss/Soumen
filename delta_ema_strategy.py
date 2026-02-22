@@ -219,7 +219,15 @@ class DeltaClient:
             return {"success": False, "error": str(e)}
 
     def get_products(self):
-        return self.request("GET", "/v2/products")
+        resp = self.request("GET", "/v2/products")
+        # Fallback for India endpoint issues
+        if isinstance(resp, dict) and not resp.get("success", False) and "api.india.delta.exchange" in self.base_url:
+            print("[delta] get_products failed on India endpoint, trying global...")
+            try:
+                return requests.get("https://api.delta.exchange/v2/products", timeout=10).json()
+            except Exception as e:
+                print(f"[delta] Global fallback failed: {e}")
+        return resp
 
     def get_history(self, symbol, resolution, start, end):
         # resolution: "1", "5", "15", "60" (1h), "240" (4h), "D" (1d)
