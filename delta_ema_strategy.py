@@ -212,7 +212,9 @@ class DeltaClient:
             resp = self.session.request(method, url, params=params, data=data_str,
                                         headers=headers, timeout=10)
             if resp.status_code not in (200, 201):
-                print(f"[delta] HTTP {resp.status_code}: {resp.text}")
+                # Suppress print for open_order_not_found
+                if "open_order_not_found" not in resp.text:
+                    print(f"[delta] HTTP {resp.status_code}: {resp.text}")
             return resp.json()
         except Exception as e:
             # _real_print(f"[delta] Request failed: {e}")
@@ -1030,7 +1032,15 @@ def cancel_order_wrapper(order_id, symbol):
         # Ensure IDs are integers
         payload = {"product_id": int(info["id"]), "id": int(order_id)}
         # Using request directly as we need DELETE method
-        return CLIENT.request("DELETE", "/v2/orders", payload=payload, auth=True)
+        resp = CLIENT.request("DELETE", "/v2/orders", payload=payload, auth=True)
+
+        # Suppress 'open_order_not_found' error as it means order is already cancelled/filled
+        if isinstance(resp, dict) and "error" in resp:
+            code = resp["error"].get("code")
+            if code == "open_order_not_found":
+                return {"success": True, "message": "Order already closed"}
+
+        return resp
     except Exception as e:
         return {"success": False, "error": str(e)}
 
