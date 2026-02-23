@@ -1,0 +1,28 @@
+{
+  "timeframe_minutes": 5,
+  "lookback_candles": 1000,
+  "strategy": {
+    "exit_ema": 50,
+    "entry_fast_ema": 20,
+    "entry_slow_ema": 50,
+    "ema_buffer": 0.0,
+    "require_green_signal": true,
+    "min_range_pct": 0.0,
+    "sl_mode": "signal_low",
+    "swing_lookback": 5,
+    "swing_high_lookback": 100,
+    "trail_atr_mult": 1.0
+  },
+  "paper_trading": {
+    "enabled": true,
+    "balance": 10000.0,
+    "trade_allocation": 275.0,
+    "taker_fee_pct": 0.05,
+    "maker_fee_pct": 0.02
+  },
+  "timezone": "Asia/Kolkata",
+  "symbols": [
+    "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "BNBUSD",
+    "DOGEUSD", "ADAUSD", "DOTUSD", "AVAXUSD", "LINKUSD"
+  ]
+}
