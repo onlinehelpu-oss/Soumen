@@ -1,0 +1,36 @@
+{
+  "api_key": "",
+  "api_secret": "",
+  "base_url": "https://api.india.delta.exchange",
+  "ws_url": "wss://socket.india.delta.exchange",
+  "symbols": [
+    "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "BNBUSD",
+    "DOGEUSD", "ADAUSD", "DOTUSD", "AVAXUSD", "LINKUSD",
+    "LTCUSD", "BCHUSD", "XMRUSD", "ATOMUSD", "TRXUSD",
+    "NEARUSD", "FILUSD", "APTUSD", "INJUSD", "STXUSD",
+    "ARBUSD", "OPUSD", "AAVEUSD", "UNIUSD", "SUIUSD",
+    "HBARUSD", "ETCUSD", "ALGOUSD", "POLUSD", "TIAUSD",
+    "ENSUSD", "LDOUSD", "GALAUSD", "MANAUSD", "SANDUSD",
+    "CAKEUSD", "DYDXUSD", "RUNEUSD", "ZECUSD", "ZROUSD",
+    "API3USD", "KSMUSD", "SKLUSD", "IOTAUSD", "JUPUSD",
+    "WLDUSD", "ONDOUSD", "SEIUSD"
+  ],
+  "strategy": {
+    "timeframe_minutes": 5,
+    "exit_ema": 50,
+    "entry_fast_ema": 20,
+    "entry_slow_ema": 50,
+    "ema_buffer": 0.0,
+    "min_range_pct": 0.0,
+    "require_green_signal": true,
+    "sl_mode": "signal_low",
+    "swing_lookback": 5,
+    "swing_high_lookback": 50,
+    "trail_atr_mult": 1.0
+  },
+  "paper_trading": {
+    "enabled": false,
+    "alloc_default": 275.0,
+    "alloc_pct": 0.0
+  }
+}
