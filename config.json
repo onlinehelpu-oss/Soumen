@@ -1,0 +1,14 @@
+{
+    "MIN_CHANGE_PCT": 5.0,
+    "TIMEFRAME_MIN": 30,
+    "EMA_FAST_PERIOD": 9,
+    "EMA_SLOW_PERIOD": 15,
+    "EMA_EXIT_PERIOD": 50,
+    "ATR_PERIOD": 14,
+    "SWING_LOOKBACK": 50,
+    "BUFFER_POINTS": 5,
+    "MAGIC_NUMBER": 888888,
+    "LOT_SIZE": 0.1,
+    "MIN_RANGE_PCT": 0.0,
+    "MAX_RANGE_PCT": 2.0
+}
