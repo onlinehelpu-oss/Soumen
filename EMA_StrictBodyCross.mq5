@@ -5,11 +5,12 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, MetaQuotes Ltd."
 #property link      "https://www.mql5.com"
-#property version   "1.20"
+#property version   "1.60"
 #property strict
 
 #include <Trade\Trade.mqh>
 #include <Trade\SymbolInfo.mqh>
+#include <Trade\PositionInfo.mqh>
 
 //--- INPUT PARAMETERS
 input group "Market Scanning"
@@ -34,11 +35,7 @@ input double   InpLotSize        = 0.1;      // Fixed Lot Size
 input long     InpMagic          = 888888;   // Magic Number
 input int      InpSlippage       = 10;       // Max Slippage (Points)
 
-//--- GLOBAL VARIABLES
-CTrade         trade;
-string         watchlist[];
-int            watchlist_count = 0;
-
+//--- DATA STRUCTURES
 struct SignalData {
    double trigger_high;
    double stop_loss;
@@ -51,13 +48,6 @@ struct ExitPendingData {
    datetime signal_time;
 };
 
-// State management for multiple symbols
-SignalData     pending_entries[];
-string         pending_entry_symbols[];
-ExitPendingData pending_exits[];
-ulong          pending_exit_tickets[];
-
-// Indicator Handle Cache to improve performance
 struct HandleCache {
    string symbol;
    int h_fast;
@@ -65,7 +55,19 @@ struct HandleCache {
    int h_exit;
    int h_atr;
 };
-HandleCache handles[];
+
+//--- GLOBAL VARIABLES
+CTrade         trade;
+CPositionInfo  posInfo;
+string         watchlist[];
+int            watchlist_count = 0;
+datetime       last_scan_time = 0;
+
+SignalData     pending_entries[];
+string         pending_entry_symbols[];
+ExitPendingData pending_exits[];
+ulong          pending_exit_tickets[];
+HandleCache    handles[];
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -75,7 +77,8 @@ int OnInit()
    trade.SetExpertMagicNumber(InpMagic);
    trade.SetDeviationInPoints(InpSlippage);
 
-   EventSetTimer(InpScanInterval);
+   // Set timer for both scanning (periodic) and trade management (frequent)
+   EventSetTimer(1);
    ScanSymbols();
    return(INIT_SUCCEEDED);
 }
@@ -100,7 +103,24 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTimer()
 {
-   ScanSymbols();
+   // 1. Periodic Symbol Scanning
+   if(TimeCurrent() - last_scan_time >= InpScanInterval)
+   {
+      ScanSymbols();
+      last_scan_time = TimeCurrent();
+   }
+
+   // 2. Global Trade Management (Independent of watchlist status)
+   ManageAllPositions();
+
+   // 3. Monitor Entry Triggers for watchlist
+   for(int i=0; i<watchlist_count; i++)
+   {
+      if(!PositionSelect(watchlist[i]))
+      {
+         CheckEntrySignal(watchlist[i]);
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -108,22 +128,29 @@ void OnTimer()
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   for(int i=0; i<watchlist_count; i++)
+   // Fast response on home symbol
+   OnTimer();
+}
+
+//+------------------------------------------------------------------+
+//| Manage All Positions matching Magic Number                       |
+//+------------------------------------------------------------------+
+void ManageAllPositions()
+{
+   for(int i=PositionsTotal()-1; i>=0; i--)
    {
-      string symbol = watchlist[i];
-      if(!SymbolInfoInteger(symbol, SYMBOL_SELECT)) continue;
-
-      ManageExits(symbol);
-
-      if(!PositionSelectBySymbol(symbol))
+      if(posInfo.SelectByIndex(i))
       {
-         CheckEntrySignal(symbol);
+         if(posInfo.Magic() == InpMagic)
+         {
+            ManageExits(posInfo.Symbol(), posInfo.Ticket());
+         }
       }
    }
 }
 
 //+------------------------------------------------------------------+
-//| Get Indicator handles from cache                                 |
+//| Indicator Handle Caching                                         |
 //+------------------------------------------------------------------+
 int GetHandle(string symbol, string type)
 {
@@ -152,7 +179,7 @@ int GetHandle(string symbol, string type)
 }
 
 //+------------------------------------------------------------------+
-//| Scan for high-volatility symbols                                 |
+//| Scanner: Filter for Volatility                                   |
 //+------------------------------------------------------------------+
 void ScanSymbols()
 {
@@ -182,11 +209,10 @@ void ScanSymbols()
 }
 
 //+------------------------------------------------------------------+
-//| Check for "Strict Body Cross" Signal                             |
+//| Signal Detection & Entry Management                              |
 //+------------------------------------------------------------------+
 void CheckEntrySignal(string symbol)
 {
-   // 1. Pending Breakout Logic
    int pending_idx = -1;
    for(int i=0; i<ArraySize(pending_entry_symbols); i++)
    {
@@ -210,7 +236,6 @@ void CheckEntrySignal(string symbol)
       return;
    }
 
-   // 2. New Signal Detection
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
    if(CopyRates(symbol, InpTimeframe, 0, 100, rates) < 100) return;
@@ -239,29 +264,33 @@ void CheckEntrySignal(string symbol)
       {
          SignalData sig; sig.trigger_high=high; sig.stop_loss=low; sig.take_profit=s_high; sig.signal_time=rates[1].time;
          AddPendingEntry(symbol, sig);
-         Print(symbol, ": Signal detected. TP: ", s_high);
+         Print(symbol, ": Signal detected. Waiting breakout of ", high);
       }
    }
 }
 
 //+------------------------------------------------------------------+
-//| Manage Positions                                                 |
+//| Management: Trailing Stops & Trend Exits                         |
 //+------------------------------------------------------------------+
-void ManageExits(string symbol)
+void ManageExits(string symbol, ulong ticket)
 {
-   if(!PositionSelectBySymbol(symbol)) return;
+   if(!PositionSelectByTicket(ticket)) return;
 
-   ulong ticket = PositionGetInteger(POSITION_TICKET);
-   double open_p=PositionGetDouble(POSITION_PRICE_OPEN), sl=PositionGetDouble(POSITION_SL), tp=PositionGetDouble(POSITION_TP), bid=SymbolInfoDouble(symbol, SYMBOL_BID);
+   double open_p = PositionGetDouble(POSITION_PRICE_OPEN);
+   double sl     = PositionGetDouble(POSITION_SL);
+   double tp     = PositionGetDouble(POSITION_TP);
+   double bid    = SymbolInfoDouble(symbol, SYMBOL_BID);
 
+   // 1. ATR Trailing Stop (Breakeven at 1*ATR profit)
    double atr_buf[];
    CopyBuffer(GetHandle(symbol, "atr"), 0, 0, 1, atr_buf);
    if(ArraySize(atr_buf)>0 && (bid - open_p) >= atr_buf[0] && sl < open_p)
    {
       trade.PositionModify(ticket, open_p, tp);
-      Print(symbol, ": BE move.");
+      Print(symbol, ": Position #", ticket, " Trailing Stop -> Breakeven.");
    }
 
+   // 2. EMA Trend Exit
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
    if(CopyRates(symbol, InpTimeframe, 0, 2, rates) < 2) return;
@@ -272,7 +301,10 @@ void ManageExits(string symbol)
    {
       bool found = false;
       for(int i=0; i<ArraySize(pending_exit_tickets); i++) { if(pending_exit_tickets[i] == ticket) { found=true; break; } }
-      if(!found) AddPendingExit(ticket, rates[1].low, rates[1].time);
+      if(!found) {
+         AddPendingExit(ticket, rates[1].low, rates[1].time);
+         Print(symbol, ": EMA Exit pending for #", ticket, ". Trigger low: ", rates[1].low);
+      }
    }
 
    int ex_idx = -1;
@@ -283,6 +315,7 @@ void ManageExits(string symbol)
       {
          trade.PositionClose(ticket);
          RemovePendingExit(ex_idx);
+         Print(symbol, ": EMA Exit Executed for #", ticket);
       }
       else if(iTime(symbol, InpTimeframe, 0) > pending_exits[ex_idx].signal_time + PeriodSeconds(InpTimeframe))
       {
@@ -291,7 +324,9 @@ void ManageExits(string symbol)
    }
 }
 
-//--- Helpers
+//+------------------------------------------------------------------+
+//| Dynamic Array Helpers                                            |
+//+------------------------------------------------------------------+
 void AddPendingEntry(string sym, SignalData &data) {
    int sz = ArraySize(pending_entry_symbols);
    ArrayResize(pending_entry_symbols, sz + 1); ArrayResize(pending_entries, sz + 1);
