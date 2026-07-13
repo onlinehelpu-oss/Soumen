@@ -189,9 +189,11 @@ void CheckForSignal()
 
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
-   if(CopyRates(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, 1, 1, rates) < 1) return;
+   if(CopyRates(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, 1, 2, rates) < 2) return;
 
-   MqlRates candle = rates[0];
+   MqlRates candle = rates[0];      // Signal Candle (index 1)
+   MqlRates prev_candle = rates[1]; // Previous Candle (index 2)
+
    double range = candle.high - candle.low;
    if(range <= 0) return;
 
@@ -204,11 +206,18 @@ void CheckForSignal()
    double body_pct       = (body / range) * 100.0;
 
    //--- Pattern Recognition
+   // Condition 1: Shooting Star must be RED (Bearish)
+   // Condition 2: Previous candle must be GREEN (Bullish)
    bool is_ss = (upper_wick_pct >= InpMinUpperWickPct && lower_wick_pct <= InpMaxLowerWickPct && body_pct <= InpMaxBodyPct);
-   if(InpRequireBearish && candle.close >= candle.open) is_ss = false;
+   if(candle.close >= candle.open) is_ss = false;           // SS must be Red
+   if(prev_candle.close <= prev_candle.open) is_ss = false; // Prev must be Green
 
+   // Symmetrical logic for Hammer:
+   // Condition 1: Hammer must be GREEN (Bullish)
+   // Condition 2: Previous candle must be RED (Bearish)
    bool is_hammer = (lower_wick_pct >= InpMinUpperWickPct && upper_wick_pct <= InpMaxLowerWickPct && body_pct <= InpMaxBodyPct);
-   if(InpRequireBearish && candle.close <= candle.open) is_hammer = false;
+   if(candle.close <= candle.open) is_hammer = false;           // Hammer must be Green
+   if(prev_candle.close >= prev_candle.open) is_hammer = false; // Prev must be Red
 
    //--- Filter Processing
    bool filters_ok = true;
