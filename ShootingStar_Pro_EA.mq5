@@ -187,23 +187,29 @@ void CShootingStarEA::ScanForSignal() {
    double rg = r[1].high - r[1].low; if(rg <= 0) return;
    double point = m_symbol.Point();
 
+   bool sellFound = false;
    if(InpEnableSell) {
-      if(InpRequirePrevBullish && r[2].close <= r[2].open) { m_lastReason = "Sell: Prev candle not bullish"; goto check_buy; }
-      if(InpRequireBearish && r[1].close >= r[1].open) { m_lastReason = "Sell: Current candle not bearish"; goto check_buy; }
-      double b=MathAbs(r[1].close-r[1].open), u=r[1].high-MathMax(r[1].open,r[1].close), l=MathMin(r[1].open,r[1].close)-r[1].low;
-      double uP=(u/rg)*100, lP=(l/rg)*100, bP=(b/rg)*100;
-      if(uP<InpMinUpperWickPct) { m_lastReason = "Sell: Upper wick too small ("+DoubleToString(uP,1)+"%)"; goto check_buy; }
-      if(lP>InpMaxLowerWickPct) { m_lastReason = "Sell: Lower wick too large ("+DoubleToString(lP,1)+"%)"; goto check_buy; }
-      if(bP>InpMaxBodyPct) { m_lastReason = "Sell: Body too large ("+DoubleToString(bP,1)+"%)"; goto check_buy; }
-      if(InpMinCandleRange>0 && rg<InpMinCandleRange*point) { m_lastReason = "Sell: Range too small"; goto check_buy; }
-      if(InpMaxCandleRange>0 && rg>InpMaxCandleRange*point) { m_lastReason = "Sell: Range too large"; goto check_buy; }
-      if(!CheckFilters(true)) { m_lastReason = "Sell: Filters rejected"; goto check_buy; }
-      m_signal.isValid=true; m_signal.isSell=true; m_signal.time=r[1].time; m_signal.high=r[1].high; m_signal.low=r[1].low;
-      m_signal.entryPrice=m_symbol.NormalizePrice(r[1].low - InpEntryBuffer*point); m_signal.stopLoss=m_symbol.NormalizePrice(r[1].high + InpSLBuffer*point);
-      m_signal.takeProfit=m_symbol.NormalizePrice(m_signal.entryPrice - MathAbs(m_signal.entryPrice - m_signal.stopLoss)*InpRRRatio);
-      DrawObjects(); m_lastReason = "Sell: Signal Detected!"; return;
+      if(InpRequirePrevBullish && r[2].close <= r[2].open) m_lastReason = "Sell: Prev candle not bullish";
+      else if(InpRequireBearish && r[1].close >= r[1].open) m_lastReason = "Sell: Current candle not bearish";
+      else {
+         double b=MathAbs(r[1].close-r[1].open), u=r[1].high-MathMax(r[1].open,r[1].close), l=MathMin(r[1].open,r[1].close)-r[1].low;
+         double uP=(u/rg)*100, lP=(l/rg)*100, bP=(b/rg)*100;
+         if(uP<InpMinUpperWickPct) m_lastReason = "Sell: Upper wick too small ("+DoubleToString(uP,1)+"%)";
+         else if(lP>InpMaxLowerWickPct) m_lastReason = "Sell: Lower wick too large ("+DoubleToString(lP,1)+"%)";
+         else if(bP>InpMaxBodyPct) m_lastReason = "Sell: Body too large ("+DoubleToString(bP,1)+"%)";
+         else if(InpMinCandleRange>0 && rg<InpMinCandleRange*point) m_lastReason = "Sell: Range too small";
+         else if(InpMaxCandleRange>0 && rg>InpMaxCandleRange*point) m_lastReason = "Sell: Range too large";
+         else if(!CheckFilters(true)) m_lastReason = "Sell: Filters rejected";
+         else {
+            m_signal.isValid=true; m_signal.isSell=true; m_signal.time=r[1].time; m_signal.high=r[1].high; m_signal.low=r[1].low;
+            m_signal.entryPrice=m_symbol.NormalizePrice(r[1].low - InpEntryBuffer*point); m_signal.stopLoss=m_symbol.NormalizePrice(r[1].high + InpSLBuffer*point);
+            m_signal.takeProfit=m_symbol.NormalizePrice(m_signal.entryPrice - MathAbs(m_signal.entryPrice - m_signal.stopLoss)*InpRRRatio);
+            DrawObjects(); m_lastReason = "Sell: Signal Detected!"; sellFound = true;
+         }
+      }
    }
-check_buy:
+   if(sellFound) return;
+
    if(InpEnableBuy) {
       if(InpRequirePrevBullish && r[2].close >= r[2].open) { m_lastReason = "Buy: Prev candle not bearish"; return; }
       if(InpRequireBearish && r[1].close <= r[1].open) { m_lastReason = "Buy: Current candle not bullish"; return; }
