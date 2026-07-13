@@ -462,8 +462,14 @@ void ExportReport()
       FileWrite(fh, "Max Drawdown %", DoubleToString(TesterStatistics(STAT_EQUITY_DDREL_PERCENT), 2));
       FileWrite(fh, "Recovery Factor", DoubleToString(TesterStatistics(STAT_RECOVERY_FACTOR), 2));
       FileWrite(fh, "Expected Payoff", DoubleToString(TesterStatistics(STAT_EXPECTED_PAYOFF), 2));
-      FileWrite(fh, "Average Win", DoubleToString(TesterStatistics(STAT_PROFIT_TRADES_AVG), 2));
-      FileWrite(fh, "Average Loss", DoubleToString(TesterStatistics(STAT_LOSS_TRADES_AVG), 2));
+
+      double total_win_trades = TesterStatistics(STAT_PROFIT_TRADES);
+      double total_loss_trades = TesterStatistics(STAT_LOSS_TRADES);
+      double avg_win = (total_win_trades > 0) ? TesterStatistics(STAT_GROSS_PROFIT) / total_win_trades : 0;
+      double avg_loss = (total_loss_trades > 0) ? TesterStatistics(STAT_GROSS_LOSS) / total_loss_trades : 0;
+
+      FileWrite(fh, "Average Win", DoubleToString(avg_win, 2));
+      FileWrite(fh, "Average Loss", DoubleToString(avg_loss, 2));
       FileWrite(fh, "Consecutive Wins", (string)TesterStatistics(STAT_CONPROFITMAX_TRADES));
       FileWrite(fh, "Consecutive Losses", (string)TesterStatistics(STAT_CONLOSSMAX_TRADES));
       FileClose(fh);
