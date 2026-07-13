@@ -49,7 +49,7 @@ input bool   InpEnableATR = false;                      // Enable ATR Filter
 input int    InpATRPeriod = 14;                         // ATR Period
 input double InpATRMultiplier = 1.5;                    // ATR Multiplier
 input bool   InpEnableSpreadFilter = true;              // Enable Spread Filter
-input int    InpMaxSpread = 50;                         // Maximum Spread (Points)
+input int    InpMaxSpread = 0;                          // Maximum Spread (Points, 0=Disabled)
 input bool   InpEnableSessionFilter = false;            // Enable Session Filter
 input string InpLondonStart = "08:00";                  // London Start (HH:MM)
 input string InpLondonEnd = "16:00";                    // London End (HH:MM)
@@ -155,8 +155,19 @@ public:
       if(!m_symbol.RefreshRates()) return;
       static datetime lr = 0; if(TimeCurrent() - lr > 60) { ResetDailyStats(); lr = TimeCurrent(); }
       HandleExits();
-      static datetime lt = 0; datetime ct = iTime(m_symbol.Name(), (ENUM_TIMEFRAMES)InpSignalTF, 0);
-      if(ct != lt) { lt = ct; ScanForSignal(); }
+   static datetime lt = 0;
+   datetime ct = iTime(m_symbol.Name(), (ENUM_TIMEFRAMES)InpSignalTF, 0);
+
+   if(ct > 0) {
+      if(ct != lt) {
+         lt = ct;
+         ScanForSignal();
+      }
+      else if(lt == 0) {
+         lt = ct;
+         ScanForSignal();
+      }
+   }
       HandleEntry();
    }
    void OnTimer() { if(InpEnableDashboard) UpdateUI(); }
@@ -298,11 +309,22 @@ bool CShootingStarEA::CheckSessionTime(string s, string e) {
 }
 
 bool CShootingStarEA::CheckFilters(bool isSell) {
-   if(!IsWithinSession() || (InpEnableSpreadFilter && m_symbol.Spread()>InpMaxSpread)) return false;
-   if(InpEnableEMA) { double e=GetEMA(1); if(e>0 && ((isSell && m_symbol.Bid()>e) || (!isSell && m_symbol.Ask()<e))) return false; }
+   if(!IsWithinSession()) { m_lastReason = (isSell?"Sell":"Buy")+": Session restricted"; return false; }
+   if(InpEnableSpreadFilter && InpMaxSpread > 0 && m_symbol.Spread() > InpMaxSpread) { m_lastReason = (isSell?"Sell":"Buy")+": Spread too high ("+IntegerToString(m_symbol.Spread())+")"; return false; }
+
+   if(InpEnableEMA) {
+      double e=GetEMA(1);
+      if(e>0) {
+         if(isSell && m_symbol.Bid() > e) { m_lastReason = "Sell: Price above EMA"; return false; }
+         if(!isSell && m_symbol.Ask() < e) { m_lastReason = "Buy: Price below EMA"; return false; }
+      }
+   }
    if(InpEnableATR) {
       double a=GetATR(1); if(a<=0) return false;
-      MqlRates r[]; if(CopyRates(m_symbol.Name(),(ENUM_TIMEFRAMES)InpSignalTF,1,1,r)==1 && (r[0].high-r[0].low)<(a*InpATRMultiplier)) return false;
+      MqlRates r[];
+      if(CopyRates(m_symbol.Name(),(ENUM_TIMEFRAMES)InpSignalTF,1,1,r)==1) {
+         if((r[0].high-r[0].low) < (a * InpATRMultiplier)) { m_lastReason = (isSell?"Sell":"Buy")+": Range < ATR Multiplier"; return false; }
+      }
    }
    return true;
 }
