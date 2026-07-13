@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Trading Robot"
 #property link      "https://www.mql5.com"
-#property version   "2.00"
+#property version   "3.00"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -20,13 +20,17 @@ input double         InpEntryBuffer     = 0.05;            // Entry Buffer (Poin
 input int            InpMagic           = 123456;          // Magic Number
 input bool           InpGlobalOnePos    = true;            // One Position at a time (Global for this Magic)
 
-input group "Candle Geometry"
-input double         InpUpperWickMin    = 50.0;            // Upper Wick Min %
-input double         InpUpperWickMax    = 80.0;            // Upper Wick Max %
-input double         InpBodyMin         = 5.0;             // Body Min %
-input double         InpBodyMax         = 30.0;            // Body Max %
-input double         InpLowerWickMax    = 25.0;            // Lower Wick Max %
-input double         InpMinRangePct     = 0.15;            // Min Candle Range %
+input group "Candle Geometry (Relaxed for more signals)"
+input double         InpUpperWickMin    = 40.0;            // Upper Wick Min % (Relaxed from 50)
+input double         InpUpperWickMax    = 90.0;            // Upper Wick Max % (Relaxed from 80)
+input double         InpBodyMin         = 1.0;             // Body Min % (Relaxed from 5)
+input double         InpBodyMax         = 40.0;            // Body Max % (Relaxed from 30)
+input double         InpLowerWickMax    = 35.0;            // Lower Wick Max % (Relaxed from 25)
+input double         InpMinRangePct     = 0.05;            // Min Candle Range % (Relaxed from 0.15)
+input bool           InpRequirePrevGreen= false;           // Require Previous Candle to be Green? (Default False)
+
+input group "Context Filters"
+input bool           InpUseDayHighFilter = false;          // Use Day High Filter? (Default False for more signals)
 
 input group "Position Sizing"
 input double         InpLots            = 0.1;             // Fixed Lot Size (if not using allocation)
@@ -122,16 +126,18 @@ void CheckForSignal()
    // Basic Filters
    if(c >= o) return; // Must be red
 
-   // Check if it's the first candle of the day
-   MqlDateTime dt_curr, dt_prev;
-   datetime t_curr = iTime(_Symbol, InpTimeframe, 1);
-   datetime t_prev = iTime(_Symbol, InpTimeframe, 2);
-   TimeToStruct(t_curr, dt_curr);
-   TimeToStruct(t_prev, dt_prev);
+   // Optional Previous Green Filter
+   if(InpRequirePrevGreen)
+   {
+      MqlDateTime dt_curr, dt_prev;
+      datetime t_curr = iTime(_Symbol, InpTimeframe, 1);
+      datetime t_prev = iTime(_Symbol, InpTimeframe, 2);
+      TimeToStruct(t_curr, dt_curr);
+      TimeToStruct(t_prev, dt_prev);
+      bool isFirstCandle = (dt_curr.day != dt_prev.day || t_prev == 0);
 
-   bool isFirstCandle = (dt_curr.day != dt_prev.day || t_prev == 0);
-
-   if(!isFirstCandle && prev_c <= prev_o) return; // Prev must be green unless first candle
+      if(!isFirstCandle && prev_c <= prev_o) return;
+   }
 
    double totalRange = h - l;
    if(totalRange <= 0) return;
@@ -149,24 +155,26 @@ void CheckForSignal()
 
    if(!validGeometry) return;
 
-   // Day High check
-   datetime startOfDay = iTime(_Symbol, PERIOD_D1, 0);
-   int barsToday = Bars(_Symbol, InpTimeframe, startOfDay, TimeCurrent());
-   int highestBar = iHighest(_Symbol, InpTimeframe, MODE_HIGH, barsToday, 1);
-   double dayHigh = iHigh(_Symbol, InpTimeframe, highestBar);
+   // Optional Day High check
+   if(InpUseDayHighFilter)
+   {
+      datetime startOfDay = iTime(_Symbol, PERIOD_D1, 0);
+      int barsToday = Bars(_Symbol, InpTimeframe, startOfDay, TimeCurrent());
+      int highestBar = iHighest(_Symbol, InpTimeframe, MODE_HIGH, barsToday, 1);
+      double dayHigh = iHigh(_Symbol, InpTimeframe, highestBar);
 
-   bool isAtDayHigh = (h >= dayHigh - m_symbol.Point());
-
-   if(!isAtDayHigh) return;
+      bool isAtDayHigh = (h >= dayHigh - m_symbol.Point());
+      if(!isAtDayHigh) return;
+   }
 
    // Signal Confirmed
-   m_signalBarTime = t_curr;
+   m_signalBarTime = iTime(_Symbol, InpTimeframe, 1);
    m_triggerLow = l;
    m_triggerHigh = h;
    m_waitingForBreakout = true;
 
-   PrintFormat("Signal Detected: %s at %s. Low: %.2f, High: %.2f, DayHigh: %.2f",
-               _Symbol, TimeToString(t_curr), l, h, dayHigh);
+   PrintFormat("Signal Detected: %s at %s. Low: %.2f, High: %.2f, U:%.1f%%, B:%.1f%%, L:%.1f%%",
+               _Symbol, TimeToString(m_signalBarTime), l, h, upperWickPct, bodyPct, lowerWickPct);
 }
 
 //+------------------------------------------------------------------+
