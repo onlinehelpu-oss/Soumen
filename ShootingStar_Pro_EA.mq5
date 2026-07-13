@@ -131,7 +131,7 @@ class CShootingStarEA {
 private:
    CTrade m_trade; CSymbolInfo m_symbol; CPositionInfo m_pos; CAccountInfo m_acc;
    SignalData m_signal; int m_tradesToday; double m_dailyPL; datetime m_lastReset;
-   int m_ema, m_atr; bool m_partialClosed;
+   int m_ema, m_atr; bool m_partialClosed; string m_lastReason;
    void ResetDailyStats(); bool IsWithinSession(); bool CheckFilters(bool isSell); double CalculateLotSize(double d, double price, ENUM_ORDER_TYPE type);
    void ScanForSignal(); void HandleEntry(); void HandleExits(); void UpdateUI();
    void DrawObjects(); void RemoveObjects();
@@ -182,31 +182,43 @@ void CShootingStarEA::ResetDailyStats() {
 
 void CShootingStarEA::ScanForSignal() {
    m_signal.isValid = false; m_signal.isTriggered = false; m_signal.isInvalidated = false; m_partialClosed = false;
+   m_lastReason = "Scanning...";
    MqlRates r[]; ArraySetAsSeries(r, true); if(CopyRates(m_symbol.Name(), (ENUM_TIMEFRAMES)InpSignalTF, 0, 3, r) < 3) return;
    double rg = r[1].high - r[1].low; if(rg <= 0) return;
    double point = m_symbol.Point();
 
-   if(InpEnableSell && (!InpRequirePrevBullish || r[2].close > r[2].open) && (!InpRequireBearish || r[1].close < r[1].open)) {
+   if(InpEnableSell) {
+      if(InpRequirePrevBullish && r[2].close <= r[2].open) { m_lastReason = "Sell: Prev candle not bullish"; goto check_buy; }
+      if(InpRequireBearish && r[1].close >= r[1].open) { m_lastReason = "Sell: Current candle not bearish"; goto check_buy; }
       double b=MathAbs(r[1].close-r[1].open), u=r[1].high-MathMax(r[1].open,r[1].close), l=MathMin(r[1].open,r[1].close)-r[1].low;
-      if((u/rg)*100>=InpMinUpperWickPct && (l/rg)*100<=InpMaxLowerWickPct && (b/rg)*100<=InpMaxBodyPct &&
-         (InpMinCandleRange==0 || rg>=InpMinCandleRange*point) && (InpMaxCandleRange==0 || rg<=InpMaxCandleRange*point) && CheckFilters(true)) {
-         m_signal.isValid=true; m_signal.isSell=true; m_signal.time=r[1].time; m_signal.high=r[1].high; m_signal.low=r[1].low;
-         m_signal.entryPrice=m_symbol.NormalizePrice(r[1].low - InpEntryBuffer*point);
-         m_signal.stopLoss=m_symbol.NormalizePrice(r[1].high + InpSLBuffer*point);
-         m_signal.takeProfit=m_symbol.NormalizePrice(m_signal.entryPrice - MathAbs(m_signal.entryPrice - m_signal.stopLoss)*InpRRRatio);
-         DrawObjects(); return;
-      }
+      double uP=(u/rg)*100, lP=(l/rg)*100, bP=(b/rg)*100;
+      if(uP<InpMinUpperWickPct) { m_lastReason = "Sell: Upper wick too small ("+DoubleToString(uP,1)+"%)"; goto check_buy; }
+      if(lP>InpMaxLowerWickPct) { m_lastReason = "Sell: Lower wick too large ("+DoubleToString(lP,1)+"%)"; goto check_buy; }
+      if(bP>InpMaxBodyPct) { m_lastReason = "Sell: Body too large ("+DoubleToString(bP,1)+"%)"; goto check_buy; }
+      if(InpMinCandleRange>0 && rg<InpMinCandleRange*point) { m_lastReason = "Sell: Range too small"; goto check_buy; }
+      if(InpMaxCandleRange>0 && rg>InpMaxCandleRange*point) { m_lastReason = "Sell: Range too large"; goto check_buy; }
+      if(!CheckFilters(true)) { m_lastReason = "Sell: Filters rejected"; goto check_buy; }
+      m_signal.isValid=true; m_signal.isSell=true; m_signal.time=r[1].time; m_signal.high=r[1].high; m_signal.low=r[1].low;
+      m_signal.entryPrice=m_symbol.NormalizePrice(r[1].low - InpEntryBuffer*point); m_signal.stopLoss=m_symbol.NormalizePrice(r[1].high + InpSLBuffer*point);
+      m_signal.takeProfit=m_symbol.NormalizePrice(m_signal.entryPrice - MathAbs(m_signal.entryPrice - m_signal.stopLoss)*InpRRRatio);
+      DrawObjects(); m_lastReason = "Sell: Signal Detected!"; return;
    }
-   if(InpEnableBuy && (!InpRequirePrevBullish || r[2].close < r[2].open) && (!InpRequireBearish || r[1].close > r[1].open)) {
+check_buy:
+   if(InpEnableBuy) {
+      if(InpRequirePrevBullish && r[2].close >= r[2].open) { m_lastReason = "Buy: Prev candle not bearish"; return; }
+      if(InpRequireBearish && r[1].close <= r[1].open) { m_lastReason = "Buy: Current candle not bullish"; return; }
       double b=MathAbs(r[1].close-r[1].open), u=r[1].high-MathMax(r[1].open,r[1].close), l=MathMin(r[1].open,r[1].close)-r[1].low;
-      if((l/rg)*100>=InpMinUpperWickPct && (u/rg)*100<=InpMaxLowerWickPct && (b/rg)*100<=InpMaxBodyPct &&
-         (InpMinCandleRange==0 || rg>=InpMinCandleRange*point) && (InpMaxCandleRange==0 || rg<=InpMaxCandleRange*point) && CheckFilters(false)) {
-         m_signal.isValid=true; m_signal.isSell=false; m_signal.time=r[1].time; m_signal.high=r[1].high; m_signal.low=r[1].low;
-         m_signal.entryPrice=m_symbol.NormalizePrice(r[1].high + InpEntryBuffer*point);
-         m_signal.stopLoss=m_symbol.NormalizePrice(r[1].low - InpSLBuffer*point);
-         m_signal.takeProfit=m_symbol.NormalizePrice(m_signal.entryPrice + MathAbs(m_signal.entryPrice - m_signal.stopLoss)*InpRRRatio);
-         DrawObjects();
-      }
+      double lP=(l/rg)*100, uP=(u/rg)*100, bP=(b/rg)*100;
+      if(lP<InpMinUpperWickPct) { m_lastReason = "Buy: Lower wick too small ("+DoubleToString(lP,1)+"%)"; return; }
+      if(uP>InpMaxLowerWickPct) { m_lastReason = "Buy: Upper wick too large ("+DoubleToString(uP,1)+"%)"; return; }
+      if(bP>InpMaxBodyPct) { m_lastReason = "Buy: Body too large ("+DoubleToString(bP,1)+"%)"; return; }
+      if(InpMinCandleRange>0 && rg<InpMinCandleRange*point) { m_lastReason = "Buy: Range too small"; return; }
+      if(InpMaxCandleRange>0 && rg>InpMaxCandleRange*point) { m_lastReason = "Buy: Range too large"; return; }
+      if(!CheckFilters(false)) { m_lastReason = "Buy: Filters rejected"; return; }
+      m_signal.isValid=true; m_signal.isSell=false; m_signal.time=r[1].time; m_signal.high=r[1].high; m_signal.low=r[1].low;
+      m_signal.entryPrice=m_symbol.NormalizePrice(r[1].high + InpEntryBuffer*point); m_signal.stopLoss=m_symbol.NormalizePrice(r[1].low - InpSLBuffer*point);
+      m_signal.takeProfit=m_symbol.NormalizePrice(m_signal.entryPrice + MathAbs(m_signal.entryPrice - m_signal.stopLoss)*InpRRRatio);
+      DrawObjects(); m_lastReason = "Buy: Signal Detected!";
    }
 }
 
@@ -216,10 +228,10 @@ void CShootingStarEA::HandleEntry() {
    double b=m_symbol.Bid(), a=m_symbol.Ask();
    if(InpInvalidateOnBreak && ((m_signal.isSell && b > m_signal.high) || (!m_signal.isSell && a < m_signal.low))) { m_signal.isInvalidated=true; RemoveObjects(); return; }
    double slD = MathAbs(m_signal.entryPrice - m_signal.stopLoss);
-   if(m_signal.isSell && b <= m_signal.entryPrice) {
+   if(m_signal.isSell && m_symbol.NormalizePrice(b) <= m_signal.entryPrice) {
       double lots = CalculateLotSize(slD, b, ORDER_TYPE_SELL);
       if(m_trade.Sell(lots, m_symbol.Name(), b, m_signal.stopLoss, m_signal.takeProfit, InpTradeComment)) { m_signal.isTriggered=true; m_tradesToday++; SendNotifications("SELL " + m_symbol.Name()); }
-   } else if(!m_signal.isSell && a >= m_signal.entryPrice) {
+   } else if(!m_signal.isSell && m_symbol.NormalizePrice(a) >= m_signal.entryPrice) {
       double lots = CalculateLotSize(slD, a, ORDER_TYPE_BUY);
       if(m_trade.Buy(lots, m_symbol.Name(), a, m_signal.stopLoss, m_signal.takeProfit, InpTradeComment)) { m_signal.isTriggered=true; m_tradesToday++; SendNotifications("BUY " + m_symbol.Name()); }
    }
@@ -260,7 +272,8 @@ void CShootingStarEA::UpdateUI() {
    string sess = "None"; if(CheckSessionTime(InpLondonStart, InpLondonEnd)) sess = "London"; else if(CheckSessionTime(InpNYStart, InpNYEnd)) sess = "New York";
    DrawLabel(n+"4", "Session: "+sess + " | Spread: "+IntegerToString(m_symbol.Spread()), x, y, clrWhite); y+=s;
    string st = "Watching"; if(m_signal.isValid && !m_signal.isTriggered) st = "Signal!"; if(PositionSelect(m_symbol.Name())) st = "In Position";
-   DrawLabel(n+"5", "Status: "+st, x, y, clrCyan);
+   DrawLabel(n+"5", "Status: "+st, x, y, clrCyan); y+=s;
+   DrawLabel(n+"6", "Last Result: "+m_lastReason, x, y, clrGray);
 }
 void CShootingStarEA::DrawLabel(string l, string t, int x, int y, color c) {
    if(ObjectFind(0,l)<0) ObjectCreate(0,l,OBJ_LABEL,0,0,0);
