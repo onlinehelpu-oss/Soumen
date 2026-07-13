@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Trading Robot"
 #property link      "https://www.mql5.com"
-#property version   "1.00"
+#property version   "1.10"
 #property strict
 #property description "Professional Institutional-Grade Shooting Star EA"
 
@@ -27,13 +27,13 @@ input double InpMaxLowerWickPct = 10.0;                 // Maximum Lower Wick %
 input double InpMaxBodyPct = 20.0;                      // Maximum Body %
 input bool   InpRequireBearish = true;                  // Require Bearish Candle
 input bool   InpRequirePrevBullish = true;              // Require Previous Bullish Candle
-input double InpMinCandleRange = 0.0;                   // Minimum Candle Range (Points)
-input double InpMaxCandleRange = 0.0;                   // Maximum Candle Range (Points, 0=Disabled)
+input int    InpMinCandleRange = 0;                     // Minimum Candle Range (Points)
+input int    InpMaxCandleRange = 0;                     // Maximum Candle Range (Points, 0=Disabled)
 
 input group "--- ENTRY & EXIT SETTINGS ---"
 input double InpRRRatio = 3.0;                          // Risk Reward Ratio
-input double InpEntryBuffer = 0.0;                      // Entry Buffer (Points)
-input double InpSLBuffer = 0.0;                         // Stop Loss Buffer (Points)
+input int    InpEntryBuffer = 0;                       // Entry Buffer (Points)
+input int    InpSLBuffer = 0;                          // Stop Loss Buffer (Points)
 input bool   InpInvalidateOnBreak = true;               // Invalidate Signal if High Broken
 
 input group "--- MONEY MANAGEMENT ---"
@@ -63,7 +63,7 @@ input bool   InpPartialTP = false;                      // Partial Take Profit
 input double InpPartialClosePct = 50.0;                 // Partial Close %
 input double InpPartialTriggerRR = 1.5;                 // Partial TP Trigger (RR)
 input bool   InpTrailingStop = false;                   // Trailing Stop
-input double InpTrailingDist = 200;                     // Trailing Distance (Points)
+input int    InpTrailingDist = 200;                    // Trailing Distance (Points)
 
 input group "--- DAILY PROTECTION ---"
 input double InpMaxDailyLoss = 1000.0;                  // Maximum Daily Loss ($)
@@ -131,8 +131,8 @@ class CShootingStarEA {
 private:
    CTrade m_trade; CSymbolInfo m_symbol; CPositionInfo m_pos; CAccountInfo m_acc;
    SignalData m_signal; int m_tradesToday; double m_dailyPL; datetime m_lastReset;
-   int m_ema, m_atr;
-   void ResetDailyStats(); bool IsWithinSession(); bool CheckFilters(bool isSell); double CalculateLotSize(double d);
+   int m_ema, m_atr; bool m_partialClosed;
+   void ResetDailyStats(); bool IsWithinSession(); bool CheckFilters(bool isSell); double CalculateLotSize(double d, double price, ENUM_ORDER_TYPE type);
    void ScanForSignal(); void HandleEntry(); void HandleExits(); void UpdateUI();
    void DrawObjects(); void RemoveObjects();
    void DrawLabel(string l, string t, int x, int y, color c);
@@ -140,11 +140,12 @@ private:
    double GetEMA(int i); double GetATR(int i);
    void SendNotifications(string m);
 public:
-   CShootingStarEA() : m_tradesToday(0), m_dailyPL(0), m_lastReset(0) { m_signal.isValid = false; }
+   CShootingStarEA() : m_tradesToday(0), m_dailyPL(0), m_lastReset(0), m_partialClosed(false) { m_signal.isValid = false; }
    ~CShootingStarEA() { IndicatorRelease(m_ema); IndicatorRelease(m_atr); }
    int OnInit() {
       if(!m_symbol.Name(_Symbol)) return(INIT_FAILED);
       m_trade.SetExpertMagicNumber(InpMagicNum); m_trade.SetTypeFillingBySymbol(m_symbol.Name());
+      m_trade.SetDeviationInPoints(InpSlippage);
       m_ema = iMA(m_symbol.Name(), (ENUM_TIMEFRAMES)InpSignalTF, InpEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
       m_atr = iATR(m_symbol.Name(), (ENUM_TIMEFRAMES)InpSignalTF, InpATRPeriod);
       ResetDailyStats(); EventSetTimer(1); return(INIT_SUCCEEDED);
@@ -156,15 +157,16 @@ public:
       HandleExits();
       static datetime lt = 0; datetime ct = iTime(m_symbol.Name(), (ENUM_TIMEFRAMES)InpSignalTF, 0);
       if(ct != lt) { lt = ct; ScanForSignal(); }
-      HandleEntry(); if(InpEnableDashboard) UpdateUI();
+      HandleEntry();
    }
+   void OnTimer() { if(InpEnableDashboard) UpdateUI(); }
 };
 
 CShootingStarEA EA;
 int OnInit() { return EA.OnInit(); }
 void OnDeinit(const int r) { EA.OnDeinit(r); }
 void OnTick() { EA.OnTick(); }
-void OnTimer() {}
+void OnTimer() { EA.OnTimer(); }
 
 void CShootingStarEA::ResetDailyStats() {
    MqlDateTime dt; TimeToStruct(TimeCurrent(), dt); dt.hour=0; dt.min=0; dt.sec=0; datetime ts = StructToTime(dt);
@@ -179,23 +181,31 @@ void CShootingStarEA::ResetDailyStats() {
 }
 
 void CShootingStarEA::ScanForSignal() {
-   m_signal.isValid = false; m_signal.isTriggered = false; m_signal.isInvalidated = false;
+   m_signal.isValid = false; m_signal.isTriggered = false; m_signal.isInvalidated = false; m_partialClosed = false;
    MqlRates r[]; ArraySetAsSeries(r, true); if(CopyRates(m_symbol.Name(), (ENUM_TIMEFRAMES)InpSignalTF, 0, 3, r) < 3) return;
    double rg = r[1].high - r[1].low; if(rg <= 0) return;
+   double point = m_symbol.Point();
+
    if(InpEnableSell && (!InpRequirePrevBullish || r[2].close > r[2].open) && (!InpRequireBearish || r[1].close < r[1].open)) {
       double b=MathAbs(r[1].close-r[1].open), u=r[1].high-MathMax(r[1].open,r[1].close), l=MathMin(r[1].open,r[1].close)-r[1].low;
-      if((u/rg)*100>=InpMinUpperWickPct && (l/rg)*100<=InpMaxLowerWickPct && (b/rg)*100<=InpMaxBodyPct && (InpMinCandleRange==0 || rg>=InpMinCandleRange) && (InpMaxCandleRange==0 || rg<=InpMaxCandleRange) && CheckFilters(true)) {
+      if((u/rg)*100>=InpMinUpperWickPct && (l/rg)*100<=InpMaxLowerWickPct && (b/rg)*100<=InpMaxBodyPct &&
+         (InpMinCandleRange==0 || rg>=InpMinCandleRange*point) && (InpMaxCandleRange==0 || rg<=InpMaxCandleRange*point) && CheckFilters(true)) {
          m_signal.isValid=true; m_signal.isSell=true; m_signal.time=r[1].time; m_signal.high=r[1].high; m_signal.low=r[1].low;
-         m_signal.entryPrice=r[1].low-InpEntryBuffer; m_signal.stopLoss=r[1].high+InpSLBuffer;
-         m_signal.takeProfit=m_signal.entryPrice-MathAbs(m_signal.entryPrice-m_signal.stopLoss)*InpRRRatio; DrawObjects(); return;
+         m_signal.entryPrice=m_symbol.NormalizePrice(r[1].low - InpEntryBuffer*point);
+         m_signal.stopLoss=m_symbol.NormalizePrice(r[1].high + InpSLBuffer*point);
+         m_signal.takeProfit=m_symbol.NormalizePrice(m_signal.entryPrice - MathAbs(m_signal.entryPrice - m_signal.stopLoss)*InpRRRatio);
+         DrawObjects(); return;
       }
    }
    if(InpEnableBuy && (!InpRequirePrevBullish || r[2].close < r[2].open) && (!InpRequireBearish || r[1].close > r[1].open)) {
       double b=MathAbs(r[1].close-r[1].open), u=r[1].high-MathMax(r[1].open,r[1].close), l=MathMin(r[1].open,r[1].close)-r[1].low;
-      if((l/rg)*100>=InpMinUpperWickPct && (u/rg)*100<=InpMaxLowerWickPct && (b/rg)*100<=InpMaxBodyPct && (InpMinCandleRange==0 || rg>=InpMinCandleRange) && (InpMaxCandleRange==0 || rg<=InpMaxCandleRange) && CheckFilters(false)) {
+      if((l/rg)*100>=InpMinUpperWickPct && (u/rg)*100<=InpMaxLowerWickPct && (b/rg)*100<=InpMaxBodyPct &&
+         (InpMinCandleRange==0 || rg>=InpMinCandleRange*point) && (InpMaxCandleRange==0 || rg<=InpMaxCandleRange*point) && CheckFilters(false)) {
          m_signal.isValid=true; m_signal.isSell=false; m_signal.time=r[1].time; m_signal.high=r[1].high; m_signal.low=r[1].low;
-         m_signal.entryPrice=r[1].high+InpEntryBuffer; m_signal.stopLoss=r[1].low-InpSLBuffer;
-         m_signal.takeProfit=m_signal.entryPrice+MathAbs(m_signal.entryPrice-m_signal.stopLoss)*InpRRRatio; DrawObjects();
+         m_signal.entryPrice=m_symbol.NormalizePrice(r[1].high + InpEntryBuffer*point);
+         m_signal.stopLoss=m_symbol.NormalizePrice(r[1].low - InpSLBuffer*point);
+         m_signal.takeProfit=m_symbol.NormalizePrice(m_signal.entryPrice + MathAbs(m_signal.entryPrice - m_signal.stopLoss)*InpRRRatio);
+         DrawObjects();
       }
    }
 }
@@ -205,27 +215,30 @@ void CShootingStarEA::HandleEntry() {
    if(m_tradesToday >= InpMaxDailyTrades || m_dailyPL <= -InpMaxDailyLoss) return;
    double b=m_symbol.Bid(), a=m_symbol.Ask();
    if(InpInvalidateOnBreak && ((m_signal.isSell && b > m_signal.high) || (!m_signal.isSell && a < m_signal.low))) { m_signal.isInvalidated=true; RemoveObjects(); return; }
-   double slD = MathAbs(m_signal.entryPrice - m_signal.stopLoss), lots = CalculateLotSize(slD);
+   double slD = MathAbs(m_signal.entryPrice - m_signal.stopLoss);
    if(m_signal.isSell && b <= m_signal.entryPrice) {
+      double lots = CalculateLotSize(slD, b, ORDER_TYPE_SELL);
       if(m_trade.Sell(lots, m_symbol.Name(), b, m_signal.stopLoss, m_signal.takeProfit, InpTradeComment)) { m_signal.isTriggered=true; m_tradesToday++; SendNotifications("SELL " + m_symbol.Name()); }
    } else if(!m_signal.isSell && a >= m_signal.entryPrice) {
+      double lots = CalculateLotSize(slD, a, ORDER_TYPE_BUY);
       if(m_trade.Buy(lots, m_symbol.Name(), a, m_signal.stopLoss, m_signal.takeProfit, InpTradeComment)) { m_signal.isTriggered=true; m_tradesToday++; SendNotifications("BUY " + m_symbol.Name()); }
    }
 }
 
 void CShootingStarEA::HandleExits() {
-   if(!PositionSelect(m_symbol.Name()) || m_pos.Magic() != InpMagicNum) return;
+   if(!PositionSelect(m_symbol.Name()) || m_pos.Magic() != InpMagicNum) { m_partialClosed = false; return; }
    double e=m_pos.PriceOpen(), c=m_pos.PriceCurrent(), sl=m_pos.StopLoss(), tp=m_pos.TakeProfit(), slD=MathAbs(e-sl);
    if(slD<=0) return; double rr=MathAbs(c-e)/slD;
-   if(InpAutoBE && rr>=InpBETriggerRR && ((m_pos.PositionType()==POSITION_TYPE_SELL && sl>e) || (m_pos.PositionType()==POSITION_TYPE_BUY && sl<e))) m_trade.PositionModify(m_symbol.Name(), e, tp);
-   if(InpPartialTP && rr>=InpPartialTriggerRR && m_pos.Comment().Find("Partial") < 0) {
-      double cl = m_trade.CheckVolume(m_symbol.Name(), m_pos.Volume()*(InpPartialClosePct/100.0));
-      if(cl >= m_symbol.LotsMin()) m_trade.PositionClosePartial(m_pos.Ticket(), cl);
+   if(InpAutoBE && rr>=InpBETriggerRR && ((m_pos.PositionType()==POSITION_TYPE_SELL && sl>e) || (m_pos.PositionType()==POSITION_TYPE_BUY && sl<e)))
+      m_trade.PositionModify(m_symbol.Name(), e, tp);
+   if(InpPartialTP && !m_partialClosed && rr>=InpPartialTriggerRR) {
+      double vol = m_trade.CheckVolume(m_symbol.Name(), m_pos.Volume()*(InpPartialClosePct/100.0), c, (m_pos.PositionType()==POSITION_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY);
+      if(vol >= m_symbol.LotsMin()) { if(m_trade.PositionClosePartial(m_pos.Ticket(), vol)) m_partialClosed = true; }
    }
    if(InpTrailingStop) {
       double d=InpTrailingDist*m_symbol.Point();
-      if(m_pos.PositionType()==POSITION_TYPE_SELL) { double ns=m_symbol.Ask()+d; if((ns<sl||sl==0)&&ns<e-d) m_trade.PositionModify(m_symbol.Name(), ns, tp); }
-      else { double ns=m_symbol.Bid()-d; if((ns>sl||sl==0)&&ns>e+d) m_trade.PositionModify(m_symbol.Name(), ns, tp); }
+      if(m_pos.PositionType()==POSITION_TYPE_SELL) { double ns=m_symbol.NormalizePrice(m_symbol.Ask()+d); if((ns<sl||sl==0)&&ns<e-d) m_trade.PositionModify(m_symbol.Name(), ns, tp); }
+      else { double ns=m_symbol.NormalizePrice(m_symbol.Bid()-d); if((ns>sl||sl==0)&&ns>e+d) m_trade.PositionModify(m_symbol.Name(), ns, tp); }
    }
 }
 
@@ -241,11 +254,13 @@ void CShootingStarEA::RemoveObjects() { ObjectsDeleteAll(0, "SSP_"); }
 
 void CShootingStarEA::UpdateUI() {
    string n = "SSP_D_"; int x = 10, y = 20, s = 15;
-   DrawLabel(n+"1", "Balance: "+DoubleToString(m_acc.Balance(),2), x, y, clrWhite); y+=s;
+   DrawLabel(n+"1", "Balance: "+DoubleToString(m_acc.Balance(),2) + " (" + DoubleToString(m_acc.Equity(),2) + ")", x, y, clrWhite); y+=s;
    DrawLabel(n+"2", "Daily P/L: "+DoubleToString(m_dailyPL,2), x, y, m_dailyPL>=0?clrLime:clrRed); y+=s;
    DrawLabel(n+"3", "Trades Today: "+IntegerToString(m_tradesToday)+"/"+IntegerToString(InpMaxDailyTrades), x, y, clrWhite); y+=s;
+   string sess = "None"; if(CheckSessionTime(InpLondonStart, InpLondonEnd)) sess = "London"; else if(CheckSessionTime(InpNYStart, InpNYEnd)) sess = "New York";
+   DrawLabel(n+"4", "Session: "+sess + " | Spread: "+IntegerToString(m_symbol.Spread()), x, y, clrWhite); y+=s;
    string st = "Watching"; if(m_signal.isValid && !m_signal.isTriggered) st = "Signal!"; if(PositionSelect(m_symbol.Name())) st = "In Position";
-   DrawLabel(n+"4", "Status: "+st, x, y, clrCyan);
+   DrawLabel(n+"5", "Status: "+st, x, y, clrCyan);
 }
 void CShootingStarEA::DrawLabel(string l, string t, int x, int y, color c) {
    if(ObjectFind(0,l)<0) ObjectCreate(0,l,OBJ_LABEL,0,0,0);
@@ -273,10 +288,10 @@ bool CShootingStarEA::CheckFilters(bool isSell) {
    return true;
 }
 
-double CShootingStarEA::CalculateLotSize(double d) {
+double CShootingStarEA::CalculateLotSize(double d, double price, ENUM_ORDER_TYPE type) {
    if(d<=0) return m_symbol.LotsMin();
    double l = (InpRiskMode==RISK_FIXED_LOT) ? InpFixedLot : (InpRiskMode==RISK_FIXED_AMOUNT ? InpRiskAmount : m_acc.Balance()*InpRiskPercent/100.0) / (d*m_symbol.TickValue()/m_symbol.TickSize());
-   l = m_trade.CheckVolume(m_symbol.Name(), l); double s=m_symbol.LotsStep(); l=MathFloor(l/s)*s;
+   l = m_trade.CheckVolume(m_symbol.Name(), l, price, type); double step=m_symbol.LotsStep(); l=MathFloor(l/step)*step;
    return MathMax(m_symbol.LotsMin(), MathMin(m_symbol.LotsMax(), l));
 }
 
