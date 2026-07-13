@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Trading Robot"
 #property link      "https://www.mql5.com"
-#property version   "1.20"
+#property version   "2.00"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -16,7 +16,6 @@
 input group "Strategy Settings"
 input ENUM_TIMEFRAMES InpTimeframe      = PERIOD_M15;      // Timeframe
 input double         InpRRMultiplier    = 1.0;             // Risk:Reward Multiplier
-input int            InpEMAPeriod       = 26;              // Regime EMA Period
 input double         InpEntryBuffer     = 0.05;            // Entry Buffer (Points)
 input int            InpMagic           = 123456;          // Magic Number
 input bool           InpGlobalOnePos    = true;            // One Position at a time (Global for this Magic)
@@ -34,19 +33,16 @@ input double         InpLots            = 0.1;             // Fixed Lot Size (if
 input bool           InpUseAllocation   = false;           // Use Allocation instead of Fixed Lots
 input double         InpAllocAmount     = 20000.0;         // Allocation Amount (in Currency)
 
-input group "Session Times (Broker Time)"
-input string         InpNSEEntryCutoff  = "15:00";         // NSE Entry Cutoff
-input string         InpNSEExitTime     = "15:09";         // NSE Force Exit
-input string         InpMCXEntryCutoff  = "22:00";         // MCX Entry Cutoff
-input string         InpMCXExitTime     = "22:50";         // MCX Force Exit
-input bool           InpIsMCX           = false;           // Is this an MCX Symbol?
+input group "Session Times (Optional for Crypto)"
+input bool           InpUseSession      = false;           // Use Session Cutoffs?
+input string         InpEntryCutoff     = "22:00";         // Entry Cutoff
+input string         InpExitTime        = "23:50";         // Force Exit Time
 
 //--- GLOBALS
 CTrade         m_trade;
 CSymbolInfo    m_symbol;
 CPositionInfo  m_position;
 
-int            m_handleEMA;
 datetime       m_lastBarTime;
 datetime       m_signalBarTime = 0;
 double         m_triggerLow    = 0;
@@ -67,13 +63,6 @@ int OnInit()
 
    m_trade.SetExpertMagicNumber(InpMagic);
 
-   m_handleEMA = iMA(_Symbol, InpTimeframe, InpEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
-   if(m_handleEMA == INVALID_HANDLE)
-   {
-      Print("Failed to create EMA handle");
-      return(INIT_FAILED);
-   }
-
    m_lastBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
    EventSetTimer(1);
@@ -85,7 +74,6 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   IndicatorRelease(m_handleEMA);
    EventKillTimer();
 }
 
@@ -107,7 +95,8 @@ void OnTick()
 //+------------------------------------------------------------------+
 void OnTimer()
 {
-   CheckSessionExits();
+   if(InpUseSession)
+      CheckSessionExits();
 }
 
 //+------------------------------------------------------------------+
@@ -160,12 +149,6 @@ void CheckForSignal()
 
    if(!validGeometry) return;
 
-   // Context Filters: Below EMA OR At Day High
-   double ema[1];
-   if(CopyBuffer(m_handleEMA, 0, 1, 1, ema) <= 0) return;
-
-   bool isBelowEMA = (c < ema[0]);
-
    // Day High check
    datetime startOfDay = iTime(_Symbol, PERIOD_D1, 0);
    int barsToday = Bars(_Symbol, InpTimeframe, startOfDay, TimeCurrent());
@@ -174,7 +157,7 @@ void CheckForSignal()
 
    bool isAtDayHigh = (h >= dayHigh - m_symbol.Point());
 
-   if(!isBelowEMA && !isAtDayHigh) return;
+   if(!isAtDayHigh) return;
 
    // Signal Confirmed
    m_signalBarTime = t_curr;
@@ -182,8 +165,8 @@ void CheckForSignal()
    m_triggerHigh = h;
    m_waitingForBreakout = true;
 
-   PrintFormat("Signal Detected: %s at %s. Low: %.2f, High: %.2f, EMA: %.2f, DayHigh: %.2f",
-               _Symbol, TimeToString(t_curr), l, h, ema[0], dayHigh);
+   PrintFormat("Signal Detected: %s at %s. Low: %.2f, High: %.2f, DayHigh: %.2f",
+               _Symbol, TimeToString(t_curr), l, h, dayHigh);
 }
 
 //+------------------------------------------------------------------+
@@ -218,7 +201,7 @@ void CheckForBreakout()
    }
 
    // Check Cutoff Time
-   if(IsCutoffTime())
+   if(InpUseSession && IsTimePast(InpEntryCutoff))
    {
       m_waitingForBreakout = false;
       return;
@@ -263,7 +246,7 @@ void CheckForBreakout()
 //+------------------------------------------------------------------+
 void CheckSessionExits()
 {
-   if(IsExitTime())
+   if(IsTimePast(InpExitTime))
    {
       if(PositionSelectByMagic(InpMagic))
       {
@@ -272,24 +255,6 @@ void CheckSessionExits()
       }
       m_waitingForBreakout = false;
    }
-}
-
-//+------------------------------------------------------------------+
-//| Check if current time is past entry cutoff                       |
-//+------------------------------------------------------------------+
-bool IsCutoffTime()
-{
-   string cutoffStr = InpIsMCX ? InpMCXEntryCutoff : InpNSEEntryCutoff;
-   return IsTimePast(cutoffStr);
-}
-
-//+------------------------------------------------------------------+
-//| Check if current time is past force exit time                    |
-//+------------------------------------------------------------------+
-bool IsExitTime()
-{
-   string exitStr = InpIsMCX ? InpMCXExitTime : InpNSEExitTime;
-   return IsTimePast(exitStr);
 }
 
 //+------------------------------------------------------------------+
@@ -321,8 +286,6 @@ double CalculateLots(double price)
 
    if(price <= 0) return InpLots;
 
-   // Allocation amount / Price = Qty
-   // Then normalize to lot size
    double qty = InpAllocAmount / price;
 
    double step = m_symbol.LotsStep();
