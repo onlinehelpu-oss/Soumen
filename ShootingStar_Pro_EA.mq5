@@ -424,7 +424,8 @@ void ManageTrades()
    {
       double vol = PositionGetDouble(POSITION_VOLUME);
       if(vol > m_symbol.LotsMin()) {
-         double close_vol = NormalizeDouble(vol * (InpPartialClosePct / 100.0), 2);
+         double step = m_symbol.LotsStep();
+         double close_vol = MathFloor(vol * (InpPartialClosePct / 100.0) / step) * step;
          if(close_vol >= m_symbol.LotsMin()) m_trade.PositionClosePartial(_Symbol, close_vol);
       }
    }
@@ -452,18 +453,23 @@ bool IsInsideSession()
    TimeToStruct(now, dt);
    int mins = dt.hour * 60 + dt.min;
 
-   auto Check = [&](string s, string e) {
-      string p1[], p2[];
-      if(StringSplit(s, ':', p1)!=2 || StringSplit(e, ':', p2)!=2) return false;
-      int t1 = (int)StringToInteger(p1[0])*60 + (int)StringToInteger(p1[1]);
-      int t2 = (int)StringToInteger(p2[0])*60 + (int)StringToInteger(p2[1]);
-      return (mins >= t1 && mins <= t2);
-   };
-
    bool ok = false;
-   if(InpTradeLondon) ok |= Check(InpLondonStart, InpLondonEnd);
-   if(InpTradeNY) ok |= Check(InpNYStart, InpNYEnd);
+   if(InpTradeLondon) ok |= CheckSessionTime(InpLondonStart, InpLondonEnd, mins);
+   if(InpTradeNY) ok |= CheckSessionTime(InpNYStart, InpNYEnd, mins);
    return ok;
+}
+
+bool CheckSessionTime(string start_time, string end_time, int current_mins)
+{
+   string p1[], p2[];
+   if(StringSplit(start_time, ':', p1) != 2 || StringSplit(end_time, ':', p2) != 2) return false;
+   int t1 = (int)StringToInteger(p1[0]) * 60 + (int)StringToInteger(p1[1]);
+   int t2 = (int)StringToInteger(p2[0]) * 60 + (int)StringToInteger(p2[1]);
+
+   if(t1 < t2) // Normal session (e.g., 08:00 - 16:00)
+      return (current_mins >= t1 && current_mins <= t2);
+   else // Overnight session (e.g., 22:00 - 04:00)
+      return (current_mins >= t1 || current_mins <= t2);
 }
 
 void CheckDailyReset()
