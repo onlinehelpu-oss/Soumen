@@ -207,18 +207,16 @@ void CheckForSignal()
 
    //--- Pattern Recognition
    //--- Pattern Recognition
-   // Condition 1: Shooting Star must be RED (Bearish)
-   // Condition 2: Previous candle must be GREEN (Bullish)
-   // Note: Body ratio is ignored per user request, long wick remains primary filter.
+   // Condition 1: Long upper wick (Rejection)
+   // Condition 2: Previous candle must be GREEN (Bullish trend being rejected)
+   // Note: Signal candle color can be Green or Red per user request/image.
    bool is_ss = (upper_wick_pct >= InpMinUpperWickPct && lower_wick_pct <= InpMaxLowerWickPct);
-   if(candle.close >= candle.open) is_ss = false;           // SS must be Red
    if(prev_candle.close <= prev_candle.open) is_ss = false; // Prev must be Green
 
    // Symmetrical logic for Hammer:
-   // Condition 1: Hammer must be GREEN (Bullish)
-   // Condition 2: Previous candle must be RED (Bearish)
+   // Condition 1: Long lower wick (Rejection)
+   // Condition 2: Previous candle must be RED (Bearish trend being rejected)
    bool is_hammer = (lower_wick_pct >= InpMinUpperWickPct && upper_wick_pct <= InpMaxLowerWickPct);
-   if(candle.close <= candle.open) is_hammer = false;           // Hammer must be Green
    if(prev_candle.close >= prev_candle.open) is_hammer = false; // Prev must be Red
 
    //--- Filter Processing
