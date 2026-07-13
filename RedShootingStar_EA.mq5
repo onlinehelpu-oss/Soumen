@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Trading Robot"
 #property link      "https://www.mql5.com"
-#property version   "5.00"
+#property version   "6.00"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -21,7 +21,7 @@ input int            InpMagic           = 123456;          // Magic Number
 input bool           InpGlobalOnePos    = true;            // One Position at a time (Global for this Magic)
 
 input group "EMA Filter"
-input bool           InpUseEMAFilter    = true;            // Use EMA Filter? (Signal Close < EMA)
+input bool           InpUseEMAFilter    = true;            // Use EMA Filter?
 input int            InpEMAPeriod       = 15;              // EMA Period
 input ENUM_MA_METHOD InpEMAMethod       = MODE_EMA;        // MA Method
 
@@ -31,11 +31,11 @@ input bool           InpRequirePrevGreen = true;           // Previous Candle MU
 input double         InpMinRangePct      = 0.15;           // Min Candle Range % (Ignore tiny candles)
 
 input group "Candle Geometry (Rejection Shape)"
-input double         InpUpperWickMin    = 40.0;            // Upper Wick Min % (Long Upper Wick)
+input double         InpUpperWickMin    = 40.0;            // Upper Wick Min %
 input double         InpUpperWickMax    = 90.0;            // Upper Wick Max %
 input double         InpBodyMin         = 1.0;             // Body Min %
-input double         InpBodyMax         = 40.0;            // Body Max % (Small Body)
-input double         InpLowerWickMax    = 35.0;            // Lower Wick Max % (Small Lower Wick)
+input double         InpBodyMax         = 40.0;            // Body Max %
+input double         InpLowerWickMax    = 35.0;            // Lower Wick Max %
 
 input group "Context Filters"
 input bool           InpUseDayHighFilter = false;          // Use Day High Filter?
@@ -168,12 +168,14 @@ void CheckForSignal()
 
    if(!validGeometry) return;
 
-   // Rule: EMA Filter (Close < EMA)
+   // Rule: EMA Filter (High > EMA and Close < EMA)
    if(InpUseEMAFilter)
    {
       double ema[1];
       if(CopyBuffer(m_handleEMA, 0, 1, 1, ema) <= 0) return;
-      if(c >= ema[0]) return;
+
+      // Fine-tuned condition: Rejection MUST cross the EMA
+      if(!(h > ema[0] && c < ema[0])) return;
    }
 
    // Rule: Day High filter (Optional)
@@ -193,8 +195,18 @@ void CheckForSignal()
    m_triggerHigh = h;
    m_waitingForBreakout = true;
 
-   PrintFormat("Rejection Signal Detected: %s at %s. Close: %.2f, Low: %.2f, High: %.2f",
-               _Symbol, TimeToString(m_signalBarTime), c, l, h);
+   PrintFormat("Fine-tuned Signal Detected: %s at %s. High: %.2f, EMA: %.2f, Close: %.2f",
+               _Symbol, TimeToString(m_signalBarTime), h, (InpUseEMAFilter ? iMA_EMA_Value(1) : 0), c);
+}
+
+//+------------------------------------------------------------------+
+//| Helper to get EMA value for logging                              |
+//+------------------------------------------------------------------+
+double iMA_EMA_Value(int index)
+{
+   double buffer[1];
+   if(CopyBuffer(m_handleEMA, 0, index, 1, buffer) > 0) return buffer[0];
+   return 0;
 }
 
 //+------------------------------------------------------------------+
