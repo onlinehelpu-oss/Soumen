@@ -22,21 +22,21 @@ input ENUM_TIMEFRAMES InpTimeframe         = PERIOD_M15;       // Signal Timefra
 input double          InpMinUpperWickPct   = 50.0;             // Min Upper Wick (% of total range)
 input double          InpMaxBodyPct        = 50.0;             // Max Body (% of total range)
 input double          InpMaxLowerWickPct   = 20.0;             // Max Lower Wick (% of total range)
-input int             InpMinCandleRange    = 50;               // Min Candle Range (Points)
+input int             InpMinCandleRange    = 1500;             // Min Candle Range (Points, optimized for BTCUSD)
 input bool            InpRequireRedSignal  = true;             // Signal candle (shift=1) must be RED
 input bool            InpRequireGreenPrev  = true;             // Previous candle (shift=2) must be GREEN
 
 input group "--- Execution Settings ---"
 input double          InpLotSize           = 0.1;              // Position Size (Lots)
 input double          InpRiskPercent       = 1.0;              // Risk Percent per trade (0 = Use Fixed Lot)
-input int             InpEntryBuffer       = 10;               // Entry Buffer (Points below Low)
-input int             InpSLBuffer          = 10;               // Stop Loss Buffer (Points above High)
+input int             InpEntryBuffer       = 50;               // Entry Buffer (Points below Low, optimized for BTCUSD)
+input int             InpSLBuffer          = 50;               // Stop Loss Buffer (Points above High, optimized for BTCUSD)
 input double          InpRiskRewardRatio   = 2.0;              // Risk:Reward Ratio (e.g. 1.5, 2.0)
 
 input group "--- Trailing Stop Settings ---"
 input bool            InpUseTrailing       = true;             // Enable Trailing Stop
-input int             InpTrailingStart     = 150;              // Trailing Start (Points)
-input int             InpTrailingStep      = 50;               // Trailing Step (Points)
+input int             InpTrailingStart     = 1000;             // Trailing Start (Points, optimized for BTCUSD)
+input int             InpTrailingStep      = 200;              // Trailing Step (Points, optimized for BTCUSD)
 
 input group "--- General Settings ---"
 input ulong           InpMagicNumber       = 881234;           // Magic Number
@@ -279,7 +279,7 @@ void UpdateDashboard()
 {
    string comment = "";
    comment += "============================================================\n";
-   comment += "         FLEXIBLE LONG UPPER WICK REJECTION EA (MT5)        \n";
+   comment += "     FLEXIBLE LONG UPPER WICK REJECTION EA - BTCUSD (MT5)   \n";
    comment += "============================================================\n";
    comment += StringFormat(" Timeframe       : %s\n", EnumToString(InpTimeframe));
    comment += StringFormat(" Magic Number    : %I64u\n", InpMagicNumber);
