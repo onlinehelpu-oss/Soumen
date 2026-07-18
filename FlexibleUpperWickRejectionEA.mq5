@@ -47,61 +47,24 @@ datetime       g_last_bar_time = 0;
 bool           m_signal_active = false;
 double         m_signal_low    = 0.0;
 double         m_signal_high   = 0.0;
-datetime       m_signal_time   = 0;  // Start time of the signal candle (shift 1 when detected)
-
-//--- Helper Functions to fetch price data safely
-double GetOpen(ENUM_TIMEFRAMES tf, int shift)
-{
-   double arr[1];
-   if(CopyOpen(_Symbol, tf, shift, 1, arr) > 0)
-      return arr[0];
-   return 0.0;
-}
-
-double GetHigh(ENUM_TIMEFRAMES tf, int shift)
-{
-   double arr[1];
-   if(CopyHigh(_Symbol, tf, shift, 1, arr) > 0)
-      return arr[0];
-   return 0.0;
-}
-
-double GetLow(ENUM_TIMEFRAMES tf, int shift)
-{
-   double arr[1];
-   if(CopyLow(_Symbol, tf, shift, 1, arr) > 0)
-      return arr[0];
-   return 0.0;
-}
-
-double GetClose(ENUM_TIMEFRAMES tf, int shift)
-{
-   double arr[1];
-   if(CopyClose(_Symbol, tf, shift, 1, arr) > 0)
-      return arr[0];
-   return 0.0;
-}
-
-datetime GetTime(ENUM_TIMEFRAMES tf, int shift)
-{
-   datetime arr[1];
-   if(CopyTime(_Symbol, tf, shift, 1, arr) > 0)
-      return arr[0];
-   return 0;
-}
+datetime       m_signal_time   = 0;  // Start time of the signal candle
 
 //====================================================================//
-// Reusable function to analyze candle structure
-// Returns true if copy operations are successful, false otherwise.
+// Reusable function to return all candle measurements (body %, upper wick %, lower wick %)
 //====================================================================//
-bool AnalyzeCandle(ENUM_TIMEFRAMES tf, int shift, double &body_pct, double &upper_wick_pct, double &lower_wick_pct, double &range_val)
+bool GetCandleMeasurements(ENUM_TIMEFRAMES tf, int shift, double &body_pct, double &upper_wick_pct, double &lower_wick_pct, double &range_val)
 {
-   double O = GetOpen(tf, shift);
-   double H = GetHigh(tf, shift);
-   double L = GetLow(tf, shift);
-   double C = GetClose(tf, shift);
+   MqlRates rates[1];
+   if(CopyRates(_Symbol, tf, shift, 1, rates) < 1)
+   {
+      body_pct = 0.0;
+      upper_wick_pct = 0.0;
+      lower_wick_pct = 0.0;
+      range_val = 0.0;
+      return false;
+   }
 
-   range_val = H - L;
+   range_val = rates[0].high - rates[0].low;
    if(range_val <= 0.0)
    {
       body_pct = 0.0;
@@ -110,9 +73,9 @@ bool AnalyzeCandle(ENUM_TIMEFRAMES tf, int shift, double &body_pct, double &uppe
       return false;
    }
 
-   double body       = MathAbs(O - C);
-   double upper_wick  = H - MathMax(O, C);
-   double lower_wick  = MathMin(O, C) - L;
+   double body       = MathAbs(rates[0].open - rates[0].close);
+   double upper_wick  = rates[0].high - MathMax(rates[0].open, rates[0].close);
+   double lower_wick  = MathMin(rates[0].open, rates[0].close) - rates[0].low;
 
    body_pct       = (body / range_val) * 100.0;
    upper_wick_pct = (upper_wick / range_val) * 100.0;
@@ -132,82 +95,6 @@ bool HasActivePosition()
          if(magic == InpMagicNumber)
             return true;
       }
-   }
-   return false;
-}
-
-//--- Scan and validate signal on shift 1
-void CheckForSignal(ENUM_TIMEFRAMES tf)
-{
-   double body_pct = 0, upper_wick_pct = 0, lower_wick_pct = 0, range_val = 0;
-
-   // Check if we can analyze the signal candle (shift 1)
-   if(!AnalyzeCandle(tf, 1, body_pct, upper_wick_pct, lower_wick_pct, range_val))
-   {
-      m_signal_active = false;
-      return;
-   }
-
-   // Ignore tiny candles
-   double min_range = InpMinCandleRangePoints * _Point;
-   if(range_val < min_range)
-   {
-      m_signal_active = false;
-      return;
-   }
-
-   // Ignore Doji
-   if(InpIgnoreDoji)
-   {
-      double o = GetOpen(tf, 1);
-      double c = GetClose(tf, 1);
-      if(MathAbs(o - c) <= 0.0 || body_pct <= 1.0)
-      {
-         m_signal_active = false;
-         return;
-      }
-   }
-
-   // Check if the signal candle matches our flexible upper wick rejection criteria
-   bool is_rejection = (upper_wick_pct >= MinUpperWickPct &&
-                        body_pct <= MaxBodyPct &&
-                        lower_wick_pct <= MaxLowerWickPct);
-
-   if(!is_rejection)
-   {
-      m_signal_active = false;
-      return;
-   }
-
-   // Previous candle (shift 2) must be green
-   double o2 = GetOpen(tf, 2);
-   double c2 = GetClose(tf, 2);
-   if(c2 <= o2)
-   {
-      m_signal_active = false;
-      return;
-   }
-
-   // All conditions met! Activate signal for the current bar
-   m_signal_active = true;
-   m_signal_low = GetLow(tf, 1);
-   m_signal_high = GetHigh(tf, 1);
-   m_signal_time = GetTime(tf, 1);
-
-   PrintFormat("[Signal Detected] Time: %s, Low: %.5f, High: %.5f, UpperWick: %.1f%%, Body: %.1f%%, LowerWick: %.1f%%",
-               TimeToString(m_signal_time), m_signal_low, m_signal_high, upper_wick_pct, body_pct, lower_wick_pct);
-}
-
-//--- Detect if a new bar has opened
-bool CheckNewBar(ENUM_TIMEFRAMES tf)
-{
-   datetime current_bar_time = GetTime(tf, 0);
-   if(current_bar_time == 0)
-      return false;
-   if(current_bar_time != g_last_bar_time)
-   {
-      g_last_bar_time = current_bar_time;
-      return true;
    }
    return false;
 }
@@ -268,11 +155,9 @@ int OnInit()
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
 
-   // Initialize last bar time
-   g_last_bar_time = GetTime(m_tf, 0);
-
-   // Check for signal immediately on start to see if shift 1 was a signal and we are in active breakout monitoring
-   CheckForSignal(m_tf);
+   // Initialize last bar time to 0 to ensure copy rates run on first tick
+   g_last_bar_time = 0;
+   m_signal_active = false;
 
    UpdateDashboard();
 
@@ -290,12 +175,80 @@ void OnDeinit(const int reason)
 //--- OnTick
 void OnTick()
 {
-   // Check if new bar has opened
-   if(CheckNewBar(m_tf))
+   // Copy rates for current bar (shift 0), signal candidate (shift 1), and confirmation bar (shift 2)
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+   if(CopyRates(_Symbol, m_tf, 0, 3, rates) < 3)
    {
-      // A new bar opened. If we had an active signal, the breakout candle has finished.
-      // Since it's immediate next-candle breakout ONLY, the signal is now expired unless the new bar itself is a signal.
-      CheckForSignal(m_tf);
+      // Wait for history to load/sync, do not execute signal logic on empty history
+      return;
+   }
+
+   datetime current_bar_time = rates[0].time;
+
+   // First tick or transition to a new bar
+   if(g_last_bar_time == 0)
+   {
+      g_last_bar_time = current_bar_time;
+   }
+   else if(current_bar_time != g_last_bar_time)
+   {
+      g_last_bar_time = current_bar_time;
+
+      // A new bar has opened.
+      // Since it is immediate next-candle breakout ONLY, any signal from the previous candle is now expired
+      m_signal_active = false;
+
+      // Analyze newly completed bar (rates[1], corresponding to shift 1)
+      double range_val = rates[1].high - rates[1].low;
+      double min_range = InpMinCandleRangePoints * _Point;
+
+      if(range_val >= min_range)
+      {
+         bool is_doji = false;
+         if(InpIgnoreDoji)
+         {
+            double body = MathAbs(rates[1].open - rates[1].close);
+            if(body <= 0.0 || (body / range_val) * 100.0 <= 1.0)
+               is_doji = true;
+         }
+
+         if(!is_doji)
+         {
+            double O = rates[1].open;
+            double H = rates[1].high;
+            double L = rates[1].low;
+            double C = rates[1].close;
+            double body       = MathAbs(O - C);
+            double upper_wick  = H - MathMax(O, C);
+            double lower_wick  = MathMin(O, C) - L;
+
+            double upper_wick_pct = (upper_wick / range_val) * 100.0;
+            double body_pct       = (body / range_val) * 100.0;
+            double lower_wick_pct = (lower_wick / range_val) * 100.0;
+
+            bool is_rejection = (upper_wick_pct >= MinUpperWickPct &&
+                                 body_pct <= MaxBodyPct &&
+                                 lower_wick_pct <= MaxLowerWickPct);
+
+            if(is_rejection)
+            {
+               // Previous candle (shift 2, rates[2]) must be green
+               double o2 = rates[2].open;
+               double c2 = rates[2].close;
+               if(c2 > o2)
+               {
+                  m_signal_active = true;
+                  m_signal_low    = rates[1].low;
+                  m_signal_high   = rates[1].high;
+                  m_signal_time   = rates[1].time;
+
+                  PrintFormat("[Signal Detected] Time: %s, Low: %.5f, High: %.5f, UpperWick: %.1f%%, Body: %.1f%%, LowerWick: %.1f%%",
+                              TimeToString(m_signal_time), m_signal_low, m_signal_high, upper_wick_pct, body_pct, lower_wick_pct);
+               }
+            }
+         }
+      }
    }
 
    // Strict Next-Candle Breakout Check:
@@ -303,9 +256,7 @@ void OnTick()
    // This means the current bar time must be exactly m_signal_time + PeriodSeconds(m_tf).
    if(m_signal_active)
    {
-      datetime current_bar_time = GetTime(m_tf, 0);
       datetime next_candle_time = m_signal_time + PeriodSeconds(m_tf);
-
       if(current_bar_time > next_candle_time)
       {
          // Breakout didn't happen during the immediate next candle. Signal is expired.
