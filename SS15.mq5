@@ -27,7 +27,7 @@ input ENUM_CUSTOM_TF InpTimeframe    = TF_M15;  // Signal Timeframe
 input double MinUpperWickPct         = 50.0;    // Minimum Upper Wick (% of total range)
 input double MaxBodyPct              = 50.0;    // Maximum Body (% of total range)
 input double MaxLowerWickPct         = 20.0;    // Maximum Lower Wick (% of total range)
-input double InpMinCandleRangePoints = 15.0;    // Minimum Candle Range (Points)
+input double InpMinCandleRangePoints = 0.0;     // Minimum Candle Range in Points (0.0 to disable)
 input bool   InpIgnoreDoji           = true;    // Ignore Doji (Body == 0)
 
 input group "--- RISK & TRADE MANAGEMENT ---"
@@ -82,6 +82,47 @@ bool GetCandleMeasurements(ENUM_TIMEFRAMES tf, int shift, double &body_pct, doub
    lower_wick_pct = (lower_wick / range_val) * 100.0;
 
    return true;
+}
+
+//--- Helper Functions to fetch price data safely
+double GetOpen(ENUM_TIMEFRAMES tf, int shift)
+{
+   double arr[1];
+   if(CopyOpen(_Symbol, tf, shift, 1, arr) > 0)
+      return arr[0];
+   return 0.0;
+}
+
+double GetHigh(ENUM_TIMEFRAMES tf, int shift)
+{
+   double arr[1];
+   if(CopyHigh(_Symbol, tf, shift, 1, arr) > 0)
+      return arr[0];
+   return 0.0;
+}
+
+double GetLow(ENUM_TIMEFRAMES tf, int shift)
+{
+   double arr[1];
+   if(CopyLow(_Symbol, tf, shift, 1, arr) > 0)
+      return arr[0];
+   return 0.0;
+}
+
+double GetClose(ENUM_TIMEFRAMES tf, int shift)
+{
+   double arr[1];
+   if(CopyClose(_Symbol, tf, shift, 1, arr) > 0)
+      return arr[0];
+   return 0.0;
+}
+
+datetime GetTime(ENUM_TIMEFRAMES tf, int shift)
+{
+   datetime arr[1];
+   if(CopyTime(_Symbol, tf, shift, 1, arr) > 0)
+      return arr[0];
+   return 0;
 }
 
 //--- Check if position already exists for this symbol and magic number
@@ -146,6 +187,27 @@ void UpdateDashboard()
    Comment(text);
 }
 
+//--- Detect and set the broker's correct filling mode
+void SetBrokerFillingMode()
+{
+   uint filling = (uint)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+   if((filling & SYMBOL_FILLING_FOK) != 0)
+   {
+      m_trade.SetTypeFilling(ORDER_FILLING_FOK);
+      Print("Filling mode set to ORDER_FILLING_FOK (FOK).");
+   }
+   else if((filling & SYMBOL_FILLING_IOC) != 0)
+   {
+      m_trade.SetTypeFilling(ORDER_FILLING_IOC);
+      Print("Filling mode set to ORDER_FILLING_IOC (IOC).");
+   }
+   else
+   {
+      m_trade.SetTypeFilling(ORDER_FILLING_RETURN);
+      Print("Filling mode set to ORDER_FILLING_RETURN.");
+   }
+}
+
 //--- OnInit
 int OnInit()
 {
@@ -154,6 +216,9 @@ int OnInit()
 
    m_trade.SetExpertMagicNumber(InpMagicNumber);
    m_trade.SetDeviationInPoints(InpSlippage);
+
+   // Set correct filling mode for the broker to prevent order rejection
+   SetBrokerFillingMode();
 
    // Initialize last bar time to 0 to ensure copy rates run on first tick
    g_last_bar_time = 0;
@@ -185,68 +250,87 @@ void OnTick()
    }
 
    datetime current_bar_time = rates[0].time;
+   bool is_new_bar = false;
 
    // First tick or transition to a new bar
    if(g_last_bar_time == 0)
    {
       g_last_bar_time = current_bar_time;
+      is_new_bar = true; // Force analysis on startup to check immediate signals!
    }
    else if(current_bar_time != g_last_bar_time)
    {
       g_last_bar_time = current_bar_time;
+      is_new_bar = true;
+   }
 
+   if(is_new_bar)
+   {
       // A new bar has opened.
       // Since it is immediate next-candle breakout ONLY, any signal from the previous candle is now expired
       m_signal_active = false;
 
-      // Analyze newly completed bar (rates[1], corresponding to shift 1)
-      double range_val = rates[1].high - rates[1].low;
-      double min_range = InpMinCandleRangePoints * _Point;
-
-      if(range_val >= min_range)
+      // Analyze newly completed bar (rates[1], corresponding to shift 1) using the reusable function
+      double body_pct = 0.0, upper_wick_pct = 0.0, lower_wick_pct = 0.0, range_val = 0.0;
+      if(GetCandleMeasurements(m_tf, 1, body_pct, upper_wick_pct, lower_wick_pct, range_val))
       {
-         bool is_doji = false;
-         if(InpIgnoreDoji)
+         double min_range = InpMinCandleRangePoints * _Point;
+
+         // Previous candle (shift 2, rates[2]) must be green
+         double o2 = rates[2].open;
+         double c2 = rates[2].close;
+         bool prev_green = (c2 > o2);
+
+         // Print robust diagnostics for the backtester / journal so user sees exactly why each candle is accepted or rejected
+         PrintFormat("[Diagnostic] Completed Candle: %s. Range: %.1f points (Min required: %.1f), UpperWick: %.1f%% (Min: %.1f%%), Body: %.1f%% (Max: %.1f%%), LowerWick: %.1f%% (Max: %.1f%%), Prev Green: %s",
+                     TimeToString(rates[1].time), range_val / _Point, InpMinCandleRangePoints, upper_wick_pct, MinUpperWickPct, body_pct, MaxBodyPct, lower_wick_pct, MaxLowerWickPct, prev_green ? "Yes" : "No");
+
+         if(range_val >= min_range)
          {
-            double body = MathAbs(rates[1].open - rates[1].close);
-            if(body <= 0.0 || (body / range_val) * 100.0 <= 1.0)
-               is_doji = true;
-         }
-
-         if(!is_doji)
-         {
-            double O = rates[1].open;
-            double H = rates[1].high;
-            double L = rates[1].low;
-            double C = rates[1].close;
-            double body       = MathAbs(O - C);
-            double upper_wick  = H - MathMax(O, C);
-            double lower_wick  = MathMin(O, C) - L;
-
-            double upper_wick_pct = (upper_wick / range_val) * 100.0;
-            double body_pct       = (body / range_val) * 100.0;
-            double lower_wick_pct = (lower_wick / range_val) * 100.0;
-
-            bool is_rejection = (upper_wick_pct >= MinUpperWickPct &&
-                                 body_pct <= MaxBodyPct &&
-                                 lower_wick_pct <= MaxLowerWickPct);
-
-            if(is_rejection)
+            bool is_doji = false;
+            if(InpIgnoreDoji)
             {
-               // Previous candle (shift 2, rates[2]) must be green
-               double o2 = rates[2].open;
-               double c2 = rates[2].close;
-               if(c2 > o2)
-               {
-                  m_signal_active = true;
-                  m_signal_low    = rates[1].low;
-                  m_signal_high   = rates[1].high;
-                  m_signal_time   = rates[1].time;
+               double body = MathAbs(rates[1].open - rates[1].close);
+               if(body <= 0.0 || (body / range_val) * 100.0 <= 1.0)
+                  is_doji = true;
+            }
 
-                  PrintFormat("[Signal Detected] Time: %s, Low: %.5f, High: %.5f, UpperWick: %.1f%%, Body: %.1f%%, LowerWick: %.1f%%",
-                              TimeToString(m_signal_time), m_signal_low, m_signal_high, upper_wick_pct, body_pct, lower_wick_pct);
+            if(!is_doji)
+            {
+               bool is_rejection = (upper_wick_pct >= MinUpperWickPct &&
+                                    body_pct <= MaxBodyPct &&
+                                    lower_wick_pct <= MaxLowerWickPct);
+
+               if(is_rejection)
+               {
+                  if(prev_green)
+                  {
+                     m_signal_active = true;
+                     m_signal_low    = rates[1].low;
+                     m_signal_high   = rates[1].high;
+                     m_signal_time   = rates[1].time;
+
+                     PrintFormat(">>> [SIGNAL ACTIVE] Pattern Validated! Time: %s, Low: %.5f, High: %.5f. Waiting for immediate breakout on the current bar.",
+                                 TimeToString(m_signal_time), m_signal_low, m_signal_high);
+                  }
+                  else
+                  {
+                     Print("[Diagnostic] -> Rejected: Previous candle (Shift 2) is not Green.");
+                  }
+               }
+               else
+               {
+                  Print("[Diagnostic] -> Rejected: Candle geometry does not satisfy rejection thresholds.");
                }
             }
+            else
+            {
+               Print("[Diagnostic] -> Rejected: Candle is ignored as Doji.");
+            }
+         }
+         else
+         {
+            PrintFormat("[Diagnostic] -> Rejected: Candle range %.1f points is below minimum range threshold.", range_val / _Point);
          }
       }
    }
