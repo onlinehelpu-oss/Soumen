@@ -186,11 +186,6 @@ bool SetTradeFillingMode()
       m_trade.SetTypeFilling(ORDER_FILLING_IOC);
       return true;
    }
-   else if((filling & SYMBOL_FILLING_RETURN) != 0)
-   {
-      m_trade.SetTypeFilling(ORDER_FILLING_RETURN);
-      return true;
-   }
 
    ENUM_SYMBOL_TRADE_EXECUTION exec = (ENUM_SYMBOL_TRADE_EXECUTION)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_EXEMODE);
    if(exec == SYMBOL_TRADE_EXECUTION_MARKET)
@@ -287,7 +282,7 @@ void UpdateDashboard()
    comment += "         FLEXIBLE LONG UPPER WICK REJECTION EA (MT5)        \n";
    comment += "============================================================\n";
    comment += StringFormat(" Timeframe       : %s\n", EnumToString(InpTimeframe));
-   comment += StringFormat(" Magic Number    : %d\n", InpMagicNumber);
+   comment += StringFormat(" Magic Number    : %I64u\n", InpMagicNumber);
    comment += StringFormat(" Account Balance : %.2f %s\n", AccountInfoDouble(ACCOUNT_BALANCE), AccountInfoString(ACCOUNT_CURRENCY));
    comment += StringFormat(" Account Equity  : %.2f %s\n", AccountInfoDouble(ACCOUNT_EQUITY), AccountInfoString(ACCOUNT_CURRENCY));
    comment += "------------------------------------------------------------\n";
