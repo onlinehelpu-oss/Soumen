@@ -61,6 +61,7 @@ datetime       m_signalBarTime = 0;
 double         m_triggerLow    = 0;
 double         m_triggerHigh   = 0;
 bool           m_waitingForBreakout = false;
+double         m_lastBid = 0;
 
 //--- Detect and set the broker's correct filling mode
 void SetBrokerFillingMode()
@@ -107,6 +108,7 @@ int OnInit()
       return(INIT_FAILED);
    }
 
+   m_lastBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    m_lastBarTime = 0;
    m_waitingForBreakout = false;
 
@@ -133,6 +135,8 @@ void OnTick()
 
    CheckForSignal();
    CheckForBreakout();
+
+   m_lastBid = m_symbol.Bid();
 }
 
 //+------------------------------------------------------------------+
@@ -151,22 +155,11 @@ void CheckForSignal()
 {
    datetime currentTime = iTime(_Symbol, InpTimeframe, 0);
    if(currentTime == 0) return; // Wait for data
-
-   bool isNewBar = false;
-   if(m_lastBarTime == 0)
-   {
-      m_lastBarTime = currentTime;
-      isNewBar = true; // Force analysis on startup
-   }
-   else if(currentTime != m_lastBarTime)
-   {
-      m_lastBarTime = currentTime;
-      isNewBar = true;
-   }
-
-   if(!isNewBar) return;
+   if(currentTime == m_lastBarTime) return;
 
    // A bar just closed. Check the previous bar (index 1)
+   m_lastBarTime = currentTime;
+
    double o = iOpen(_Symbol, InpTimeframe, 1);
    double h = iHigh(_Symbol, InpTimeframe, 1);
    double l = iLow(_Symbol, InpTimeframe, 1);
@@ -175,70 +168,40 @@ void CheckForSignal()
    double prev_o = iOpen(_Symbol, InpTimeframe, 2);
    double prev_c = iClose(_Symbol, InpTimeframe, 2);
 
-   double totalRange = h - l;
-
-   // Robust journal diagnostics
-   double upperWickPct = (totalRange > 0) ? ((h - MathMax(o, c)) / totalRange) * 100.0 : 0.0;
-   double bodyPct      = (totalRange > 0) ? (MathAbs(o - c) / totalRange) * 100.0 : 0.0;
-   double lowerWickPct = (totalRange > 0) ? ((MathMin(o, c) - l) / totalRange) * 100.0 : 0.0;
-   bool prev_green = (prev_c > prev_o);
-
-   PrintFormat("[Diagnostic] Completed bar at %s. Range: %.2f (Min required: %.2f%% of close = %.2f), UpperWick: %.1f%% (Min: %.1f%%, Max: %.1f%%), Body: %.1f%% (Min: %.1f%%, Max: %.1f%%), LowerWick: %.1f%% (Max: %.1f%%), Red Signal Candle: %s, Previous Green: %s",
-               TimeToString(iTime(_Symbol, InpTimeframe, 1)), totalRange, InpMinRangePct, (c > 0) ? (InpMinRangePct * c / 100.0) : 0.0, upperWickPct, InpUpperWickMin, InpUpperWickMax, bodyPct, InpBodyMin, InpBodyMax, lowerWickPct, InpLowerWickMax, (c < o) ? "Yes" : "No", prev_green ? "Yes" : "No");
-
    // Rule: Signal Candle Red (Optional but default True)
-   if(InpRequireRedSignal && c >= o)
-   {
-      Print("[Diagnostic] -> Rejected: Signal candle is not red.");
-      return;
-   }
+   if(InpRequireRedSignal && c >= o) return;
 
    // Rule: Previous Candle Green (Optional but default True)
    if(InpRequirePrevGreen)
    {
       if(prev_o == 0) return;
-      if(prev_c <= prev_o)
-      {
-         Print("[Diagnostic] -> Rejected: Previous candle was not green.");
-         return;
-      }
+      if(prev_c <= prev_o) return;
    }
 
    // Rule: Ignore Tiny Candles
+   double totalRange = h - l;
    if(totalRange <= 0) return;
-   if(c > 0 && (totalRange / c) * 100.0 < InpMinRangePct)
-   {
-      PrintFormat("[Diagnostic] -> Rejected: Candle range %.2f is too small (below InpMinRangePct of %.2f%%).", totalRange, InpMinRangePct);
-      return;
-   }
+   if(c > 0 && (totalRange / c) * 100.0 < InpMinRangePct) return;
 
    // Rule: Geometry Check (Long Upper Wick, Small Body, Small Lower Wick)
+   double upperWickPct = ((h - MathMax(o, c)) / totalRange) * 100.0;
+   double bodyPct      = (MathAbs(o - c) / totalRange) * 100.0;
+   double lowerWickPct = ((MathMin(o, c) - l) / totalRange) * 100.0;
+
    bool validGeometry = (upperWickPct >= InpUpperWickMin && upperWickPct <= InpUpperWickMax) &&
                         (bodyPct >= InpBodyMin && bodyPct <= InpBodyMax) &&
                         (lowerWickPct >= 0 && lowerWickPct <= InpLowerWickMax);
 
-   if(!validGeometry)
-   {
-      Print("[Diagnostic] -> Rejected: Candle geometry does not satisfy rejection limits.");
-      return;
-   }
+   if(!validGeometry) return;
 
    // Rule: EMA Filter (High > EMA and Close < EMA)
    if(InpUseEMAFilter)
    {
       double ema[1];
-      if(CopyBuffer(m_handleEMA, 0, 1, 1, ema) <= 0)
-      {
-         Print("[Diagnostic] -> Rejected: Could not fetch EMA value.");
-         return;
-      }
+      if(CopyBuffer(m_handleEMA, 0, 1, 1, ema) <= 0) return;
 
       // Fine-tuned condition: Rejection MUST cross the EMA
-      if(!(h > ema[0] && c < ema[0]))
-      {
-         PrintFormat("[Diagnostic] -> Rejected: Candle high (%.5f) and close (%.5f) do not cross EMA (%.5f).", h, c, ema[0]);
-         return;
-      }
+      if(!(h > ema[0] && c < ema[0])) return;
    }
 
    // Rule: Day High filter (Optional)
@@ -249,11 +212,7 @@ void CheckForSignal()
       int highestBar = iHighest(_Symbol, InpTimeframe, MODE_HIGH, barsToday, 1);
       double dayHigh = iHigh(_Symbol, InpTimeframe, highestBar);
 
-      if(h < dayHigh - m_symbol.Point())
-      {
-         PrintFormat("[Diagnostic] -> Rejected: High (%.5f) is below Day High (%.5f).", h, dayHigh);
-         return;
-      }
+      if(h < dayHigh - m_symbol.Point()) return;
    }
 
    // Signal Confirmed
@@ -262,8 +221,8 @@ void CheckForSignal()
    m_triggerHigh = h;
    m_waitingForBreakout = true;
 
-   PrintFormat(">>> [SIGNAL VALIDATED & ACTIVE] %s at %s. Low: %.5f, High: %.5f, EMA: %.5f, Close: %.5f. Waiting for breakout.",
-               _Symbol, TimeToString(m_signalBarTime), l, h, (InpUseEMAFilter ? iMA_EMA_Value(1) : 0), c);
+   PrintFormat("Fine-tuned Signal Detected: %s at %s. High: %.2f, EMA: %.2f, Close: %.2f",
+               _Symbol, TimeToString(m_signalBarTime), h, (InpUseEMAFilter ? iMA_EMA_Value(1) : 0), c);
 }
 
 //+------------------------------------------------------------------+
@@ -289,8 +248,6 @@ void CheckForBreakout()
    // Trigger valid only for the NEXT candle after signal
    if(barStartTime > m_signalBarTime + PeriodSeconds(InpTimeframe))
    {
-      PrintFormat("[Signal Expired] Current bar time %s is past immediate next candle time %s.",
-                  TimeToString(barStartTime), TimeToString(m_signalBarTime + PeriodSeconds(InpTimeframe)));
       m_waitingForBreakout = false;
       return;
    }
@@ -311,7 +268,6 @@ void CheckForBreakout()
    // Session Limits
    if(InpUseSession && IsTimePast(InpEntryCutoff))
    {
-      Print("[Breakout Cancelled] Entry past cutoff session time.");
       m_waitingForBreakout = false;
       return;
    }
@@ -319,8 +275,8 @@ void CheckForBreakout()
    double bid = m_symbol.Bid();
    double threshold = NormalizePrice(m_triggerLow - InpEntryBuffer);
 
-   // Breakout Entry: Check if bid price has broken or is below the threshold level
-   if(bid <= threshold && bid > 0.0)
+   // Breakout Entry
+   if(m_lastBid >= threshold && bid < threshold)
    {
       double entryPrice = bid;
       double sl = NormalizePrice(m_triggerHigh);
@@ -335,17 +291,13 @@ void CheckForBreakout()
       double tp = NormalizePrice(entryPrice - (InpRRMultiplier * risk));
       double lots = CalculateLots(entryPrice);
 
-      PrintFormat("[Executing Breakout Entry] Bid: %.5f <= Threshold: %.5f. Placing Sell Order. SL: %.5f, TP: %.5f, Lots: %.2f",
-                  bid, threshold, sl, tp, lots);
-
       if(m_trade.Sell(lots, _Symbol, entryPrice, sl, tp, "RedShoot"))
       {
-         PrintFormat("SELL Order Submitted. Retcode: %d, Comment: %s", m_trade.ResultRetcode(), m_trade.ResultComment());
-         m_waitingForBreakout = false;
-      }
-      else
-      {
-         PrintFormat("SELL Order Placement Failed. Retcode: %d, Comment: %s", m_trade.ResultRetcode(), m_trade.ResultComment());
+         if(m_trade.ResultRetcode() == 10009 || m_trade.ResultRetcode() == 10008)
+         {
+            PrintFormat("SELL Order Executed: %s @ %.2f, SL: %.2f, TP: %.2f", _Symbol, entryPrice, sl, tp);
+            m_waitingForBreakout = false;
+         }
       }
    }
 }
@@ -360,7 +312,6 @@ void CheckSessionExits()
       if(PositionSelectByMagic(InpMagic))
       {
          m_trade.PositionClose(_Symbol);
-         Print("[Session Exit] Forced exit time reached. Closed position.");
       }
       m_waitingForBreakout = false;
    }
