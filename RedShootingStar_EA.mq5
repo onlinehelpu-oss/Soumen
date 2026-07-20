@@ -18,7 +18,7 @@
 
 //--- INPUT PARAMETERS
 input group "Strategy Settings"
-input ENUM_TIMEFRAMES InpTimeframe      = PERIOD_M15;      // Timeframe
+input ENUM_TIMEFRAMES InpTimeframe      = PERIOD_CURRENT;  // Timeframe
 input double         InpRRMultiplier    = 1.0;             // Risk:Reward Multiplier
 input double         InpEntryBuffer     = 0.05;            // Entry Buffer (Points)
 input int            InpMagic           = 123456;          // Magic Number
