@@ -35,6 +35,7 @@ input bool           InpRequirePrevGreen = true;           // Previous Candle MU
 input double         InpMinRangePct      = 0.15;           // Min Candle Range % (Ignore tiny candles)
 
 input group "Candle Geometry (Rejection Shape)"
+input bool           InpUseClassicGeometry = false;        // Use Classic Geometry?
 input double         InpUpperWickMin    = 40.0;            // Upper Wick Min %
 input double         InpUpperWickMax    = 90.0;            // Upper Wick Max %
 input double         InpBodyMin         = 1.0;             // Body Min %
@@ -42,6 +43,7 @@ input double         InpBodyMax         = 40.0;            // Body Max %
 input double         InpLowerWickMax    = 35.0;            // Lower Wick Max %
 
 input group "New Candle Detection Logic (Flexible Rejection)"
+input bool           InpUseFlexibleRejection = true;       // Use Flexible Rejection?
 input double         MinUpperWickPct    = 50.0;            // Minimum upper wick %
 input double         MaxBodyPct         = 50.0;            // Maximum body %
 input double         MaxLowerWickPct    = 20.0;            // Maximum lower wick %
@@ -138,8 +140,6 @@ void CheckForSignal()
    if(currentTime == m_lastBarTime) return;
 
    // A bar just closed. Check the previous bar (index 1)
-   m_lastBarTime = currentTime;
-
    double o = iOpen(_Symbol, InpTimeframe, 1);
    double h = iHigh(_Symbol, InpTimeframe, 1);
    double l = iLow(_Symbol, InpTimeframe, 1);
@@ -148,47 +148,83 @@ void CheckForSignal()
    double prev_o = iOpen(_Symbol, InpTimeframe, 2);
    double prev_c = iClose(_Symbol, InpTimeframe, 2);
 
+   // If data is not yet fully available/synced, do not lock m_lastBarTime so we can retry on next tick
+   if(o == 0 || h == 0 || l == 0 || c == 0 || prev_o == 0) return;
+
    // Rule: Signal Candle Red (Optional but default True)
-   if(InpRequireRedSignal && c >= o) return;
+   if(InpRequireRedSignal && c >= o)
+   {
+      m_lastBarTime = currentTime;
+      return;
+   }
 
    // Rule: Previous Candle Green (Optional but default True)
-   if(InpRequirePrevGreen)
+   if(InpRequirePrevGreen && prev_c <= prev_o)
    {
-      if(prev_o == 0) return;
-      if(prev_c <= prev_o) return;
+      m_lastBarTime = currentTime;
+      return;
    }
 
    // Rule: Ignore Tiny Candles
    double totalRange = h - l;
-   if(totalRange <= 0) return;
-   if(c > 0 && (totalRange / c) * 100.0 < InpMinRangePct) return;
+   if(totalRange <= 0)
+   {
+      m_lastBarTime = currentTime;
+      return;
+   }
+   if(c > 0 && (totalRange / c) * 100.0 < InpMinRangePct)
+   {
+      m_lastBarTime = currentTime;
+      return;
+   }
 
    // Rule: Geometry Check (Long Upper Wick, Small Body, Small Lower Wick)
    double upperWickPct = ((h - MathMax(o, c)) / totalRange) * 100.0;
    double bodyPct      = (MathAbs(o - c) / totalRange) * 100.0;
    double lowerWickPct = ((MathMin(o, c) - l) / totalRange) * 100.0;
 
-   bool validGeometry = (upperWickPct >= InpUpperWickMin && upperWickPct <= InpUpperWickMax) &&
-                        (bodyPct >= InpBodyMin && bodyPct <= InpBodyMax) &&
-                        (lowerWickPct >= 0 && lowerWickPct <= InpLowerWickMax);
+   bool validGeometry = false;
+   if(InpUseClassicGeometry)
+   {
+      validGeometry = (upperWickPct >= InpUpperWickMin && upperWickPct <= InpUpperWickMax) &&
+                      (bodyPct >= InpBodyMin && bodyPct <= InpBodyMax) &&
+                      (lowerWickPct >= 0 && lowerWickPct <= InpLowerWickMax);
+   }
 
-   bool IsRejection = (upperWickPct >= MinUpperWickPct) &&
-                      (bodyPct      <= MaxBodyPct) &&
-                      (lowerWickPct <= MaxLowerWickPct);
+   bool IsRejection = false;
+   if(InpUseFlexibleRejection)
+   {
+      IsRejection = (upperWickPct >= MinUpperWickPct) &&
+                    (bodyPct      <= MaxBodyPct) &&
+                    (lowerWickPct <= MaxLowerWickPct);
+   }
 
-   if(!validGeometry && !IsRejection) return;
+   bool match = false;
+   if(InpUseClassicGeometry && validGeometry) match = true;
+   if(InpUseFlexibleRejection && IsRejection) match = true;
+
+   if(!match)
+   {
+      m_lastBarTime = currentTime;
+      return;
+   }
 
    // Rule: EMA Filter (High > EMA and Close < EMA)
    if(InpUseEMAFilter)
    {
       double ema[1];
-      if(CopyBuffer(m_handleEMA, 0, 1, 1, ema) <= 0) return;
+      if(CopyBuffer(m_handleEMA, 0, 1, 1, ema) <= 0) return; // Fail/Lag on CopyBuffer - retry next tick
 
       // Fine-tuned condition: Rejection MUST cross the EMA (High above EMA and Close below EMA)
-      if(!(h > ema[0] && c < ema[0])) return;
+      if(!(h > ema[0] && c < ema[0]))
+      {
+         m_lastBarTime = currentTime;
+         return;
+      }
    }
 
    // Signal Confirmed
+   m_lastBarTime = currentTime;
    m_signalBarTime = iTime(_Symbol, InpTimeframe, 1);
    m_triggerLow = l;
    m_triggerHigh = h;
