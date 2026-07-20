@@ -370,41 +370,6 @@ bool AnyPositionOpen(long magic)
 //+------------------------------------------------------------------+
 //| MQL5 Helper Compatibility Wrappers for MQL4-style functions      |
 //+------------------------------------------------------------------+
-double iOpen(string symbol, ENUM_TIMEFRAMES timeframe, int index)
-{
-   double val[1];
-   if(CopyOpen(symbol, timeframe, index, 1, val) > 0) return val[0];
-   return 0;
-}
-
-double iHigh(string symbol, ENUM_TIMEFRAMES timeframe, int index)
-{
-   double val[1];
-   if(CopyHigh(symbol, timeframe, index, 1, val) > 0) return val[0];
-   return 0;
-}
-
-double iLow(string symbol, ENUM_TIMEFRAMES timeframe, int index)
-{
-   double val[1];
-   if(CopyLow(symbol, timeframe, index, 1, val) > 0) return val[0];
-   return 0;
-}
-
-double iClose(string symbol, ENUM_TIMEFRAMES timeframe, int index)
-{
-   double val[1];
-   if(CopyClose(symbol, timeframe, index, 1, val) > 0) return val[0];
-   return 0;
-}
-
-datetime iTime(string symbol, ENUM_TIMEFRAMES timeframe, int index)
-{
-   datetime val[1];
-   if(CopyTime(symbol, timeframe, index, 1, val) > 0) return val[0];
-   return 0;
-}
-
 int iHighest(string symbol, ENUM_TIMEFRAMES timeframe, int type, int count, int start)
 {
    double highs[];
