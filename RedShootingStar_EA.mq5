@@ -46,9 +46,6 @@ input double         MinUpperWickPct    = 50.0;            // Minimum upper wick
 input double         MaxBodyPct         = 50.0;            // Maximum body %
 input double         MaxLowerWickPct    = 20.0;            // Maximum lower wick %
 
-input group "Context Filters"
-input bool           InpUseDayHighFilter = false;          // Use Day High Filter?
-
 input group "Position Sizing"
 input double         InpLots            = 0.1;             // Fixed Lot Size
 input bool           InpUseAllocation   = false;           // Use Allocation instead of Fixed Lots
@@ -189,17 +186,6 @@ void CheckForSignal()
 
       // Fine-tuned condition: Rejection MUST cross the EMA (High above EMA and Close below EMA)
       if(!(h > ema[0] && c < ema[0])) return;
-   }
-
-   // Rule: Day High filter (Optional)
-   if(InpUseDayHighFilter)
-   {
-      datetime startOfDay = iTime(_Symbol, PERIOD_D1, 0);
-      int barsToday = Bars(_Symbol, InpTimeframe, startOfDay, TimeCurrent());
-      int highestBar = iHighest(_Symbol, InpTimeframe, MODE_HIGH, barsToday, 1);
-      double dayHigh = iHigh(_Symbol, InpTimeframe, highestBar);
-
-      if(h < dayHigh - m_symbol.Point()) return;
    }
 
    // Signal Confirmed
