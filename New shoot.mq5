@@ -14,10 +14,11 @@
 //| - Stop Loss: Signal candle High.                                 |
 //| - Take Profit: Configurable Risk:Reward ratio.                   |
 //| - Full compatibility with XM broker volume steps and tick sizes.|
+//| - Step-by-step diagnostic Journal logs for easy backtest checks. |
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      ""
-#property version   "1.30"
+#property version   "1.40"
 
 #include <Trade\Trade.mqh>
 
@@ -71,7 +72,7 @@ int OnInit()
    m_signal_low = 0;
    m_signal_time = 0;
 
-   Print("[Init] New shoot EA Initialized successfully on symbol: ", _Symbol);
+   Print("[Init] EA successfully initialized on symbol: ", _Symbol);
    return(INIT_SUCCEEDED);
 }
 
@@ -84,7 +85,7 @@ void OnDeinit(const int reason)
    {
       IndicatorRelease(m_ema_handle);
    }
-   Print("[Deinit] New shoot EA Deinitialized.");
+   Print("[Deinit] EA Deinitialized.");
 }
 
 //+------------------------------------------------------------------+
@@ -185,7 +186,7 @@ double CalculateLotSize(double price_gap)
 }
 
 //+------------------------------------------------------------------+
-//| Check signal candle rules                                        |
+//| Check signal candle rules with explicit Journal diagnostic logs |
 //+------------------------------------------------------------------+
 bool CheckSignalCandle(double &out_high, double &out_low)
 {
@@ -193,6 +194,7 @@ bool CheckSignalCandle(double &out_high, double &out_low)
    // Copy shift 1, 2, 3
    if(CopyRates(_Symbol, InpTimeframe, 1, 3, rates) < 3)
    {
+      Print("[Diag] Failed to copy rates. Waiting for historical bar data...");
       return false;
    }
 
@@ -200,15 +202,19 @@ bool CheckSignalCandle(double &out_high, double &out_low)
    MqlRates prev_candle = rates[1];   // Shift 2
    MqlRates sig_candle = rates[2];    // Shift 1
 
+   datetime sig_time = sig_candle.time;
+
    // 1. Previous candle of signal candle must be green
    if(prev_candle.close <= prev_candle.open)
    {
+      Print("[Diag] ", TimeToString(sig_time), " Rejected. Previous candle (shift 2) was not green.");
       return false;
    }
 
    // 2. Signal candle must be red
    if(sig_candle.close >= sig_candle.open)
    {
+      Print("[Diag] ", TimeToString(sig_time), " Rejected. Signal candle (shift 1) is not a red candle.");
       return false;
    }
 
@@ -216,6 +222,7 @@ bool CheckSignalCandle(double &out_high, double &out_low)
    double ema_buffer[1];
    if(CopyBuffer(m_ema_handle, 0, 1, 1, ema_buffer) < 1)
    {
+      Print("[Diag] ", TimeToString(sig_time), " Rejected. Failed to fetch EMA buffer.");
       return false;
    }
    double ema_val = ema_buffer[0];
@@ -223,6 +230,7 @@ bool CheckSignalCandle(double &out_high, double &out_low)
    // Signal candle high must be above EMA, close must be below EMA
    if(sig_candle.high <= ema_val || sig_candle.close >= ema_val)
    {
+      Print("[Diag] ", TimeToString(sig_time), " Rejected. EMA filters failed. High (", sig_candle.high, ") must be above EMA (", ema_val, ") AND Close (", sig_candle.close, ") must be below EMA.");
       return false;
    }
 
@@ -236,10 +244,12 @@ bool CheckSignalCandle(double &out_high, double &out_low)
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    if(InpMinCandlePoints > 0 && total_range < InpMinCandlePoints * point)
    {
+      Print("[Diag] ", TimeToString(sig_time), " Rejected. Range (", total_range, ") is smaller than InpMinCandlePoints (", InpMinCandlePoints * point, ").");
       return false;
    }
    if(InpMinCandlePct > 0 && (total_range / sig_candle.close) * 100.0 < InpMinCandlePct)
    {
+      Print("[Diag] ", TimeToString(sig_time), " Rejected. Range % of close (", (total_range / sig_candle.close) * 100.0, "%) is smaller than InpMinCandlePct (", InpMinCandlePct, "%).");
       return false;
    }
 
@@ -250,12 +260,15 @@ bool CheckSignalCandle(double &out_high, double &out_low)
    // Rejection candle: upper wick must be minimum configurable percentage of total candle (default >= 50%)
    if(upper_wick_pct < InpMinUpperWickPct)
    {
+      Print("[Diag] ", TimeToString(sig_time), " Rejected. Upper wick percentage (", upper_wick_pct, "%) is less than InpMinUpperWickPct (", InpMinUpperWickPct, "%).");
       return false;
    }
 
    // All conditions satisfied!
    out_high = sig_candle.high;
    out_low = sig_candle.low;
+
+   Print("[Diag] ", TimeToString(sig_time), " VALID SIGNAL FOUND! Upper wick: ", upper_wick_pct, "%, Range: ", total_range, ", High: ", out_high, ", Low: ", out_low);
    return true;
 }
 
