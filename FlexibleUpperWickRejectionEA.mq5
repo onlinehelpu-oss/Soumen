@@ -1,30 +1,42 @@
 //+------------------------------------------------------------------+
 //|                                  FlexibleUpperWickRejectionEA.mq5|
 //|                                                            Jules |
+//|                                                                  |
+//| Optimized for: BTCUSD on XM Platform                             |
+//| Features:                                                        |
+//| - Strictly 1 open position at a time (zero double entries).      |
+//| - Custom candle geometry: Rejection red candle with upper wick   |
+//|   minimum more than 50% (or configurable) of total candle range.  |
+//| - Previous candle must be green.                                 |
+//| - High above EMA, Close below EMA (configurable timeframe & period).|
+//| - Entry: Breakout of signal candle low on the next immediate bar.|
+//| - Stop Loss: Signal candle High.                                 |
+//| - Take Profit: Configurable Risk:Reward ratio.                   |
+//| - Full compatibility with XM broker volume steps and tick sizes.|
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      ""
-#property version   "1.00"
+#property version   "1.10"
 
 #include <Trade\Trade.mqh>
 
 //--- Inputs
 input group "=== Strategy Parameters ==="
-input ENUM_TIMEFRAMES InpTimeframe       = PERIOD_CURRENT;  // Timeframe (any: 1-3-5-15-30m, 1H, 4H, 1D etc.)
+input ENUM_TIMEFRAMES InpTimeframe       = PERIOD_M15;      // Timeframe (e.g. 1m, 3m, 5m, 15m, 30m, 1H, 4H, 1D etc.)
 input int             InpEMAPeriod      = 21;              // EMA Period Close-basis
 input ENUM_MA_METHOD  InpMAMethod       = MODE_EMA;        // MA Method
 input ENUM_APPLIED_PRICE InpAppliedPrice = PRICE_CLOSE;     // Applied Price
 input double          InpMinUpperWickPct= 50.0;            // Min Upper Wick % of candle (default >=50%)
-input double          InpMinCandlePoints = 10.0;           // Ignore tiny candles: Min range in Points (0 to disable)
-input double          InpMinCandlePct    = 0.01;           // Ignore tiny candles: Min range as % of close (0 to disable)
+input double          InpMinCandlePoints = 50.0;           // Ignore tiny candles: Min range in Points (e.g. 50 points for BTCUSD)
+input double          InpMinCandlePct    = 0.05;           // Ignore tiny candles: Min range as % of close (0 to disable)
 
 input group "=== Risk Management ==="
 input double          InpLotSize        = 0.1;             // Lot Size (if fixed lot size)
 input bool            InpUseRiskPercent = false;           // Use Risk % sizing
 input double          InpRiskPercent    = 1.0;             // Risk % per trade of Account Balance
 input double          InpRiskReward     = 2.0;             // Risk to Reward Ratio (e.g. 2.0 for 1:2, 1.0 for 1:1)
-input ulong           InpMagicNumber    = 123456;          // Magic Number
-input ulong           InpSlippage       = 3;               // Slippage in points
+input ulong           InpMagicNumber    = 881234;          // Unique Magic Number to identify trades
+input ulong           InpSlippage       = 10;              // Slippage in points (higher for Crypto)
 
 //--- Globals
 CTrade      m_trade;
@@ -48,7 +60,7 @@ int OnInit()
    m_ema_handle = iMA(_Symbol, InpTimeframe, InpEMAPeriod, 0, InpMAMethod, InpAppliedPrice);
    if(m_ema_handle == INVALID_HANDLE)
    {
-      Print("Failed to create EMA indicator handle! Error: ", GetLastError());
+      Print("[Init] Failed to create EMA indicator handle! Error: ", GetLastError());
       return(INIT_FAILED);
    }
 
@@ -58,7 +70,7 @@ int OnInit()
    m_signal_low = 0;
    m_signal_time = 0;
 
-   Print("Flexible Upper Wick Rejection EA Initialized successfully.");
+   Print("[Init] Flexible Upper Wick Rejection EA Initialized successfully on symbol: ", _Symbol);
    return(INIT_SUCCEEDED);
 }
 
@@ -71,7 +83,7 @@ void OnDeinit(const int reason)
    {
       IndicatorRelease(m_ema_handle);
    }
-   Print("Flexible Upper Wick Rejection EA Deinitialized.");
+   Print("[Deinit] Flexible Upper Wick Rejection EA Deinitialized.");
 }
 
 //+------------------------------------------------------------------+
@@ -88,17 +100,22 @@ datetime GetCurrentBarTime()
 }
 
 //+------------------------------------------------------------------+
-//| Helper to check if a position is open                            |
+//| Helper to check if a position is open (Guarantees one position)  |
 //+------------------------------------------------------------------+
 bool IsPositionOpen()
 {
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   int total = PositionsTotal();
+   for(int i = 0; i < total; i++)
    {
-      if(PositionGetSymbol(i) == _Symbol)
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0)
       {
-         if(PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+         if(PositionGetString(POSITION_SYMBOL) == _Symbol)
          {
-            return true;
+            if(PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+            {
+               return true;
+            }
          }
       }
    }
@@ -113,6 +130,8 @@ double NormalizeVolume(double volume)
    double min_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    double max_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
    double step_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
+
+   if(step_lot <= 0) step_lot = 0.01;
 
    double normalized = MathRound(volume / step_lot) * step_lot;
    if(normalized < min_lot) normalized = min_lot;
@@ -244,7 +263,8 @@ bool CheckSignalCandle(double &out_high, double &out_low)
 //+------------------------------------------------------------------+
 void UpdateDashboard()
 {
-   string text = "=== Flexible Upper Wick Rejection EA ===\n";
+   string text = "=== Flexible Upper Wick Rejection EA (BTCUSD XM) ===\n";
+   text += "Symbol: " + _Symbol + "\n";
    text += "Timeframe: " + StringSubstr(EnumToString(InpTimeframe), 7) + "\n";
    text += "EMA Period: " + IntegerToString(InpEMAPeriod) + "\n";
    text += "Min Upper Wick %: " + DoubleToString(InpMinUpperWickPct, 1) + "%\n";
@@ -261,7 +281,7 @@ void UpdateDashboard()
       text += "Signal Status: IDLE (No active breakout pending)\n";
    }
 
-   text += "Position Open: " + (IsPositionOpen() ? "YES" : "NO") + "\n";
+   text += "Active Position: " + (IsPositionOpen() ? "YES" : "NO") + "\n";
    text += "Account Balance: " + DoubleToString(AccountInfoDouble(ACCOUNT_BALANCE), 2) + "\n";
 
    Comment(text);
@@ -272,6 +292,14 @@ void UpdateDashboard()
 //+------------------------------------------------------------------+
 void OnTick()
 {
+   // Always guarantee only one open position under this magic number is processed
+   if(IsPositionOpen())
+   {
+      m_signal_active = false; // Disable breakout tracking when position is already open
+      UpdateDashboard();
+      return;
+   }
+
    // Check for new bar
    datetime current_bar_time = GetCurrentBarTime();
    if(current_bar_time == 0) return; // Wait for valid connection/time
@@ -284,7 +312,7 @@ void OnTick()
       // If we had an active signal on the previous bar, it is now expired/ignored because the next candle has completed.
       if(m_signal_active)
       {
-         Print("Signal expired. Low (", m_signal_low, ") was not broken during the immediate next candle.");
+         Print("[Expiry] Signal expired. Low (", m_signal_low, ") was not broken during the immediate next candle.");
          m_signal_active = false;
       }
 
@@ -303,18 +331,18 @@ void OnTick()
          {
             m_signal_time = time_buf[0];
          }
-         Print("New Signal Candle Detected! High: ", m_signal_high, ", Low: ", m_signal_low, ", Time: ", m_signal_time);
+         Print("[Signal] New Signal Candle Detected! High: ", m_signal_high, ", Low: ", m_signal_low, ", Time: ", m_signal_time);
       }
    }
 
    // Check for breakout entry if signal is active
    if(m_signal_active)
    {
-      // Check if we already have an open position from this strategy
-      if(!IsPositionOpen())
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+      if(bid > 0 && bid < m_signal_low)
       {
-         double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-         if(bid > 0 && bid < m_signal_low)
+         // Double safety check right before ordering
+         if(!IsPositionOpen())
          {
             // Breakout occurred! Execute entry
             double risk_price_gap = m_signal_high - m_signal_low;
@@ -329,7 +357,7 @@ void OnTick()
             tp = NormalizePrice(tp);
             entry_price = NormalizePrice(entry_price);
 
-            Print("Breakout! Entering Sell order. Lots: ", lots, ", Entry Price: ", entry_price, ", SL: ", sl, ", TP: ", tp);
+            Print("[Entry] Breakout! Entering Sell order. Symbol: ", _Symbol, ", Lots: ", lots, ", Entry Price: ", entry_price, ", SL: ", sl, ", TP: ", tp);
 
             if(m_trade.Sell(lots, _Symbol, entry_price, sl, tp, "Flexible Rejection Sell"))
             {
@@ -338,14 +366,13 @@ void OnTick()
             }
             else
             {
-               Print("Error placing Sell order: ", GetLastError());
+               Print("[Error] Error placing Sell order: ", GetLastError());
             }
          }
-      }
-      else
-      {
-         // Position is already open, deactivate breakout check
-         m_signal_active = false;
+         else
+         {
+            m_signal_active = false;
+         }
       }
    }
 
