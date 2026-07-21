@@ -2,9 +2,10 @@
 //|                                  FlexibleUpperWickRejectionEA.mq5|
 //|                                                            Jules |
 //|                                                                  |
-//| Optimized for: GOLD (XAUUSD) on XM Platform                      |
+//| Optimized for: GOLD.i# / GOLD (XAUUSD) on XM Platform            |
 //| Features:                                                        |
 //| - Strictly 1 open position at a time (zero double entries).      |
+//| - Anti-Race Lock on orders (cannot double-trigger on rapid ticks)|
 //| - Custom candle geometry: Rejection red candle with upper wick   |
 //|   minimum more than 50% (or configurable) of total candle range.  |
 //| - Previous candle must be green.                                 |
@@ -16,7 +17,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      ""
-#property version   "1.20"
+#property version   "1.30"
 
 #include <Trade\Trade.mqh>
 
@@ -27,8 +28,8 @@ input int             InpEMAPeriod      = 21;              // EMA Period Close-b
 input ENUM_MA_METHOD  InpMAMethod       = MODE_EMA;        // MA Method
 input ENUM_APPLIED_PRICE InpAppliedPrice = PRICE_CLOSE;     // Applied Price
 input double          InpMinUpperWickPct= 50.0;            // Min Upper Wick % of candle (default >=50%)
-input double          InpMinCandlePoints = 50.0;           // Ignore tiny candles: Min range in Points (e.g. 50 points = $0.50 on GOLD)
-input double          InpMinCandlePct    = 0.02;           // Ignore tiny candles: Min range as % of close (0 to disable)
+input double          InpMinCandlePoints = 50.0;           // Ignore tiny candles: Min range in Points (e.g. 50 points = $0.50 on GOLD.i#)
+input double          InpMinCandlePct    = 0.05;           // Ignore tiny candles: Min range as % of close (0 to disable)
 
 input group "=== Risk Management ==="
 input double          InpLotSize        = 0.1;             // Lot Size (if fixed lot size)
@@ -36,7 +37,7 @@ input bool            InpUseRiskPercent = false;           // Use Risk % sizing
 input double          InpRiskPercent    = 1.0;             // Risk % per trade of Account Balance
 input double          InpRiskReward     = 2.0;             // Risk to Reward Ratio (e.g. 2.0 for 1:2, 1.0 for 1:1)
 input ulong           InpMagicNumber    = 881234;          // Unique Magic Number to identify trades
-input ulong           InpSlippage       = 15;              // Slippage in points (optimized for GOLD volatility)
+input ulong           InpSlippage       = 10;              // Slippage in points (optimized for GOLD.i# volatility)
 
 //--- Globals
 CTrade      m_trade;
@@ -263,7 +264,7 @@ bool CheckSignalCandle(double &out_high, double &out_low)
 //+------------------------------------------------------------------+
 void UpdateDashboard()
 {
-   string text = "=== Flexible Upper Wick Rejection EA (GOLD XAUUSD) ===\n";
+   string text = "=== Flexible Upper Wick Rejection EA (GOLD.i# XM) ===\n";
    text += "Symbol: " + _Symbol + "\n";
    text += "Timeframe: " + StringSubstr(EnumToString(InpTimeframe), 7) + "\n";
    text += "EMA Period: " + IntegerToString(InpEMAPeriod) + "\n";
@@ -344,6 +345,11 @@ void OnTick()
          // Double safety check right before ordering
          if(!IsPositionOpen())
          {
+            // --- ANTI-RACE LOCK PATTERN ---
+            // Turn off signal active state IMMEDIATELY before placing order to prevent race conditions
+            // from multi-ticking during trade processing.
+            m_signal_active = false;
+
             // Breakout occurred! Execute entry
             double risk_price_gap = m_signal_high - m_signal_low;
             double lots = CalculateLotSize(risk_price_gap);
@@ -359,14 +365,11 @@ void OnTick()
 
             Print("[Entry] Breakout! Entering Sell order. Symbol: ", _Symbol, ", Lots: ", lots, ", Entry Price: ", entry_price, ", SL: ", sl, ", TP: ", tp);
 
-            if(m_trade.Sell(lots, _Symbol, entry_price, sl, tp, "Flexible Rejection Sell"))
-            {
-               // Reset signal after entry is successfully processed
-               m_signal_active = false;
-            }
-            else
+            if(!m_trade.Sell(lots, _Symbol, entry_price, sl, tp, "Flexible Rejection Sell"))
             {
                Print("[Error] Error placing Sell order: ", GetLastError());
+               // Re-enable signal active state ONLY on complete trade placement failure
+               m_signal_active = true;
             }
          }
          else
