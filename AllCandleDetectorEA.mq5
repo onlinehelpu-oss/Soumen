@@ -5,8 +5,8 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Trading Robot"
 #property link      "https://www.mql5.com"
-#property version   "1.00"
-#property description "MT5 Candle Detector Expert Advisor for Patterns C2-C7 and General Rejections"
+#property version   "2.00"
+#property description "Unified BTCUSD Rejection Candle Detector and Breakout Strategy for XM Broker"
 #property strict
 
 #include <Trade\Trade.mqh>
@@ -14,10 +14,10 @@
 #include <Trade\PositionInfo.mqh>
 
 //--- INPUT PARAMETERS
-input group "=== Detection Settings ==="
-input ENUM_TIMEFRAMES InpTimeframe         = PERIOD_CURRENT;  // Timeframe
-input double          InpMinCandlePoints   = 0.0;             // Min Candle Range in Points (0 to disable)
-input bool            InpRequirePrevGreen  = true;            // Previous Candle (shift=2) must be GREEN
+input group "=== Strategy Parameters ==="
+input ENUM_TIMEFRAMES InpTimeframe         = PERIOD_M15;      // Time Frame (1m, 3m, 5m, 15m, 30m, 1h, 1d configurable)
+input double          InpMinCandlePoints   = 1500.0;          // Ignore Tiny Candle: Min Range in Points (1500 points = $15.00 for BTCUSD on XM)
+input bool            InpRequirePrevGreen  = true;            // Previous candle of signal candle must be green
 input bool            InpUseEMAFilter      = false;           // Use EMA Filter? (High above EMA, Close below EMA)
 input int             InpEMAPeriod         = 21;              // EMA Period Close-basis
 input ENUM_MA_METHOD  InpEMAMethod         = MODE_EMA;        // EMA MA Method
@@ -44,21 +44,19 @@ input bool            InpDrawLabels        = true;            // Draw text label
 input color           InpArrowColor        = clrRed;          // Arrow Color
 input color           InpTextColor         = clrLightSalmon;  // Text Label Color
 
-input group "=== Position Sizing & Trading ==="
-input bool            InpEnableTrading     = false;           // Enable auto-trading? (Set true to place orders)
-input double          InpLotSize           = 0.1;             // Fixed Lot Size
+input group "=== Risk Management & Execution ==="
+input bool            InpEnableTrading     = true;            // Enable Trading (Set true to auto-trade breakouts)
+input double          InpLotSize           = 0.1;             // Fixed Lot Size for BTCUSD
 input bool            InpUseRiskPercent    = false;           // Size lots based on account risk %
 input double          InpRiskPercent       = 1.0;             // Risk % of Balance (used if UseRiskPercent = true)
-input int             InpEntryBuffer       = 0;               // Entry Buffer (Points below Signal Low to trigger)
-input int             InpSLBuffer          = 0;               // Stop Loss Buffer (Points above Signal High to set SL)
-input double          InpRiskReward        = 2.0;             // Risk:Reward ratio (TakeProfit = Entry - R:R * SL_distance)
+input double          InpRiskReward        = 2.0;             // Target Risk:Reward Ratio (e.g. 1.0 for 1:1, 2.0 for 1:2)
 input ulong           InpMagicNumber       = 882000;          // Magic Number
-input int             InpSlippage          = 10;              // Slippage (Points)
+input int             InpSlippage          = 30;              // Slippage in points (optimized for BTCUSD volatility)
 
 input group "=== Trailing Stop Settings ==="
 input bool            InpUseTrailing       = false;           // Enable Trailing Stop
-input int             InpTrailingStart     = 200;             // Trailing Start (Points)
-input int             InpTrailingStep      = 50;              // Trailing Step (Points)
+input int             InpTrailingStart     = 1000;            // Trailing Start (Points, e.g. 1000 = $10.00 for BTCUSD)
+input int             InpTrailingStep      = 200;             // Trailing Step (Points, e.g. 200 = $2.00 for BTCUSD)
 
 //--- GLOBALS
 CTrade         m_trade;
@@ -108,7 +106,6 @@ int OnInit()
    PrintFormat("[Init] All Candle Detector EA successfully loaded on %s on timeframe %s. Trading enabled: %s",
                _Symbol, EnumToString(InpTimeframe), string(InpEnableTrading));
 
-   EventSetTimer(1);
    return(INIT_SUCCEEDED);
 }
 
@@ -121,7 +118,6 @@ void OnDeinit(const int reason)
    {
       IndicatorRelease(m_ema_handle);
    }
-   EventKillTimer();
    Print("[Deinit] EA unloaded.");
 }
 
@@ -347,6 +343,8 @@ void CheckForSignal()
    // Filter tiny candles by points
    if(InpMinCandlePoints > 0 && (range / m_symbol.Point()) < InpMinCandlePoints)
    {
+      PrintFormat("[Filtered] Candle at %s has range of %.2f points, which is below Min Range (%.2f points). Ignored.",
+                  TimeToString(t), (range / m_symbol.Point()), InpMinCandlePoints);
       return;
    }
 
@@ -355,7 +353,12 @@ void CheckForSignal()
    {
       double prev_o = GetOpen(2);
       double prev_c = GetClose(2);
-      if(prev_c <= prev_o) return;
+      if(prev_c <= prev_o)
+      {
+         PrintFormat("[Filtered] Candle at %s rejected: previous candle was not green (Open: %.2f, Close: %.2f).",
+                     TimeToString(t), prev_o, prev_c);
+         return;
+      }
    }
 
    // Calculate percentages and find if matches a specific pattern
@@ -381,7 +384,7 @@ void CheckForSignal()
    }
 
    // Log detailed candle profile
-   PrintFormat("[Bar Scan] Time: %s | O: %.5f H: %.5f L: %.5f C: %.5f | UW: %.1f%%, Body: %.1f%%, LW: %.1f%% | Pattern: %s",
+   PrintFormat("[Bar Scan] Time: %s | O: %.2f H: %.2f L: %.2f C: %.2f | UW: %.1f%%, Body: %.1f%%, LW: %.1f%% | Pattern: %s",
                TimeToString(t), o, h, l, c, uw_pct, body_pct, lw_pct, pattern);
 
    if(!isMatch) return;
@@ -394,7 +397,7 @@ void CheckForSignal()
       {
          if(!(h > emaVal[0] && c < emaVal[0]))
          {
-            PrintFormat("   Signal %s at %s filtered by EMA (EMA=%.5f, High=%.5f, Close=%.5f)",
+            PrintFormat("   Signal %s at %s filtered by EMA (EMA=%.2f, High=%.2f, Close=%.2f)",
                         pattern, TimeToString(t), emaVal[0], h, c);
             return;
          }
@@ -412,7 +415,7 @@ void CheckForSignal()
    m_signal_time = t;
    m_signal_pattern = pattern;
 
-   PrintFormat("[SIGNAL DETECTED] %s pattern found on %s at %s! High: %.5f, Low: %.5f",
+   PrintFormat("[SIGNAL DETECTED] %s pattern found on %s at %s! High: %.2f, Low: %.2f",
                pattern, _Symbol, TimeToString(t), h, l);
 
    // Draw Chart Objects
@@ -461,7 +464,7 @@ void CheckForBreakout()
    // The breakout trigger is ONLY valid for the next immediate candle
    if(current_bar_start > m_signal_time + PeriodSeconds(InpTimeframe))
    {
-      PrintFormat("[Breakout Timeout] Signal candle from %s has expired. Discarding signal.",
+      PrintFormat("[Signal Invalidated] Next immediate candle did not break low of signal candle from %s. Discarding signal.",
                   TimeToString(m_signal_time));
       m_signal_active = false;
       return;
@@ -475,36 +478,35 @@ void CheckForBreakout()
    }
 
    double bid = m_symbol.Bid();
-   double triggerPrice = m_signal_low - InpEntryBuffer * m_symbol.Point();
+   double triggerPrice = m_signal_low; // Entry exactly at the signal candle low break
 
-   // Breakout condition: Bid price falls below the signal low (minus buffer)
+   // Breakout condition: Bid price falls below or equals the signal low
    if(bid <= triggerPrice)
    {
-      PrintFormat("[Breakout Triggered] Bid %.5f <= Low %.5f. Executing Sell order.", bid, triggerPrice);
+      PrintFormat("[Breakout Triggered] Bid %.2f <= Low %.2f. Executing Sell order.", bid, triggerPrice);
 
-      // We turn off signal active immediately to act as an Anti-Race Lock
+      // Turn off signal active immediately as an Anti-Race Lock
       m_signal_active = false;
 
       SetTradeFillingMode();
 
-      double stopLossPoints = (m_signal_high + InpSLBuffer * m_symbol.Point()) - triggerPrice;
+      double stopLossPrice = m_signal_high; // Stop loss exactly at signal candle high
+      double stopLossPoints = stopLossPrice - triggerPrice;
       if(stopLossPoints <= 0) stopLossPoints = 100 * m_symbol.Point();
 
       double lot = CalculateLotSize(stopLossPoints / m_symbol.Point());
-
-      double sl = m_signal_high + InpSLBuffer * m_symbol.Point();
-      double tp = triggerPrice - (stopLossPoints * InpRiskReward);
+      double tpPrice = triggerPrice - (stopLossPoints * InpRiskReward); // Target 1:1, 1:2 configurable
 
       // Normalize SL and TP
-      sl = NormalizeDouble(sl, _Digits);
-      tp = NormalizeDouble(tp, _Digits);
+      stopLossPrice = NormalizeDouble(stopLossPrice, _Digits);
+      tpPrice = NormalizeDouble(tpPrice, _Digits);
 
-      if(m_trade.Sell(lot, _Symbol, bid, sl, tp, "Breakout " + m_signal_pattern))
+      if(m_trade.Sell(lot, _Symbol, bid, stopLossPrice, tpPrice, "Breakout " + m_signal_pattern))
       {
          if(m_trade.ResultRetcode() == 10009 || m_trade.ResultRetcode() == 10008)
          {
-            PrintFormat("[TRADE SUCCESS] Short position entered successfully. Ticket: %I64u, Lot: %.2f, SL: %.5f, TP: %.5f",
-                        m_trade.ResultDeal(), lot, sl, tp);
+            PrintFormat("[TRADE SUCCESS] Short position entered successfully. Ticket: %I64u, Lot: %.2f, SL: %.2f, TP: %.2f",
+                        m_trade.ResultDeal(), lot, stopLossPrice, tpPrice);
          }
          else
          {
@@ -553,7 +555,7 @@ void ManageTrailingStop()
                   {
                      if(m_trade.PositionModify(m_position.Ticket(), newSL, m_position.TakeProfit()))
                      {
-                        PrintFormat("[Trailing Stop] Position %I64u Stop Loss moved from %.5f to %.5f (Ask: %.5f)",
+                        PrintFormat("[Trailing Stop] Position %I64u Stop Loss moved from %.2f to %.2f (Ask: %.2f)",
                                     m_position.Ticket(), currentSL, newSL, ask);
                      }
                   }
@@ -574,12 +576,4 @@ void OnTick()
    CheckForSignal();
    CheckForBreakout();
    ManageTrailingStop();
-}
-
-//+------------------------------------------------------------------+
-//| Timer function for responsive position trailing                 |
-//+------------------------------------------------------------------+
-void OnTimer()
-{
-   // No high-frequency logic needed on timer, but keeps things alive and responsive
 }
