@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                                                    New shoot.mq5 |
+//|                                         AllCandleDetectorEA.mq5 |
 //|                                  Copyright 2024, Trading Robot |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
@@ -268,7 +268,7 @@ string GetCandlePatternName(double O, double H, double L, double C, double &uw_p
    // Rejection candle must be red (bearish close < open)
    if(C >= O) return "None";
 
-   // Pattern C2 (UW=75.3%, Body=24.1%, LW=0.6%)
+   // Pattern C2 (UW=75.3%, Body=24.1%, LW=0.6%) - support small/zero lower wick
    if(InpDetectC2 &&
       uw_pct >= 70.0 && uw_pct <= 80.0 &&
       body_pct >= 18.0 && body_pct <= 30.0 &&
@@ -277,7 +277,7 @@ string GetCandlePatternName(double O, double H, double L, double C, double &uw_p
       return "C2";
    }
 
-   // Pattern C3 (UW=28.4%, Body=67.3%, LW=4.3%)
+   // Pattern C3 (UW=28.4%, Body=67.3%, LW=4.3%) - support small/zero lower wick
    if(InpDetectC3 &&
       uw_pct >= 23.0 && uw_pct <= 33.0 &&
       body_pct >= 62.0 && body_pct <= 72.0 &&
@@ -286,38 +286,38 @@ string GetCandlePatternName(double O, double H, double L, double C, double &uw_p
       return "C3";
    }
 
-   // Pattern C4 (UW=41.1%, Body=45.7%, LW=13.2%)
+   // Pattern C4 (UW=41.1%, Body=45.7%, LW=13.2%) - relaxed minimum lower wick to 0.0 to support small/zero lower wick
    if(InpDetectC4 &&
       uw_pct >= 36.0 && uw_pct <= 46.0 &&
       body_pct >= 40.0 && body_pct <= 51.0 &&
-      lw_pct >= 9.0 && lw_pct <= 18.0)
+      lw_pct >= 0.0 && lw_pct <= 18.0)
    {
       return "C4";
    }
 
-   // Pattern C5 (UW=34.8%, Body=60.0%, LW=5.2%)
+   // Pattern C5 (UW=34.8%, Body=60.0%, LW=5.2%) - relaxed minimum lower wick to 0.0 to support small/zero lower wick
    if(InpDetectC5 &&
       uw_pct >= 30.0 && uw_pct <= 39.0 &&
       body_pct >= 55.0 && body_pct <= 65.0 &&
-      lw_pct >= 2.0 && lw_pct <= 9.0)
+      lw_pct >= 0.0 && lw_pct <= 9.0)
    {
       return "C5";
    }
 
-   // Pattern C6 (UW=48.9%, Body=46.6%, LW=4.5%)
+   // Pattern C6 (UW=48.9%, Body=46.6%, LW=4.5%) - relaxed minimum lower wick to 0.0 to support small/zero lower wick
    if(InpDetectC6 &&
       uw_pct >= 44.0 && uw_pct <= 54.0 &&
       body_pct >= 41.0 && body_pct <= 52.0 &&
-      lw_pct >= 1.0 && lw_pct <= 8.0)
+      lw_pct >= 0.0 && lw_pct <= 8.0)
    {
       return "C6";
    }
 
-   // Pattern C7 (UW=77.8%, Body=14.4%, LW=7.8%)
+   // Pattern C7 (UW=77.8%, Body=14.4%, LW=7.8%) - relaxed minimum lower wick to 0.0 to support small/zero lower wick
    if(InpDetectC7 &&
       uw_pct >= 73.0 && uw_pct <= 83.0 &&
       body_pct >= 10.0 && body_pct <= 18.0 &&
-      lw_pct >= 4.0 && lw_pct <= 12.0)
+      lw_pct >= 0.0 && lw_pct <= 12.0)
    {
       return "C7";
    }
@@ -382,7 +382,7 @@ void CheckForSignal()
       if(c < o && // Rejection candle must be red (bearish close < open)
          uw_pct >= InpUpperWickMin && uw_pct <= InpUpperWickMax &&
          body_pct >= InpBodyMin && body_pct <= InpBodyMax &&
-         lw_pct >= 0.0 && lw_pct <= InpLowerWickMax)
+         lw_pct >= 0.0 && lw_pct <= InpLowerWickMax) // lw_pct starts at 0.0, supporting zero lower wick!
       {
          // Rejection candle must be long upper wick (UW is strictly the longest component of the candle)
          if(!InpUpperWickMustBeLongest || (uw_pct > body_pct && uw_pct > lw_pct))

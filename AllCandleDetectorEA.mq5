@@ -286,38 +286,38 @@ string GetCandlePatternName(double O, double H, double L, double C, double &uw_p
       return "C3";
    }
 
-   // Pattern C4 (UW=41.1%, Body=45.7%, LW=13.2%)
+   // Pattern C4 (UW=41.1%, Body=45.7%, LW=13.2%) - relaxed minimum lower wick to 0.0 to support small/zero lower wick
    if(InpDetectC4 &&
       uw_pct >= 36.0 && uw_pct <= 46.0 &&
       body_pct >= 40.0 && body_pct <= 51.0 &&
-      lw_pct >= 9.0 && lw_pct <= 18.0)
+      lw_pct >= 0.0 && lw_pct <= 18.0)
    {
       return "C4";
    }
 
-   // Pattern C5 (UW=34.8%, Body=60.0%, LW=5.2%)
+   // Pattern C5 (UW=34.8%, Body=60.0%, LW=5.2%) - relaxed minimum lower wick to 0.0 to support small/zero lower wick
    if(InpDetectC5 &&
       uw_pct >= 30.0 && uw_pct <= 39.0 &&
       body_pct >= 55.0 && body_pct <= 65.0 &&
-      lw_pct >= 2.0 && lw_pct <= 9.0)
+      lw_pct >= 0.0 && lw_pct <= 9.0)
    {
       return "C5";
    }
 
-   // Pattern C6 (UW=48.9%, Body=46.6%, LW=4.5%)
+   // Pattern C6 (UW=48.9%, Body=46.6%, LW=4.5%) - relaxed minimum lower wick to 0.0 to support small/zero lower wick
    if(InpDetectC6 &&
       uw_pct >= 44.0 && uw_pct <= 54.0 &&
       body_pct >= 41.0 && body_pct <= 52.0 &&
-      lw_pct >= 1.0 && lw_pct <= 8.0)
+      lw_pct >= 0.0 && lw_pct <= 8.0)
    {
       return "C6";
    }
 
-   // Pattern C7 (UW=77.8%, Body=14.4%, LW=7.8%)
+   // Pattern C7 (UW=77.8%, Body=14.4%, LW=7.8%) - relaxed minimum lower wick to 0.0 to support small/zero lower wick
    if(InpDetectC7 &&
       uw_pct >= 73.0 && uw_pct <= 83.0 &&
       body_pct >= 10.0 && body_pct <= 18.0 &&
-      lw_pct >= 4.0 && lw_pct <= 12.0)
+      lw_pct >= 0.0 && lw_pct <= 12.0)
    {
       return "C7";
    }
