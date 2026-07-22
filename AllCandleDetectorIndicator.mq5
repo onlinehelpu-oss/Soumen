@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Trading Robot"
 #property link      "https://www.mql5.com"
-#property version   "1.00"
+#property version   "3.00"
 #property description "MT5 Candle Detector Indicator for Patterns C2-C7 and General Rejections"
 #property indicator_chart_window
 #property indicator_buffers 0
@@ -14,7 +14,7 @@
 
 //--- INPUT PARAMETERS
 input group "=== Detection Settings ==="
-input double          InpMinCandlePoints   = 0.0;             // Min Candle Range in Points (0 to disable)
+input double          InpMinCandlePoints   = 1500.0;          // Ignore Tiny Candle: Min Candle Range in Points (1500 points = $15.00 for BTCUSD)
 input bool            InpRequirePrevGreen  = true;            // Previous Candle must be GREEN
 input bool            InpUseEMAFilter      = false;           // Use EMA Filter? (High above EMA, Close below EMA)
 input int             InpEMAPeriod         = 21;              // EMA Period Close-basis
@@ -30,11 +30,12 @@ input bool            InpDetectC7          = true;            // Detect Pattern 
 input bool            InpDetectGeneral     = true;            // Fallback: Detect General Rejection Shapes
 
 input group "=== General Rejection Bounds ==="
-input double          InpUpperWickMin      = 25.0;            // Upper Wick Min % of total range
-input double          InpUpperWickMax      = 90.0;            // Upper Wick Max % of total range
+input double          InpUpperWickMin      = 50.0;            // Rejection MUST be long upper wick: Min Upper Wick % (default >=50%)
+input double          InpUpperWickMax      = 95.0;            // Upper Wick Max % of total range
 input double          InpBodyMin           = 1.0;             // Body Min % of total range
-input double          InpBodyMax           = 75.0;            // Body Max % of total range
-input double          InpLowerWickMax      = 20.0;            // Lower Wick Max % of total range
+input double          InpBodyMax           = 40.0;            // Body Max % of total range (default <=40% to keep body small)
+input double          InpLowerWickMax      = 25.0;            // Lower Wick Max % of total range
+input bool            InpUpperWickMustBeLongest = true;       // Upper wick must be strictly longer than body and lower wick
 
 input group "=== Chart Visual Settings ==="
 input bool            InpDrawArrows        = true;            // Draw visual arrow above signal candle
@@ -95,7 +96,7 @@ string GetCandlePatternName(double O, double H, double L, double C, double &uw_p
    body_pct = (body      / range) * 100.0;
    lw_pct   = (lowerWick / range) * 100.0;
 
-   // All example patterns (C2-C7) are red (bearish) candles
+   // Rejection candle must be red (bearish close < open)
    if(C >= O) return "None";
 
    // Pattern C2
@@ -218,8 +219,11 @@ int OnCalculate(const int rates_total,
             body_pct >= InpBodyMin && body_pct <= InpBodyMax &&
             lw_pct >= 0.0 && lw_pct <= InpLowerWickMax)
          {
-            pattern = "Rejection";
-            isMatch = true;
+            if(!InpUpperWickMustBeLongest || (uw_pct > body_pct && uw_pct > lw_pct))
+            {
+               pattern = "LongWickRejection";
+               isMatch = true;
+            }
          }
       }
 
