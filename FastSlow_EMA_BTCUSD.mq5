@@ -5,9 +5,9 @@
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      "https://github.com"
-#property version   "1.00"
+#property version   "1.10"
 #property description "Fast-Slow EMA Strategy - BTCUSD"
-#property description "Strict Next Candle Entry and Multi-Condition EMA Breakout Exit"
+#property description "Strict Next Candle Entry on Green Hammer / Pin Bar Signal and Exit EMA Breakout"
 
 //--- Include Trade Standard Library
 #include <Trade\Trade.mqh>
@@ -21,14 +21,17 @@ input int            InpFastEMAPeriod   = 9;              // Fast EMA Period
 input int            InpSlowEMAPeriod   = 15;             // Slow EMA Period
 input int            InpExitEMAPeriod   = 50;             // Exit EMA Period
 input double         InpEMABuffer       = 0.0;            // EMA Buffer in points (e.g. 0.0)
-input bool           InpRequireGreenLong= true;           // Require Green Signal Candle for Long
-input bool           InpRequireRedShort = true;           // Require Red Signal Candle for Short
 input double         InpMinCandlePct    = 0.0;            // Min Candle Range % (0.0 to disable)
 input double         InpMinCandlePoints = 0.0;            // Min Candle Range in Points (0.0 to disable)
 
+input group "=== Hammer / Pin Bar Geometry (Flexible Settings) ==="
+input double         InpMinLowerWickPct = 50.0;           // Min Lower Wick (% of total range)
+input double         InpMaxBodyPct      = 30.0;           // Max Body Size (% of total range)
+input double         InpMaxUpperWickPct = 20.0;           // Max Upper Wick (% of total range)
+
 enum ENUM_SL_MODE {
-   SL_MODE_SIGNAL, // Signal Candle Extreme (Low/High)
-   SL_MODE_SWING   // Swing Extreme (Low/High)
+   SL_MODE_SIGNAL, // Signal Candle Extreme (Low)
+   SL_MODE_SWING   // Swing Extreme (Low)
 };
 
 input group "=== Risk Management ==="
@@ -51,16 +54,13 @@ int m_handle_exit_ema = INVALID_HANDLE;
 datetime m_last_bar_time           = 0;
 
 bool     m_long_signal_active      = false;
-bool     m_short_signal_active     = false;
 datetime m_signal_candle_time      = 0;
 double   m_signal_candle_high      = 0.0;
 double   m_signal_candle_low       = 0.0;
 
 bool     m_long_exit_pending       = false;
-bool     m_short_exit_pending      = false;
 datetime m_exit_signal_candle_time = 0;
 double   m_exit_signal_candle_low  = 0.0;
-double   m_exit_signal_candle_high = 0.0;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -83,7 +83,7 @@ int OnInit()
    //--- Pre-load bar time to prevent trigger on first tick
    m_last_bar_time = GetBarTime(0);
 
-   Print("FastSlow_EMA_BTCUSD EA initialized successfully.");
+   Print("FastSlow_EMA_BTCUSD EA with Green Hammer/Pin Bar pattern initialized successfully.");
    return INIT_SUCCEEDED;
 }
 
@@ -145,6 +145,35 @@ bool CheckNewBar()
 }
 
 //+------------------------------------------------------------------+
+//| Flexible Green Hammer / Pin Bar Detector                         |
+//+------------------------------------------------------------------+
+bool IsGreenHammerOrPinBar(double open_val, double high_val, double low_val, double close_val)
+{
+   // Must be a green candle
+   if(close_val < open_val) return false;
+
+   double total_range = high_val - low_val;
+   if(total_range <= 0.0) return false;
+
+   // Calculate candle segments
+   double body_size = close_val - open_val;
+   double upper_wick = high_val - close_val;
+   double lower_wick = open_val - low_val;
+
+   // Convert to percentages of total range
+   double body_pct = (body_size / total_range) * 100.0;
+   double upper_wick_pct = (upper_wick / total_range) * 100.0;
+   double lower_wick_pct = (lower_wick / total_range) * 100.0;
+
+   // Check flexible thresholds
+   if(lower_wick_pct < InpMinLowerWickPct) return false;
+   if(body_pct > InpMaxBodyPct) return false;
+   if(upper_wick_pct > InpMaxUpperWickPct) return false;
+
+   return true;
+}
+
+//+------------------------------------------------------------------+
 //| Evaluate finished candle signals                                 |
 //+------------------------------------------------------------------+
 void EvaluateNewCandleSignals()
@@ -178,49 +207,24 @@ void EvaluateNewCandleSignals()
          m_long_signal_active = false;
          Print("Long breakout signal expired. Next candle failed to trigger.");
       }
-      if(m_short_signal_active && m_signal_candle_time != time_val) {
-         m_short_signal_active = false;
-         Print("Short breakout signal expired. Next candle failed to trigger.");
-      }
 
       // BULLISH Strict Body Cross
       bool bull_ema_ok = fast_ema > slow_ema;
       bool bull_body_opens_below = open_val < MathMin(fast_ema, slow_ema);
       bool bull_body_closes_above = close_val > MathMax(fast_ema, slow_ema) + InpEMABuffer;
-      bool bull_green_ok = !InpRequireGreenLong || (close_val > open_val);
+      bool is_hammer = IsGreenHammerOrPinBar(open_val, high_val, low_val, close_val);
 
-      if(bull_ema_ok && bull_body_opens_below && bull_body_closes_above && bull_green_ok && range_ok) {
+      if(bull_ema_ok && bull_body_opens_below && bull_body_closes_above && is_hammer && range_ok) {
          m_long_signal_active = true;
-         m_short_signal_active = false;
          m_signal_candle_time = time_val;
          m_signal_candle_high = high_val;
          m_signal_candle_low = low_val;
 
-         Print("=== BULLISH SIGNAL DETECTED ===");
+         Print("=== BULLISH GREEN HAMMER / PIN BAR SIGNAL DETECTED ===");
          Print("  Time: ", TimeToString(time_val));
          Print("  Fast EMA: ", fast_ema, " | Slow EMA: ", slow_ema);
          Print("  OHLC: O=", open_val, " H=", high_val, " L=", low_val, " C=", close_val);
          Print("  Trigger High Threshold: ", m_signal_candle_high);
-      }
-
-      // BEARISH Strict Body Cross
-      bool bear_ema_ok = fast_ema < slow_ema;
-      bool bear_body_opens_above = open_val > MathMax(fast_ema, slow_ema);
-      bool bear_body_closes_below = close_val < MathMin(fast_ema, slow_ema) - InpEMABuffer;
-      bool bear_green_ok = !InpRequireRedShort || (close_val < open_val);
-
-      if(bear_ema_ok && bear_body_opens_above && bear_body_closes_below && bear_green_ok && range_ok) {
-         m_short_signal_active = true;
-         m_long_signal_active = false;
-         m_signal_candle_time = time_val;
-         m_signal_candle_high = high_val;
-         m_signal_candle_low = low_val;
-
-         Print("=== BEARISH SIGNAL DETECTED ===");
-         Print("  Time: ", TimeToString(time_val));
-         Print("  Fast EMA: ", fast_ema, " | Slow EMA: ", slow_ema);
-         Print("  OHLC: O=", open_val, " H=", high_val, " L=", low_val, " C=", close_val);
-         Print("  Trigger Low Threshold: ", m_signal_candle_low);
       }
    }
    //--- 2. Position Open: Scan for EMA EXIT signal
@@ -243,22 +247,6 @@ void EvaluateNewCandleSignals()
             Print("  Exit Low Threshold: ", m_exit_signal_candle_low);
          }
       }
-      else if(pos_type == POSITION_TYPE_SELL) {
-         // Short position exit conditions based on Exit EMA
-         bool is_green = close_val > open_val;
-         bool intrabar_down = (open_val > exit_ema) && (low_val < exit_ema);
-         bool closed_above = close_val > exit_ema + InpEMABuffer;
-
-         if(is_green && intrabar_down && closed_above) {
-            m_short_exit_pending = true;
-            m_exit_signal_candle_time = time_val;
-            m_exit_signal_candle_high = high_val;
-            Print("=== SHORT POSITION EXIT EMA SIGNAL ===");
-            Print("  Time: ", TimeToString(time_val));
-            Print("  Exit EMA: ", exit_ema);
-            Print("  Exit High Threshold: ", m_exit_signal_candle_high);
-         }
-      }
    }
 }
 
@@ -272,7 +260,6 @@ void ManageState(const MqlTick &tick)
    if(!is_pos_open) {
       // Clear exit flags since no position is open
       m_long_exit_pending = false;
-      m_short_exit_pending = false;
 
       // Handle Long entry breakout
       if(m_long_signal_active) {
@@ -313,7 +300,7 @@ void ManageState(const MqlTick &tick)
 
                // Place Buy order
                double lots = NormalizeVolume(InpLotSize);
-               if(m_trade.Buy(lots, _Symbol, tick.ask, NormalizePrice(sl), NormalizePrice(tp), "Fast-Slow EMA Long")) {
+               if(m_trade.Buy(lots, _Symbol, tick.ask, NormalizePrice(sl), NormalizePrice(tp), "Fast-Slow EMA Hammer Long")) {
                   Print("Long order submitted successfully.");
                } else {
                   Print("Failed to submit Long order. Error: ", m_trade.ResultRetcodeDescription());
@@ -322,60 +309,10 @@ void ManageState(const MqlTick &tick)
             }
          }
       }
-
-      // Handle Short entry breakout
-      if(m_short_signal_active) {
-         datetime current_bar_time = GetBarTime(0);
-         datetime next_bar_expected = m_signal_candle_time + PeriodSeconds(InpTimeframe);
-
-         if(current_bar_time == next_bar_expected) {
-            if(tick.bid < m_signal_candle_low) {
-               Print("Short breakout triggered! Price: ", tick.bid, " < ", m_signal_candle_low);
-
-               //--- Calculate Stop Loss & Take Profit
-               double sl = 0.0;
-               double tp = 0.0;
-
-               if(InpSLMode == SL_MODE_SIGNAL) {
-                  sl = m_signal_candle_high + InpSLBufferPoints;
-               } else if(InpSLMode == SL_MODE_SWING) {
-                  double highs[];
-                  ArraySetAsSeries(highs, true);
-                  if(CopyHigh(_Symbol, InpTimeframe, 1, InpSwingLookback, highs) == InpSwingLookback) {
-                     double swing_high = highs[ArrayMaximum(highs)];
-                     sl = swing_high + InpSLBufferPoints;
-                  } else {
-                     sl = m_signal_candle_high + InpSLBufferPoints;
-                  }
-               }
-
-               double lows[];
-               ArraySetAsSeries(lows, true);
-               if(CopyLow(_Symbol, InpTimeframe, 1, InpTPLookback, lows) == InpTPLookback) {
-                  tp = lows[ArrayMinimum(lows)];
-               } else {
-                  tp = m_signal_candle_low - (m_signal_candle_high - m_signal_candle_low) * 2.0; // Fallback 1:2
-               }
-
-               // Anti-Race Lock
-               m_short_signal_active = false;
-
-               // Place Sell order
-               double lots = NormalizeVolume(InpLotSize);
-               if(m_trade.Sell(lots, _Symbol, tick.bid, NormalizePrice(sl), NormalizePrice(tp), "Fast-Slow EMA Short")) {
-                  Print("Short order submitted successfully.");
-               } else {
-                  Print("Failed to submit Short order. Error: ", m_trade.ResultRetcodeDescription());
-                  m_short_signal_active = true; // Restore on error
-               }
-            }
-         }
-      }
    }
    else {
       // Clear pending triggers as a position is already active
       m_long_signal_active = false;
-      m_short_signal_active = false;
 
       int pos_type = GetPositionType();
 
@@ -388,19 +325,6 @@ void ManageState(const MqlTick &tick)
             if(tick.bid < m_exit_signal_candle_low) {
                Print("Long Exit EMA breakout triggered! Price: ", tick.bid, " < ", m_exit_signal_candle_low);
                m_long_exit_pending = false;
-               CloseAllPositions();
-            }
-         }
-      }
-      // Manage Short Exit EMA breakout trigger
-      else if(pos_type == POSITION_TYPE_SELL && m_short_exit_pending) {
-         datetime current_bar_time = GetBarTime(0);
-         datetime next_bar_expected = m_exit_signal_candle_time + PeriodSeconds(InpTimeframe);
-
-         if(current_bar_time >= next_bar_expected) {
-            if(tick.ask > m_exit_signal_candle_high) {
-               Print("Short Exit EMA breakout triggered! Price: ", tick.ask, " > ", m_exit_signal_candle_high);
-               m_short_exit_pending = false;
                CloseAllPositions();
             }
          }
@@ -550,16 +474,13 @@ void UpdateDashboard()
       int pos_type = GetPositionType();
       if(pos_type == POSITION_TYPE_BUY) {
          status_str = "Long Position Active" + (m_long_exit_pending ? " (Exit Pending)" : "");
-      } else if(pos_type == POSITION_TYPE_SELL) {
-         status_str = "Short Position Active" + (m_short_exit_pending ? " (Exit Pending)" : "");
       }
    } else {
       if(m_long_signal_active) status_str = "Long Signal Pending Breakout (> " + DoubleToString(m_signal_candle_high, 2) + ")";
-      else if(m_short_signal_active) status_str = "Short Signal Pending Breakout (< " + DoubleToString(m_signal_candle_low, 2) + ")";
    }
 
    string text = "==================================================\n" +
-                 "          FAST-SLOW EMA STRATEGY (BTCUSD)         \n" +
+                 "       FAST-SLOW EMA HAMMER STRATEGY (BTCUSD)     \n" +
                  "==================================================\n" +
                  " Symbol: " + _Symbol + "\n" +
                  " Timeframe: " + EnumToString(InpTimeframe) + "\n" +
@@ -569,7 +490,7 @@ void UpdateDashboard()
                  "--------------------------------------------------\n" +
                  " Status: " + status_str + "\n";
 
-   if(m_long_signal_active || m_short_signal_active) {
+   if(m_long_signal_active) {
       text += " Signal Candle High: " + DoubleToString(m_signal_candle_high, 2) + "\n" +
               " Signal Candle Low:  " + DoubleToString(m_signal_candle_low, 2) + "\n" +
               " Signal Time:        " + TimeToString(m_signal_candle_time, TIME_DATE|TIME_MINUTES) + "\n";
