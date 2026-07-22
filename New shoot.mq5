@@ -18,19 +18,19 @@
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      ""
-#property version   "1.40"
+#property version   "1.50"
 
 #include <Trade\Trade.mqh>
 
 //--- Inputs
 input group "=== Strategy Parameters ==="
-input ENUM_TIMEFRAMES InpTimeframe       = PERIOD_M15;      // Timeframe (e.g. 1m, 3m, 5m, 15m, 30m, 1H, 4H, 1D etc.)
+input ENUM_TIMEFRAMES InpTimeframe       = PERIOD_CURRENT;  // Timeframe (Set to PERIOD_CURRENT to match chart/tester timeframe)
 input int             InpEMAPeriod      = 21;              // EMA Period Close-basis
 input ENUM_MA_METHOD  InpMAMethod       = MODE_EMA;        // MA Method
 input ENUM_APPLIED_PRICE InpAppliedPrice = PRICE_CLOSE;     // Applied Price
 input double          InpMinUpperWickPct= 50.0;            // Min Upper Wick % of candle (default >=50%)
-input double          InpMinCandlePoints = 50.0;           // Ignore tiny candles: Min range in Points (e.g. 50 points = $0.50 on GOLD.i#)
-input double          InpMinCandlePct    = 0.05;           // Ignore tiny candles: Min range as % of close (0 to disable)
+input double          InpMinCandlePoints = 0.0;            // Ignore tiny candles: Min range in Points (0 to disable)
+input double          InpMinCandlePct    = 0.0;            // Ignore tiny candles: Min range as % of close (0 to disable)
 
 input group "=== Risk Management ==="
 input double          InpLotSize        = 0.1;             // Lot Size (if fixed lot size)
@@ -72,7 +72,7 @@ int OnInit()
    m_signal_low = 0;
    m_signal_time = 0;
 
-   Print("[Init] EA successfully initialized on symbol: ", _Symbol);
+   Print("[Init] EA successfully initialized on symbol: ", _Symbol, " using timeframe: ", EnumToString(InpTimeframe));
    return(INIT_SUCCEEDED);
 }
 
