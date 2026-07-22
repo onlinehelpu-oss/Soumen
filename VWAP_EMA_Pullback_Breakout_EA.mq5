@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      "https://github.com/"
-#property version   "1.00"
+#property version   "1.01"
 #property description "VWAP + EMA Trend Pullback Breakout EA"
 
 // Standard Library Includes
@@ -51,7 +51,7 @@ input int               InpEntryBuffer     = 0;           // Entry Buffer (Point
 input int               InpSLBuffer        = 0;           // Stop Loss Buffer (Points)
 input ENUM_RR_PRESETS   InpRiskReward      = RR_1_2;      // Risk Reward Ratio Preset
 input double            InpRiskRewardRatio = 2.0;         // Custom Risk Reward Ratio (if Custom selected)
-input int               InpMinCandlePoints = 50;          // Min Candle Range (Points) to Avoid Tiny Candles
+input int               InpMinCandlePoints = 0;           // Min Candle Range (Points) to Avoid Tiny Candles (0 = disabled)
 
 input group "=== MONEY MANAGEMENT ==="
 input ENUM_MM_TYPE      InpMMType          = MM_RISK_PCT; // Money Management Mode
@@ -84,14 +84,13 @@ input int               InpMinsAfterNews   = 15;          // Minutes After News
 CTrade         m_trade;
 CSymbolInfo    m_symbol;
 int            m_ema_handle = INVALID_HANDLE;
-datetime       m_last_bar_time = 0;
 
 // Signal Tracking
 bool           m_signal_active = false;
 datetime       m_signal_candle_time = 0;
 double         m_signal_high = 0;
 double         m_signal_low = 0;
-string         m_last_rejection = "None - Scanning";
+string         m_last_rejection = "Initializing...";
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -144,6 +143,7 @@ int OnInit()
    // Set Timer for dashboard refresh (1-second intervals)
    EventSetTimer(1);
 
+   m_last_rejection = "Scanning for Setup...";
    return INIT_SUCCEEDED;
 }
 
@@ -172,40 +172,49 @@ void OnTick()
 {
    m_symbol.RefreshRates();
 
-   // Ensure history is loaded
-   if(iBars(_Symbol, InpSignalTimeframe) < InpEMAPeriod + 50)
-   {
-      m_last_rejection = "Waiting for historical bars load...";
-      UpdateDashboard();
-      return;
-   }
-
    double ask = m_symbol.Ask();
    double bid = m_symbol.Bid();
    double point = m_symbol.Point();
 
-   // Check if new bar has opened on the target timeframe
-   datetime current_bar_time = iTime(_Symbol, InpSignalTimeframe, 0);
-   if(current_bar_time != m_last_bar_time)
+   // Fetch Candle 1 OHLC values
+   double open1 = iOpen(_Symbol, InpSignalTimeframe, 1);
+   double close1 = iClose(_Symbol, InpSignalTimeframe, 1);
+   double high1 = iHigh(_Symbol, InpSignalTimeframe, 1);
+   double low1 = iLow(_Symbol, InpSignalTimeframe, 1);
+
+   double ema1 = GetEMAValue(1);
+   double ema2 = GetEMAValue(2);
+   double vwap1 = GetVWAP(1);
+
+   // Validation check: Make sure history and indicator values are ready and non-zero
+   if(open1 <= 0 || close1 <= 0 || high1 <= 0 || low1 <= 0 || ema1 <= 0 || ema2 <= 0 || vwap1 <= 0)
    {
-      m_last_bar_time = current_bar_time;
+      m_last_rejection = "Waiting for history and indicators...";
+      UpdateDashboard();
+      return;
+   }
 
-      // Fetch Bar 1 data
-      double open1 = iOpen(_Symbol, InpSignalTimeframe, 1);
-      double close1 = iClose(_Symbol, InpSignalTimeframe, 1);
-      double high1 = iHigh(_Symbol, InpSignalTimeframe, 1);
-      double low1 = iLow(_Symbol, InpSignalTimeframe, 1);
+   // 1. Manage Active Signal Expiration
+   if(m_signal_active)
+   {
+      datetime last_closed_bar_time = iTime(_Symbol, InpSignalTimeframe, 1);
+      if(last_closed_bar_time > m_signal_candle_time)
+      {
+         m_signal_active = false;
+         m_last_rejection = "Previous breakout expired without entry";
+         Print("VWAP_EMA: Breakout window expired without breakout entry.");
+      }
+   }
 
-      double ema1 = GetEMAValue(1);
-      double ema2 = GetEMAValue(2);
-      double vwap1 = GetVWAP(1);
-
+   // 2. Scan for New Signal if not currently active
+   if(!m_signal_active)
+   {
       // Evaluate Trend Filter: Close > VWAP AND VWAP > EMA AND EMA Rising (EMA1 > EMA2)
       bool trend_ok = (close1 > vwap1) && (vwap1 > ema1) && (ema1 > ema2);
 
       if(trend_ok)
       {
-         // Signal Candle Condition (Cond A: cross VWAP or Cond B: touch/cross EMA)
+         // Signal Candle Condition (Cond A: open below VWAP, close above; Cond B: low below EMA, close above)
          bool condA = (open1 < vwap1 && close1 > vwap1);
          bool condB = (low1 < ema1 && close1 > ema1);
 
@@ -217,53 +226,38 @@ void OnTick()
 
             if(range >= min_range)
             {
-               m_signal_active = true;
-               m_signal_candle_time = iTime(_Symbol, InpSignalTimeframe, 1);
-               m_signal_high = high1;
-               m_signal_low = low1;
-               m_last_rejection = "Setup active - waiting for breakout";
-               Print(StringFormat("VWAP_EMA: New Signal Candle detected at %s. High: %.5f, Low: %.5f. Waiting for breakout above %.5f",
-                     TimeToString(m_signal_candle_time), high1, low1, high1 + InpEntryBuffer * point));
+               datetime candle_time = iTime(_Symbol, InpSignalTimeframe, 1);
+               // Ensure we don't repeatedly trigger on the same candle if we already scanned and it expired
+               if(candle_time != m_signal_candle_time)
+               {
+                  m_signal_active = true;
+                  m_signal_candle_time = candle_time;
+                  m_signal_high = high1;
+                  m_signal_low = low1;
+                  m_last_rejection = "Setup active - waiting for breakout";
+                  Print(StringFormat("VWAP_EMA: New Signal Candle detected at %s. High: %.5f, Low: %.5f. Waiting for breakout above %.5f",
+                        TimeToString(m_signal_candle_time), high1, low1, high1 + InpEntryBuffer * point));
+               }
             }
             else
             {
-               if(!m_signal_active)
-               {
-                  m_last_rejection = StringFormat("Rejected - Tiny candle (Range: %d pts, Min: %d pts)", (int)(range / point), InpMinCandlePoints);
-               }
+               m_last_rejection = StringFormat("Rejected - Tiny candle (Range: %d pts, Min: %d pts)", (int)(range / point), InpMinCandlePoints);
             }
          }
          else
          {
-            if(!m_signal_active)
-            {
-               m_last_rejection = "Bar 1 did not meet Signal Candle criteria (Cond A or B)";
-            }
+            m_last_rejection = "Bar 1 did not meet Signal Candle criteria (Cond A or B)";
          }
       }
       else
       {
-         if(!m_signal_active)
-         {
-            m_last_rejection = "Trend Filter not satisfied (Bullish alignment required)";
-         }
+         m_last_rejection = "Trend Filter not satisfied (Bullish alignment required)";
       }
    }
 
-   // Process active breakout signal
+   // 3. Process Breakout Entry if signal is active
    if(m_signal_active)
    {
-      // Check if breakout window has expired (i.e. the "very next candle" has closed)
-      int shift = iBarShift(_Symbol, InpSignalTimeframe, m_signal_candle_time, true);
-      if(shift > 1)
-      {
-         m_signal_active = false;
-         m_last_rejection = "Previous breakout expired without entry";
-         Print("VWAP_EMA: Breakout window expired without breakout entry.");
-         UpdateDashboard();
-         return;
-      }
-
       // Perform Trading Filter Checks before entering
       if(InpOnePositionOnly && HasOpenPosition())
       {
@@ -394,18 +388,20 @@ double GetVWAP(int idx)
    MqlDateTime dtBar;
    TimeToStruct(barTime, dtBar);
 
-   int max_bars = iBars(_Symbol, InpSignalTimeframe);
-   if(max_bars > 2000) max_bars = 2000; // Limit search to prevent performance lag
+   // We want to find how many bars back we need to go to reach the reset point.
+   // Let's copy a chunk of historical times to search quickly.
+   datetime times[];
+   int search_bars = 2000;
+   int copied_times = CopyTime(_Symbol, InpSignalTimeframe, idx, search_bars, times);
+   if(copied_times <= 0) return 0;
 
-   int start_idx = idx;
+   int limit_idx = 0; // index in times array where reset occurs
 
-   for(int i = idx; i < max_bars; i++)
+   // In times array: index 0 is the bar at 'idx' (newest), index copied_times-1 is the oldest.
+   for(int i = 0; i < copied_times; i++)
    {
-      datetime t = iTime(_Symbol, InpSignalTimeframe, i);
-      if(t == 0) break;
-
       MqlDateTime dtCurrent;
-      TimeToStruct(t, dtCurrent);
+      TimeToStruct(times[i], dtCurrent);
 
       bool isReset = false;
       if(InpVWAPResetMode == VWAP_RESET_DAILY)
@@ -417,11 +413,16 @@ double GetVWAP(int idx)
       }
       else if(InpVWAPResetMode == VWAP_RESET_SESSION)
       {
-         datetime sessionStart = datetime(StringToTime(IntegerToString(dtBar.year) + "." +
-                                                      IntegerToString(dtBar.mon) + "." +
-                                                      IntegerToString(dtBar.day) + " " +
-                                                      InpSessionStart));
-         if(t < sessionStart)
+         MqlDateTime dtSessionStart = dtBar;
+         string start_parts[];
+         if(StringSplit(InpSessionStart, ':', start_parts) == 2)
+         {
+            dtSessionStart.hour = (int)StringToInteger(start_parts[0]);
+            dtSessionStart.min = (int)StringToInteger(start_parts[1]);
+            dtSessionStart.sec = 0;
+         }
+         datetime sessionStart = StructToTime(dtSessionStart);
+         if(times[i] < sessionStart)
          {
             isReset = true;
          }
@@ -429,36 +430,35 @@ double GetVWAP(int idx)
 
       if(isReset)
       {
-         start_idx = i - 1;
+         limit_idx = i; // This bar is before the reset, so we include up to i-1
          break;
       }
-      start_idx = i;
+      limit_idx = i + 1;
    }
 
-   if(start_idx < idx) start_idx = idx;
+   int bars_to_calculate = limit_idx;
+   if(bars_to_calculate <= 0) bars_to_calculate = 1;
+
+   MqlRates rates[];
+   int copied_rates = CopyRates(_Symbol, InpSignalTimeframe, idx, bars_to_calculate, rates);
+   if(copied_rates <= 0) return 0;
 
    double sumPriceVol = 0;
    double sumVol = 0;
    double last_price = 0;
 
-   for(int i = start_idx; i >= idx; i--)
+   for(int i = 0; i < copied_rates; i++)
    {
-      double openPrice = iOpen(_Symbol, InpSignalTimeframe, i);
-      double highPrice = iHigh(_Symbol, InpSignalTimeframe, i);
-      double lowPrice = iLow(_Symbol, InpSignalTimeframe, i);
-      double closePrice = iClose(_Symbol, InpSignalTimeframe, i);
-      long tickVol = iTickVolume(_Symbol, InpSignalTimeframe, i);
-
-      double price = closePrice;
-      if(InpVWAPSource == PRICE_OPEN) price = openPrice;
-      else if(InpVWAPSource == PRICE_HIGH) price = highPrice;
-      else if(InpVWAPSource == PRICE_LOW) price = lowPrice;
-      else if(InpVWAPSource == PRICE_MEDIAN) price = (highPrice + lowPrice) / 2.0;
-      else if(InpVWAPSource == PRICE_TYPICAL) price = (highPrice + lowPrice + closePrice) / 3.0;
-      else if(InpVWAPSource == PRICE_WEIGHTED) price = (highPrice + lowPrice + 2.0 * closePrice) / 4.0;
+      double price = rates[i].close;
+      if(InpVWAPSource == PRICE_OPEN) price = rates[i].open;
+      else if(InpVWAPSource == PRICE_HIGH) price = rates[i].high;
+      else if(InpVWAPSource == PRICE_LOW) price = rates[i].low;
+      else if(InpVWAPSource == PRICE_MEDIAN) price = (rates[i].high + rates[i].low) / 2.0;
+      else if(InpVWAPSource == PRICE_TYPICAL) price = (rates[i].high + rates[i].low + rates[i].close) / 3.0;
+      else if(InpVWAPSource == PRICE_WEIGHTED) price = (rates[i].high + rates[i].low + 2.0 * rates[i].close) / 4.0;
 
       last_price = price;
-      double vol = (double)tickVol;
+      double vol = (double)rates[i].tick_volume;
       if(vol <= 0) vol = 1.0;
 
       sumPriceVol += price * vol;
