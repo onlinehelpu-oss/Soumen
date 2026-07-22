@@ -585,8 +585,8 @@ void ManagePositions()
          if(posType == POSITION_TYPE_BUY)
          {
             double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
-            double currentSL = PositionGetDouble(POSITION_PRICE_SL);
-            double currentTP = PositionGetDouble(POSITION_PRICE_TP);
+            double currentSL = PositionGetDouble(POSITION_SL);
+            double currentTP = PositionGetDouble(POSITION_TP);
 
             bool modified = false;
             double newSL = currentSL;
