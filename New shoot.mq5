@@ -55,6 +55,7 @@ input bool            InpEnableTrading     = true;            // Enable Trading 
 input double          InpLotSize           = 0.1;             // Fixed Lot Size for BTCUSD
 input bool            InpUseRiskPercent    = false;           // Size lots based on account risk %
 input double          InpRiskPercent       = 1.0;             // Risk % of Balance (used if UseRiskPercent = true)
+input int             InpSLBuffer          = 0;               // Stop Loss Buffer in Points (0 to disable)
 input double          InpRiskReward        = 2.0;             // Target Risk:Reward Ratio (e.g. 1.0 for 1:1, 2.0 for 1:2)
 input ulong           InpMagicNumber       = 882000;          // Magic Number
 input int             InpSlippage          = 30;              // Slippage in points (optimized for BTCUSD volatility)
@@ -505,7 +506,11 @@ void CheckForBreakout()
 
       SetTradeFillingMode();
 
-      double stopLossPrice = m_signal_high; // Stoploss: Signal candle high exactly
+      double ask = m_symbol.Ask();
+      double spread = ask - bid;
+      if(spread < 0) spread = 0;
+
+      double stopLossPrice = m_signal_high + InpSLBuffer * m_symbol.Point() + spread; // Stoploss: Signal high + buffer + spread
       double stopLossPoints = stopLossPrice - triggerPrice;
       if(stopLossPoints <= 0) stopLossPoints = 100 * m_symbol.Point();
 
