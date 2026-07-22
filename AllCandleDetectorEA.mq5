@@ -6,7 +6,7 @@
 #property copyright "Copyright 2024, Trading Robot"
 #property link      "https://www.mql5.com"
 #property version   "3.00"
-#property description "MT5 Bearish Rejection Breakout Strategy - BTCUSD on XM Broker"
+#property description "Unified BTCUSD Rejection Candle Breakout Strategy with Chart Dashboard"
 #property strict
 
 //====================================================================
@@ -19,7 +19,7 @@
 //====================================================================
 // INPUT PARAMETERS
 //====================================================================
-input group "=== Strategy Settings ==="
+input group "=== Strategy Parameters ==="
 input ENUM_TIMEFRAMES InpTimeframe         = PERIOD_M15;      // Time Frame (1m, 3m, 5m, 15m, 30m, 1h, 1d configurable)
 input double          InpMinCandlePoints   = 1500.0;          // Ignore Tiny Candle: Min Range in Points (1500 points = $15.00 for BTCUSD on XM)
 input bool            InpRequirePrevGreen  = true;            // Previous candle of signal candle must be green
@@ -114,6 +114,7 @@ int OnInit()
    PrintFormat("[Init] All Candle Detector EA successfully loaded on %s on timeframe %s. Trading enabled: %s",
                _Symbol, EnumToString(InpTimeframe), string(InpEnableTrading));
 
+   DrawDashboard();
    return(INIT_SUCCEEDED);
 }
 
@@ -126,6 +127,7 @@ void OnDeinit(const int reason)
    {
       IndicatorRelease(m_ema_handle);
    }
+   DeleteDashboard();
    Print("[Deinit] EA unloaded.");
 }
 
@@ -456,6 +458,8 @@ void CheckForSignal()
          ObjectSetString(0, labelName, OBJPROP_TOOLTIP, pattern + " signal text");
       }
    }
+
+   DrawDashboard();
 }
 
 //+------------------------------------------------------------------+
@@ -476,6 +480,7 @@ void CheckForBreakout()
       PrintFormat("[Signal Invalidated] Next immediate candle did not break low of signal candle from %s. Discarding signal.",
                   TimeToString(m_signal_time));
       m_signal_active = false;
+      DrawDashboard();
       return;
    }
 
@@ -483,6 +488,7 @@ void CheckForBreakout()
    if(IsPositionOpen())
    {
       m_signal_active = false;
+      DrawDashboard();
       return;
    }
 
@@ -526,6 +532,7 @@ void CheckForBreakout()
       {
          PrintFormat("[TRADE FAILED] Trade execution failed entirely. Error code: %d", GetLastError());
       }
+      DrawDashboard();
    }
 }
 
@@ -572,6 +579,72 @@ void ManageTrailingStop()
             }
          }
       }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| DRAW VISUAL DASHBOARD PANEL                                      |
+//+------------------------------------------------------------------+
+void DrawDashboard()
+{
+   string panelName = "EADashboard_Panel";
+   ObjectDelete(0, panelName);
+
+   if(!InpDrawLabels) return;
+
+   int xStart = 20;
+   int yStart = 40;
+   int yStep = 20;
+   color bgCol = clrDarkSlateGray;
+   color textCol = clrWhite;
+   color accentCol = clrLightSalmon;
+
+   // Background Panel
+   ObjectCreate(0, panelName, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+   ObjectSetInteger(0, panelName, OBJPROP_XDISTANCE, xStart);
+   ObjectSetInteger(0, panelName, OBJPROP_YDISTANCE, yStart);
+   ObjectSetInteger(0, panelName, OBJPROP_XSIZE, 260);
+   ObjectSetInteger(0, panelName, OBJPROP_YSIZE, 160);
+   ObjectSetInteger(0, panelName, OBJPROP_BGCOLOR, bgCol);
+   ObjectSetInteger(0, panelName, OBJPROP_COLOR, clrSilver);
+   ObjectSetInteger(0, panelName, OBJPROP_BORDER_TYPE, BORDER_SUNKEN);
+   ObjectSetInteger(0, panelName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+
+   // Labels
+   string labels[] = {
+      "=== BTCUSD REJECTION EA ===",
+      "Symbol: " + _Symbol,
+      "Time Frame: " + EnumToString(InpTimeframe),
+      "Min Candle Range: " + DoubleToString(InpMinCandlePoints, 1) + " Points",
+      "Risk:Reward Target: 1:" + DoubleToString(InpRiskReward, 1),
+      "Last Signal: " + (m_signal_pattern != "" ? m_signal_pattern : "None"),
+      "Status: " + (m_signal_active ? "Waiting for Breakout" : (IsPositionOpen() ? "Position Active" : "Scanning..."))
+   };
+
+   for(int i=0; i<ArraySize(labels); i++)
+   {
+      string lblName = "EADashboard_Lbl_" + IntegerToString(i);
+      ObjectDelete(0, lblName);
+      ObjectCreate(0, lblName, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, lblName, OBJPROP_XDISTANCE, xStart + 15);
+      ObjectSetInteger(0, lblName, OBJPROP_YDISTANCE, yStart + 12 + (i * yStep));
+      ObjectSetInteger(0, lblName, OBJPROP_COLOR, (i == 0 || i == 6) ? accentCol : textCol);
+      ObjectSetInteger(0, lblName, OBJPROP_FONTSIZE, (i == 0) ? 10 : 9);
+      if(i == 0) ObjectSetInteger(0, lblName, OBJPROP_FONT, "Trebuchet MS");
+      ObjectSetString(0, lblName, OBJPROP_TEXT, labels[i]);
+      ObjectSetInteger(0, lblName, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| DELETE VISUAL DASHBOARD PANEL                                    |
+//+------------------------------------------------------------------+
+void DeleteDashboard()
+{
+   ObjectDelete(0, "EADashboard_Panel");
+   for(int i=0; i<10; i++)
+   {
+      ObjectDelete(0, "EADashboard_Lbl_" + IntegerToString(i));
    }
 }
 
