@@ -30,10 +30,10 @@ enum ENUM_CUSTOM_TIMEFRAME
 input group "---- Pattern Settings ----"
 input bool                 InpEnableHammer       = true;       // Enable Hammer Detection
 input bool                 InpEnablePinBar       = true;       // Enable Pin Bar Detection
-input double               InpHammerLowerWickPct = 70.0;       // Hammer Lower Wick % (Min)
+input double               InpHammerLowerWickPct = 50.0;       // Hammer Lower Wick % (Min)
 input double               InpHammerBodyPct      = 20.0;       // Hammer Body % (Max)
 input double               InpHammerUpperWickPct = 10.0;       // Hammer Upper Wick % (Max)
-input double               InpPinBarLowerWickPct = 55.0;       // Pin Bar Lower Wick % (Min)
+input double               InpPinBarLowerWickPct = 50.0;       // Pin Bar Lower Wick % (Min)
 input double               InpPinBarBodyPct      = 25.0;       // Pin Bar Body % (Max)
 input double               InpPinBarUpperWickPct = 15.0;       // Pin Bar Upper Wick % (Max)
 
