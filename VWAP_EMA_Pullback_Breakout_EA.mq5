@@ -319,9 +319,9 @@ void OnTimer()
 }
 
 //+------------------------------------------------------------------+
-//| Helper: iBarShift implementation for MQL5                        |
+//| Helper: CustomBarShift implementation for MQL5                   |
 //+------------------------------------------------------------------+
-int iBarShift(string symbol, ENUM_TIMEFRAMES timeframe, datetime time, bool exact=false)
+int CustomBarShift(string symbol, ENUM_TIMEFRAMES timeframe, datetime time, bool exact=false)
 {
    datetime t_arr[];
    if(CopyTime(symbol, timeframe, 0, 1, t_arr) <= 0)
@@ -405,9 +405,9 @@ double GetVWAP(int bar_index)
       }
    }
 
-   int start_bar_idx = iBarShift(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, start_time, false);
+   int start_bar_idx = CustomBarShift(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, start_time, false);
    if(start_bar_idx < 0)
-      start_bar_idx = iBarShift(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, start_time, true);
+      start_bar_idx = CustomBarShift(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, start_time, true);
 
    if(start_bar_idx < bar_index)
       start_bar_idx = bar_index;
