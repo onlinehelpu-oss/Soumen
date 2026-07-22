@@ -6,15 +6,20 @@
 #property copyright "Copyright 2024, Trading Robot"
 #property link      "https://www.mql5.com"
 #property version   "3.00"
-#property description "Unified BTCUSD Long Upper Wick Rejection Breakout Strategy for XM Broker"
+#property description "MT5 Bearish Rejection Breakout Strategy - BTCUSD on XM Broker"
 #property strict
 
+//====================================================================
+// INCLUDE STANDARD LIBRARIES
+//====================================================================
 #include <Trade\Trade.mqh>
 #include <Trade\SymbolInfo.mqh>
 #include <Trade\PositionInfo.mqh>
 
-//--- INPUT PARAMETERS
-input group "=== Strategy Parameters ==="
+//====================================================================
+// INPUT PARAMETERS
+//====================================================================
+input group "=== Strategy Settings ==="
 input ENUM_TIMEFRAMES InpTimeframe         = PERIOD_M15;      // Time Frame (1m, 3m, 5m, 15m, 30m, 1h, 1d configurable)
 input double          InpMinCandlePoints   = 1500.0;          // Ignore Tiny Candle: Min Range in Points (1500 points = $15.00 for BTCUSD on XM)
 input bool            InpRequirePrevGreen  = true;            // Previous candle of signal candle must be green
@@ -59,7 +64,9 @@ input bool            InpUseTrailing       = false;           // Enable Trailing
 input int             InpTrailingStart     = 1000;            // Trailing Start (Points, e.g. 1000 = $10.00 for BTCUSD)
 input int             InpTrailingStep      = 200;             // Trailing Step (Points, e.g. 200 = $2.00 for BTCUSD)
 
-//--- GLOBALS
+//====================================================================
+// GLOBAL VARIABLES
+//====================================================================
 CTrade         m_trade;
 CSymbolInfo    m_symbol;
 CPositionInfo  m_position;
@@ -122,7 +129,9 @@ void OnDeinit(const int reason)
    Print("[Deinit] EA unloaded.");
 }
 
-//--- Helper functions to get candle data safely in MQL5
+//====================================================================
+// HISTORICAL DATA HELPER FUNCTIONS
+//====================================================================
 double GetOpen(int shift)
 {
    double val[1];
@@ -158,9 +167,9 @@ datetime GetTime(int shift)
    return 0;
 }
 
-//+------------------------------------------------------------------+
-//| Set Trade Filling Mode                                           |
-//+------------------------------------------------------------------+
+//====================================================================
+// ORDER AND POSITION HELPERS
+//====================================================================
 bool SetTradeFillingMode()
 {
    uint filling = (uint)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
@@ -187,9 +196,6 @@ bool SetTradeFillingMode()
    return true;
 }
 
-//+------------------------------------------------------------------+
-//| Check if position is open                                        |
-//+------------------------------------------------------------------+
 bool IsPositionOpen()
 {
    int total = PositionsTotal();
@@ -210,9 +216,6 @@ bool IsPositionOpen()
    return false;
 }
 
-//+------------------------------------------------------------------+
-//| Calculate Lot Size                                               |
-//+------------------------------------------------------------------+
 double CalculateLotSize(double sl_distance_points)
 {
    if(!InpUseRiskPercent || InpRiskPercent <= 0)
@@ -244,9 +247,9 @@ double CalculateLotSize(double sl_distance_points)
    return calculated_lot;
 }
 
-//+------------------------------------------------------------------+
-//| Get Specific Candle Pattern Name                                 |
-//+------------------------------------------------------------------+
+//====================================================================
+// PATTERN DETECTION LOGIC
+//====================================================================
 string GetCandlePatternName(double O, double H, double L, double C, double &uw_pct, double &body_pct, double &lw_pct)
 {
    double range = H - L;
@@ -321,7 +324,7 @@ string GetCandlePatternName(double O, double H, double L, double C, double &uw_p
 }
 
 //+------------------------------------------------------------------+
-//| Check For Signal on Closed Bar                                   |
+//| Detect Signal Candle on bar close                                |
 //+------------------------------------------------------------------+
 void CheckForSignal()
 {
@@ -329,7 +332,7 @@ void CheckForSignal()
    if(currentTime == 0) return;
    if(currentTime == m_last_bar_time) return;
 
-   // A new bar opened. We scan the just-closed bar at index 1
+   // Bar index 0 opened. We scan closed bar at index 1
    m_last_bar_time = currentTime;
 
    double o = GetOpen(1);
@@ -349,7 +352,7 @@ void CheckForSignal()
       return;
    }
 
-   // Previous green candle rule
+   // Previous candle of signal candle must be green confirmation rule
    if(InpRequirePrevGreen)
    {
       double prev_o = GetOpen(2);
@@ -374,12 +377,12 @@ void CheckForSignal()
    else if(InpDetectGeneral)
    {
       // Fallback to General Rejection Rule
-      if(c < o && // Must be bearish red
+      if(c < o && // Rejection candle must be red (bearish close < open)
          uw_pct >= InpUpperWickMin && uw_pct <= InpUpperWickMax &&
          body_pct >= InpBodyMin && body_pct <= InpBodyMax &&
          lw_pct >= 0.0 && lw_pct <= InpLowerWickMax)
       {
-         // Strictly enforce that the upper wick is indeed long (the longest component) if requested
+         // Rejection candle must be long upper wick (UW is strictly the longest component of the candle)
          if(!InpUpperWickMustBeLongest || (uw_pct > body_pct && uw_pct > lw_pct))
          {
             pattern = "LongWickRejection";
@@ -466,7 +469,8 @@ void CheckForBreakout()
    datetime current_bar_start = GetTime(0);
    if(current_bar_start == 0) return;
 
-   // The breakout trigger is ONLY valid for the next immediate candle
+   // Entry: Breakout trigger must occur on the next immediate candle
+   // If next candle does not break the low then the signal is discarded and becomes invalid immediately
    if(current_bar_start > m_signal_time + PeriodSeconds(InpTimeframe))
    {
       PrintFormat("[Signal Invalidated] Next immediate candle did not break low of signal candle from %s. Discarding signal.",
@@ -483,7 +487,7 @@ void CheckForBreakout()
    }
 
    double bid = m_symbol.Bid();
-   double triggerPrice = m_signal_low; // Entry exactly at the signal candle low break
+   double triggerPrice = m_signal_low; // Entry: as soon as next immediate candle breaks low of signal candle
 
    // Breakout condition: Bid price falls below or equals the signal low
    if(bid <= triggerPrice)
@@ -495,12 +499,12 @@ void CheckForBreakout()
 
       SetTradeFillingMode();
 
-      double stopLossPrice = m_signal_high; // Stop loss exactly at signal candle high
+      double stopLossPrice = m_signal_high; // Stoploss: Signal candle high exactly
       double stopLossPoints = stopLossPrice - triggerPrice;
       if(stopLossPoints <= 0) stopLossPoints = 100 * m_symbol.Point();
 
       double lot = CalculateLotSize(stopLossPoints / m_symbol.Point());
-      double tpPrice = triggerPrice - (stopLossPoints * InpRiskReward); // Target 1:1, 1:2 configurable
+      double tpPrice = triggerPrice - (stopLossPoints * InpRiskReward); // Target: 1:1, 1:2 configurable
 
       // Normalize SL and TP
       stopLossPrice = NormalizeDouble(stopLossPrice, _Digits);
