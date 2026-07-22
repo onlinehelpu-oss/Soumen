@@ -5,9 +5,9 @@
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      "https://github.com"
-#property version   "1.10"
+#property version   "1.20"
 #property description "Fast-Slow EMA Strategy - BTCUSD"
-#property description "Strict Next Candle Entry on Green Hammer / Pin Bar Signal and Exit EMA Breakout"
+#property description "Strict or Pullback Next Candle Entry on Green Hammer / Pin Bar Signal"
 
 //--- Include Trade Standard Library
 #include <Trade\Trade.mqh>
@@ -16,18 +16,19 @@
 
 //--- Inputs
 input group "=== Strategy Parameters ==="
-input ENUM_TIMEFRAMES InpTimeframe       = PERIOD_M5;      // Timeframe
-input int            InpFastEMAPeriod   = 9;              // Fast EMA Period
-input int            InpSlowEMAPeriod   = 15;             // Slow EMA Period
-input int            InpExitEMAPeriod   = 50;             // Exit EMA Period
-input double         InpEMABuffer       = 0.0;            // EMA Buffer in points (e.g. 0.0)
-input double         InpMinCandlePct    = 0.0;            // Min Candle Range % (0.0 to disable)
-input double         InpMinCandlePoints = 0.0;            // Min Candle Range in Points (0.0 to disable)
+input ENUM_TIMEFRAMES InpTimeframe           = PERIOD_M5;      // Timeframe
+input int            InpFastEMAPeriod       = 9;              // Fast EMA Period
+input int            InpSlowEMAPeriod       = 15;             // Slow EMA Period
+input int            InpExitEMAPeriod       = 50;             // Exit EMA Period
+input double         InpEMABuffer           = 0.0;            // EMA Buffer in points (e.g. 0.0)
+input bool           InpRequireStrictCross  = false;          // Require Strict Body Cross (False = Permissive EMA Pullback Touch)
+input double         InpMinCandlePct        = 0.0;            // Min Candle Range % (0.0 to disable)
+input double         InpMinCandlePoints     = 0.0;            // Min Candle Range in Points (0.0 to disable)
 
-input group "=== Hammer / Pin Bar Geometry (Flexible Settings) ==="
-input double         InpMinLowerWickPct = 50.0;           // Min Lower Wick (% of total range)
-input double         InpMaxBodyPct      = 30.0;           // Max Body Size (% of total range)
-input double         InpMaxUpperWickPct = 20.0;           // Max Upper Wick (% of total range)
+input group "=== Permissive Hammer / Pin Bar Geometry ==="
+input double         InpMinLowerWickPct     = 40.0;           // Min Lower Wick (% of total range - lowered to increase signals)
+input double         InpMaxBodyPct          = 45.0;           // Max Body Size (% of total range - increased to increase signals)
+input double         InpMaxUpperWickPct     = 30.0;           // Max Upper Wick (% of total range - increased to increase signals)
 
 enum ENUM_SL_MODE {
    SL_MODE_SIGNAL, // Signal Candle Extreme (Low)
@@ -35,12 +36,12 @@ enum ENUM_SL_MODE {
 };
 
 input group "=== Risk Management ==="
-input ENUM_SL_MODE   InpSLMode          = SL_MODE_SIGNAL; // Stop Loss Mode
-input int            InpSwingLookback   = 5;              // Swing Lookback candles
-input int            InpTPLookback      = 50;             // TP Lookback candles (for Target)
-input double         InpSLBufferPoints  = 2.0;            // Stop Loss Buffer in points (e.g. 2.0)
-input double         InpLotSize         = 0.1;            // Fixed Lot Size
-input ulong          InpMagicNumber     = 123456;         // Magic Number
+input ENUM_SL_MODE   InpSLMode              = SL_MODE_SIGNAL; // Stop Loss Mode
+input int            InpSwingLookback       = 5;              // Swing Lookback candles
+input int            InpTPLookback          = 50;             // TP Lookback candles (for Target)
+input double         InpSLBufferPoints      = 2.0;            // Stop Loss Buffer in points (e.g. 2.0)
+input double         InpLotSize             = 0.1;            // Fixed Lot Size
+input ulong          InpMagicNumber         = 123456;         // Magic Number
 
 //--- Global Objects
 CTrade m_trade;
@@ -83,7 +84,7 @@ int OnInit()
    //--- Pre-load bar time to prevent trigger on first tick
    m_last_bar_time = GetBarTime(0);
 
-   Print("FastSlow_EMA_BTCUSD EA with Green Hammer/Pin Bar pattern initialized successfully.");
+   Print("FastSlow_EMA_BTCUSD EA with high-frequency Permissive Green Hammer settings initialized.");
    return INIT_SUCCEEDED;
 }
 
@@ -208,13 +209,26 @@ void EvaluateNewCandleSignals()
          Print("Long breakout signal expired. Next candle failed to trigger.");
       }
 
-      // BULLISH Strict Body Cross
+      // BULLISH Sequence check
       bool bull_ema_ok = fast_ema > slow_ema;
-      bool bull_body_opens_below = open_val < MathMin(fast_ema, slow_ema);
-      bool bull_body_closes_above = close_val > MathMax(fast_ema, slow_ema) + InpEMABuffer;
+      bool EMA_cross_or_touch = false;
+
+      if(InpRequireStrictCross) {
+         // Strict Body Cross: Opens below the EMA band, Closes above
+         bool bull_body_opens_below = open_val < MathMin(fast_ema, slow_ema);
+         bool bull_body_closes_above = close_val > MathMax(fast_ema, slow_ema) + InpEMABuffer;
+         EMA_cross_or_touch = bull_body_opens_below && bull_body_closes_above;
+      } else {
+         // High-Frequency Touch/Pullback Rejection:
+         // The candle touches or dips into the EMA support area and closes above the fast EMA.
+         bool low_touches_EMA = (low_val <= MathMax(fast_ema, slow_ema) + InpEMABuffer);
+         bool close_above_fast = (close_val >= fast_ema);
+         EMA_cross_or_touch = low_touches_EMA && close_above_fast;
+      }
+
       bool is_hammer = IsGreenHammerOrPinBar(open_val, high_val, low_val, close_val);
 
-      if(bull_ema_ok && bull_body_opens_below && bull_body_closes_above && is_hammer && range_ok) {
+      if(bull_ema_ok && EMA_cross_or_touch && is_hammer && range_ok) {
          m_long_signal_active = true;
          m_signal_candle_time = time_val;
          m_signal_candle_high = high_val;
@@ -487,6 +501,7 @@ void UpdateDashboard()
                  " Fast EMA (" + IntegerToString(InpFastEMAPeriod) + "): " + DoubleToString(fast_ema, 2) + "\n" +
                  " Slow EMA (" + IntegerToString(InpSlowEMAPeriod) + "): " + DoubleToString(slow_ema, 2) + "\n" +
                  " Exit EMA (" + IntegerToString(InpExitEMAPeriod) + "): " + DoubleToString(exit_ema, 2) + "\n" +
+                 " Mode: " + (InpRequireStrictCross ? "Strict Body Cross" : "Pullback EMA Touch") + "\n" +
                  "--------------------------------------------------\n" +
                  " Status: " + status_str + "\n";
 
