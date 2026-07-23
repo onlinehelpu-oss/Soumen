@@ -417,6 +417,16 @@ double GetVWAP(int bar_index)
       }
    }
 
+   // Safety check: Fallback to midnight of current bar if start_time is uninitialized
+   if(start_time <= 0)
+   {
+      MqlDateTime dt_start = dt_bar;
+      dt_start.hour = 0;
+      dt_start.min = 0;
+      dt_start.sec = 0;
+      start_time = StructToTime(dt_start);
+   }
+
    int start_bar_idx = CustomBarShift(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, start_time, false);
    if(start_bar_idx < 0)
       start_bar_idx = CustomBarShift(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, start_time, true);
@@ -431,15 +441,18 @@ double GetVWAP(int bar_index)
    double high[], low[], close[], open[];
    long volume[];
 
-   if(CopyHigh(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, bar_index, count, high) <= 0) return 0.0;
-   if(CopyLow(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, bar_index, count, low) <= 0) return 0.0;
-   if(CopyClose(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, bar_index, count, close) <= 0) return 0.0;
-   if(CopyOpen(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, bar_index, count, open) <= 0) return 0.0;
+   // Bounds-safe array copying to prevent out-of-range runtime exceptions
+   int copied = CopyHigh(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, bar_index, count, high);
+   if(copied <= 0) return 0.0;
+
+   if(CopyLow(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, bar_index, copied, low) < copied) return 0.0;
+   if(CopyClose(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, bar_index, copied, close) < copied) return 0.0;
+   if(CopyOpen(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, bar_index, copied, open) < copied) return 0.0;
 
    bool has_real_vol = false;
-   if(CopyRealVolume(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, bar_index, count, volume) > 0)
+   if(CopyRealVolume(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, bar_index, copied, volume) >= copied)
    {
-      for(int i = 0; i < count; i++)
+      for(int i = 0; i < copied; i++)
       {
          if(volume[i] > 0)
          {
@@ -451,14 +464,14 @@ double GetVWAP(int bar_index)
 
    if(!has_real_vol)
    {
-      if(CopyTickVolume(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, bar_index, count, volume) <= 0)
+      if(CopyTickVolume(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, bar_index, copied, volume) < copied)
          return 0.0;
    }
 
    double sum_pv = 0.0;
    double sum_v = 0.0;
 
-   for(int i = 0; i < count; i++)
+   for(int i = 0; i < copied; i++)
    {
       double price = 0.0;
       switch(InpVWAPSource)
@@ -573,11 +586,27 @@ bool IsInTradingSession()
 //+------------------------------------------------------------------+
 double NormalizeLotSize(double lot)
 {
+   m_symbol.Refresh();
+
    double min_lot = m_symbol.LotsMin();
    double max_lot = m_symbol.LotsMax();
    double step_lot = m_symbol.LotsStep();
 
-   double normalized = MathFloor(lot / step_lot) * step_lot;
+   if(step_lot <= 0.0)
+      step_lot = 0.01;
+
+   double normalized = MathRound(lot / step_lot) * step_lot;
+
+   // Determine precision from dynamic step lot size
+   int precision = 2;
+   if(step_lot >= 1.0) precision = 0;
+   else if(step_lot >= 0.1) precision = 1;
+   else if(step_lot >= 0.01) precision = 2;
+   else if(step_lot >= 0.001) precision = 3;
+   else if(step_lot >= 0.0001) precision = 4;
+
+   normalized = NormalizeDouble(normalized, precision);
+
    if(normalized < min_lot) normalized = min_lot;
    if(normalized > max_lot) normalized = max_lot;
 
@@ -589,7 +618,14 @@ double NormalizeLotSize(double lot)
 //+------------------------------------------------------------------+
 bool ExecuteBuy(double entry, double sl, double tp, double lot)
 {
-   m_trade.SetTypeFillingBySymbol(_Symbol);
+   // Set proper filling mode dynamically for compatibility across all brokers (e.g. XM)
+   uint filling = (uint)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+   if((filling & SYMBOL_FILLING_FOK) != 0)
+      m_trade.SetTypeFilling(ORDER_FILLING_FOK);
+   else if((filling & SYMBOL_FILLING_IOC) != 0)
+      m_trade.SetTypeFilling(ORDER_FILLING_IOC);
+   else
+      m_trade.SetTypeFilling(ORDER_FILLING_RETURN);
 
    if(m_trade.Buy(lot, _Symbol, entry, sl, tp, "VWAP + EMA Pullback"))
    {
