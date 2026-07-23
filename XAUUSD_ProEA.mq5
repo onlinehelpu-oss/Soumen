@@ -1,9 +1,9 @@
 //+------------------------------------------------------------------+
 //|                                                XAUUSD_ProEA.mq5  |
-//|                    Professional EA - Fully Rectified             |
+//|                    Professional EA - Fully Rectified & Diagnostic |
 //+------------------------------------------------------------------+
 #property strict
-#property version   "1.00"
+#property version   "1.02"
 
 #include <Trade/Trade.mqh>
 
@@ -33,9 +33,12 @@ input double MinCandlePoints       = 100;
 input double MaxCandlePoints       = 3000;
 
 input group "--- Trading Filters ---"
+input bool   UseTrendFilter        = true;
+input bool   UseATRFilter          = true;
 input double MinATRPoints          = 150;
 input double MaxATRPoints          = 5000;
 input int    MaxSpreadPoints       = 30;
+input bool   UseSessionFilter      = true;
 input bool   EnableLondon          = true;
 input bool   EnableNewYork         = true;
 input int    LondonStartHour       = 8;
@@ -328,25 +331,51 @@ bool GetEMA(double &ema0,double &ema1)
    double b[2];
    if(CopyBuffer(emaHandle,0,0,2,b)!=2)
       return false;
-   ema0=b[0];
-   ema1=b[1];
+   ema0=b[0]; // Older value (Bar 1)
+   ema1=b[1]; // Newer value (Bar 0)
    return true;
 }
 
 bool TrendBuy()
 {
+   if(!UseTrendFilter)
+      return true;
+
    double e0,e1;
-   if(!GetEMA(e0,e1)) return false;
-   double close0 = GetClose(TrendTF, 0);
-   return (close0 > e0 && e0 > e1);
+   if(!GetEMA(e0,e1))
+   {
+      Print("[TrendBuy] CopyBuffer EMA failed.");
+      return false;
+   }
+   double currentBid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   // e1 is Bar 0, e0 is Bar 1. Rising trend requires current > Bar 0 AND Bar 0 > Bar 1
+   bool isTrendUp = (currentBid > e1 && e1 > e0);
+   if(!isTrendUp)
+   {
+      Print("[TrendBuy] Trend filter rejected. Bid: ", currentBid, " | EMA Bar0: ", e1, " | EMA Bar1: ", e0);
+   }
+   return isTrendUp;
 }
 
 bool TrendSell()
 {
+   if(!UseTrendFilter)
+      return true;
+
    double e0,e1;
-   if(!GetEMA(e0,e1)) return false;
-   double close0 = GetClose(TrendTF, 0);
-   return (close0 < e0 && e0 < e1);
+   if(!GetEMA(e0,e1))
+   {
+      Print("[TrendSell] CopyBuffer EMA failed.");
+      return false;
+   }
+   double currentAsk = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   // e1 is Bar 0, e0 is Bar 1. Falling trend requires current < Bar 0 AND Bar 0 < Bar 1
+   bool isTrendDown = (currentAsk < e1 && e1 < e0);
+   if(!isTrendDown)
+   {
+      Print("[TrendSell] Trend filter rejected. Ask: ", currentAsk, " | EMA Bar0: ", e1, " | EMA Bar1: ", e0);
+   }
+   return isTrendDown;
 }
 
 double CurrentATRPoints()
@@ -359,18 +388,34 @@ double CurrentATRPoints()
 
 bool ATRFilter()
 {
+   if(!UseATRFilter)
+      return true;
+
    double atr = CurrentATRPoints();
-   return (atr>=MinATRPoints && atr<=MaxATRPoints);
+   bool passed = (atr>=MinATRPoints && atr<=MaxATRPoints);
+   if(!passed)
+   {
+      Print("[ATRFilter] Rejected. Current ATR Pts: ", atr, " (Required: ", MinATRPoints, " to ", MaxATRPoints, ")");
+   }
+   return passed;
 }
 
 bool SpreadFilter()
 {
    int spread=(int)SymbolInfoInteger(_Symbol,SYMBOL_SPREAD);
-   return spread<=MaxSpreadPoints;
+   bool passed = (spread<=MaxSpreadPoints);
+   if(!passed)
+   {
+      Print("[SpreadFilter] Rejected. Current spread: ", spread, " (Max allowed: ", MaxSpreadPoints, ")");
+   }
+   return passed;
 }
 
 bool SessionFilter()
 {
+   if(!UseSessionFilter)
+      return true;
+
    MqlDateTime t;
    TimeToStruct(TimeCurrent(),t);
 
@@ -382,7 +427,12 @@ bool SessionFilter()
              t.hour>=NewYorkStartHour &&
              t.hour<NewYorkEndHour;
 
-   return (london || ny);
+   bool passed = (london || ny);
+   if(!passed)
+   {
+      Print("[SessionFilter] Rejected. Current hour: ", t.hour, " (London Start-End: ", LondonStartHour, "-", LondonEndHour, " | NY Start-End: ", NewYorkStartHour, "-", NewYorkEndHour, ")");
+   }
+   return passed;
 }
 
 bool AllowTrading()
@@ -419,10 +469,11 @@ bool IsBearish(CandleInfo &c){ return c.close<c.open; }
 
 bool IsHammer(CandleInfo &c)
 {
-   return IsBullish(c)
+   bool match = IsBullish(c)
       && c.lowerPct>=HammerLowerWickPct
       && c.upperPct<=HammerUpperWickPct
       && c.bodyPct<=HammerBodyPct;
+   return match;
 }
 
 bool IsBullPinBar(CandleInfo &c)
@@ -432,10 +483,11 @@ bool IsBullPinBar(CandleInfo &c)
 
 bool IsShootingStar(CandleInfo &c)
 {
-   return IsBearish(c)
+   bool match = IsBearish(c)
       && c.upperPct>=ShootUpperWickPct
       && c.lowerPct<=ShootLowerWickPct
       && c.bodyPct<=ShootBodyPct;
+   return match;
 }
 
 bool IsBearPinBar(CandleInfo &c)
@@ -562,35 +614,53 @@ void ScanForSignal()
       ResetSignal();
    }
 
-   // Check filters before scanning
-   if(!AllowTrading())
-      return;
-
    CandleInfo c;
    if(!GetCandleInfo(EntryTF, 1, c))
+   {
+      Print("[ScanForSignal] Failed to copy Candle 1 details.");
       return;
+   }
 
    double rangePoints = c.range / _Point;
    if(rangePoints < MinCandlePoints || rangePoints > MaxCandlePoints)
+   {
+      Print("[ScanForSignal] Candle range rejected. Range (Pts): ", rangePoints, " (Min: ", MinCandlePoints, ", Max: ", MaxCandlePoints, ")");
       return;
+   }
+
+   bool isHammer = IsHammer(c);
+   bool isBullPin = IsBullPinBar(c);
+   bool isShootingStar = IsShootingStar(c);
+   bool isBearPin = IsBearPinBar(c);
 
    // Scan for Hammer / Bull Pin Bar (BUY)
-   if(IsHammer(c) || IsBullPinBar(c))
+   if(isHammer || isBullPin)
    {
+      Print("[ScanForSignal] Bullish pattern detected! IsHammer: ", isHammer, " | IsBullPin: ", isBullPin);
+      Print("   Candle stats - Body: ", DoubleToString(c.bodyPct, 1), "%, Upper Wick: ", DoubleToString(c.upperPct, 1), "%, Lower Wick: ", DoubleToString(c.lowerPct, 1), "%");
+
       if(TrendBuy())
       {
          SetBuySignal(c.high, c.low, RR);
-         Print("Hammer/PinBar BUY signal registered at ", TimeToString(CurrentSignal.signalTime));
+         Print("Hammer/PinBar BUY signal registered at ", TimeToString(CurrentSignal.signalTime), " | Entry Target: ", CurrentSignal.entry);
       }
    }
    // Scan for Shooting Star / Bear Pin Bar (SELL)
-   else if(IsShootingStar(c) || IsBearPinBar(c))
+   else if(isShootingStar || isBearPin)
    {
+      Print("[ScanForSignal] Bearish pattern detected! IsShootingStar: ", isShootingStar, " | IsBearPin: ", isBearPin);
+      Print("   Candle stats - Body: ", DoubleToString(c.bodyPct, 1), "%, Upper Wick: ", DoubleToString(c.upperPct, 1), "%, Lower Wick: ", DoubleToString(c.lowerPct, 1), "%");
+
       if(TrendSell())
       {
          SetSellSignal(c.high, c.low, RR);
-         Print("ShootingStar/PinBar SELL signal registered at ", TimeToString(CurrentSignal.signalTime));
+         Print("ShootingStar/PinBar SELL signal registered at ", TimeToString(CurrentSignal.signalTime), " | Entry Target: ", CurrentSignal.entry);
       }
+   }
+   else
+   {
+      // Optional detail logging for debug:
+      // Print("[ScanForSignal] No pattern match for Candle 1. Body: ", DoubleToString(c.bodyPct, 1), "%, Upper Wick: ", DoubleToString(c.upperPct, 1), "%, Lower Wick: ", DoubleToString(c.lowerPct, 1), "%");
    }
 }
 
@@ -607,18 +677,27 @@ void EntryEngine()
       return;
    }
 
-   if(!SpreadFilter())
+   if(!AllowTrading())
       return;
 
    if(HasOpenPosition())
+   {
+      Print("[EntryEngine] Trade blocked. Already have open position on ", _Symbol);
       return;
+   }
 
    UpdateDailyStats();
    if(!AllowNewTrade())
+   {
+      Print("[EntryEngine] Trade blocked. Daily trades limit reached. Count: ", DailyTrades);
       return;
+   }
 
    if(!CheckDailyLoss())
+   {
+      Print("[EntryEngine] Trade blocked. Daily loss limit exceeded.");
       return;
+   }
 
    double stopPoints = MathAbs(CurrentSignal.entry - CurrentSignal.stop) / _Point;
    double lots = CalculateLot(stopPoints);
@@ -651,10 +730,16 @@ void ManageBreakEven()
       if(risk<=0) continue;
 
       if(type==POSITION_TYPE_BUY && price>=open+risk*BreakEvenRR && sl<open)
+      {
          Trade.PositionModify(ticket,open,tp);
+         Print("[BreakEven] BUY position moved to break-even. Ticket: ", ticket);
+      }
 
       if(type==POSITION_TYPE_SELL && price<=open-risk*BreakEvenRR && (sl>open || sl==0))
+      {
          Trade.PositionModify(ticket,open,tp);
+         Print("[BreakEven] SELL position moved to break-even. Ticket: ", ticket);
+      }
    }
 }
 
@@ -682,7 +767,10 @@ void ManageTrailing()
          newSL = MathRound(newSL / tickSize) * tickSize;
 
          if(newSL>sl+TrailStepPoints*_Point && newSL>open)
+         {
             Trade.PositionModify(ticket,newSL,tp);
+            Print("[Trailing] BUY trailing SL updated. Ticket: ", ticket, " | New SL: ", newSL);
+         }
       }
       else
       {
@@ -692,7 +780,10 @@ void ManageTrailing()
          newSL = MathRound(newSL / tickSize) * tickSize;
 
          if((sl==0 || newSL<sl-TrailStepPoints*_Point) && (sl==0 || newSL<open))
+         {
             Trade.PositionModify(ticket,newSL,tp);
+            Print("[Trailing] SELL trailing SL updated. Ticket: ", ticket, " | New SL: ", newSL);
+         }
       }
    }
 }
@@ -710,7 +801,7 @@ void UpdateDashboard()
    text += " Daily Trades: " + IntegerToString(DailyTrades) + " / " + IntegerToString(MaxDailyTrades) + "\n";
    text += " Spread: " + IntegerToString((int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD)) + " (Max: " + IntegerToString(MaxSpreadPoints) + ")\n";
    text += " Current ATR (Pts): " + DoubleToString(CurrentATRPoints(), 1) + "\n";
-   text += " Trading Allowed: " + (AllowTrading() ? "YES" : "NO") + "\n";
+   text += " Filters Passed: " + (AllowTrading() ? "YES" : "NO") + "\n";
    text += "--------------------------------------------------\n";
    text += " Current Signal State:\n";
    if(CurrentSignal.valid)
