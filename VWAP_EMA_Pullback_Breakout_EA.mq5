@@ -152,8 +152,9 @@ void OnDeinit(const int reason)
       m_ema_handle = INVALID_HANDLE;
    }
 
-   // Delete Chart Labels
+   // Delete Chart Labels & Trend lines
    ObjectsDeleteAll(0, "VWAP_EA_");
+   ObjectsDeleteAll(0, "VWAP_LINE_");
    ChartRedraw();
 
    Print("VWAP + EMA Trend Pullback Breakout EA deinitialized.");
@@ -245,6 +246,9 @@ void OnTick()
       }
       m_last_bar_time = current_bar_time;
    }
+
+   // Plot VWAP Line on Chart for Visual feedback (in Live & Strategy Tester visual mode)
+   PlotVWAPLine();
 
    // 2. Monitor Breakout Trigger on Every Tick
    if(m_signal_active)
@@ -670,6 +674,54 @@ void DrawLabel(string name, string text, int x, int y, color clr)
    }
    ObjectSetString(0, obj_name, OBJPROP_TEXT, text);
    ObjectSetInteger(0, obj_name, OBJPROP_COLOR, clr);
+}
+
+//+------------------------------------------------------------------+
+//| Helper: Plot VWAP line segments directly on the chart            |
+//+------------------------------------------------------------------+
+void PlotVWAPLine()
+{
+   // Skip object rendering if running in non-visual tester mode
+   if(MQLInfoInteger(MQL_TESTER) && !MQLInfoInteger(MQL_VISUAL_MODE))
+      return;
+
+   // Draw the VWAP line for the last 50 bars to show the curve cleanly
+   int bars_to_draw = 50;
+
+   for(int i = 0; i < bars_to_draw; i++)
+   {
+      double vwap_curr = GetVWAP(i);
+      double vwap_prev = GetVWAP(i + 1);
+
+      datetime time_curr[1];
+      datetime time_prev[1];
+
+      if(CopyTime(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, i, 1, time_curr) > 0 &&
+         CopyTime(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, i + 1, 1, time_prev) > 0)
+      {
+         if(vwap_curr > 0.0 && vwap_prev > 0.0)
+         {
+            string obj_name = StringFormat("VWAP_LINE_%d", i);
+
+            if(ObjectFind(0, obj_name) < 0)
+            {
+               ObjectCreate(0, obj_name, OBJ_TREND, 0, time_prev[0], vwap_prev, time_curr[0], vwap_curr);
+               ObjectSetInteger(0, obj_name, OBJPROP_RAY_RIGHT, false);
+               ObjectSetInteger(0, obj_name, OBJPROP_RAY_LEFT, false);
+               ObjectSetInteger(0, obj_name, OBJPROP_COLOR, clrAqua);
+               ObjectSetInteger(0, obj_name, OBJPROP_WIDTH, 2);
+               ObjectSetInteger(0, obj_name, OBJPROP_SELECTABLE, false);
+            }
+            else
+            {
+               ObjectSetDouble(0, obj_name, OBJPROP_PRICE, 0, vwap_prev);
+               ObjectSetDouble(0, obj_name, OBJPROP_PRICE, 1, vwap_curr);
+               ObjectSetInteger(0, obj_name, OBJPROP_TIME, 0, time_prev[0]);
+               ObjectSetInteger(0, obj_name, OBJPROP_TIME, 1, time_curr[0]);
+            }
+         }
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
