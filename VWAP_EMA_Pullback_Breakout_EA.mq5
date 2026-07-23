@@ -225,6 +225,9 @@ void OnTick()
 
          if(!is_tiny && !is_too_big && vwap_val > 0 && ema_val > 0)
          {
+            // Signal Candle must be green (Close > Open)
+            bool is_green = (c_val > o_val);
+
             // Signal Candle Condition 1: any candle open below VWAP and close above VWAP
             bool cond1 = (o_val < vwap_val && c_val > vwap_val);
 
@@ -234,7 +237,7 @@ void OnTick()
             // Trend Filter: Current candle Close > VWAP AND VWAP > EMA
             bool trend_ok = (c_val > vwap_val && vwap_val > ema_val);
 
-            if((cond1 || cond2) && trend_ok)
+            if(is_green && (cond1 || cond2) && trend_ok)
             {
                m_signal_active = true;
                m_signal_high = h_val;
