@@ -164,9 +164,13 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // Standard sanity checks
-   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED))
-      return;
+   // Standard sanity checks (bypass if running in Strategy Tester)
+   bool is_tester = (bool)MQLInfoInteger(MQL_TESTER);
+   if(!is_tester)
+   {
+      if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED))
+         return;
+   }
 
    datetime current_bar_times[1];
    if(CopyTime(_Symbol, (ENUM_TIMEFRAMES)InpTimeframe, 0, 1, current_bar_times) <= 0)
@@ -249,11 +253,15 @@ void OnTick()
       {
          if(!InpOnePositionOnly || CountOpenPositions() == 0)
          {
-            m_symbol.RefreshRates();
-            double ask = m_symbol.Ask();
+            double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+            if (ask <= 0.0)
+            {
+               m_symbol.RefreshRates();
+               ask = m_symbol.Ask();
+            }
             double breakout_level = m_signal_high + InpEntryBufferPoints * m_symbol.Point();
 
-            if(ask > breakout_level)
+            if(ask > 0.0 && ask > breakout_level)
             {
                double entry_price = ask;
                double sl_price = m_signal_low;
@@ -312,8 +320,6 @@ void OnTick()
       }
    }
 
-   // Update the dashboard visual overlay
-   UpdateDashboard();
 }
 
 //+------------------------------------------------------------------+
@@ -635,6 +641,10 @@ void DrawLabel(string name, string text, int x, int y, color clr)
 //+------------------------------------------------------------------+
 void UpdateDashboard()
 {
+   // Skip dashboard processing in Strategy Tester non-visual mode to maximize speed
+   if(MQLInfoInteger(MQL_TESTER) && !MQLInfoInteger(MQL_VISUAL_MODE))
+      return;
+
    int x_start = 20;
    int y_start = 20;
    int y_spacing = 18;
