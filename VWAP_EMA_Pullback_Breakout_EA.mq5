@@ -65,6 +65,8 @@ input double                InpMinCandlePoints = 0.0;      // Min Candle Range (
 input double                InpMinCandlePct = 0.0;         // Min Candle Range (%) - Avoid Tiny
 input double                InpMaxCandlePoints = 0.0;      // Max Candle Range (points) - Ignore Too Big (0 to disable)
 input double                InpMaxCandlePct = 0.0;         // Max Candle Range (%) - Ignore Too Big (0 to disable)
+input bool                  InpUseSpreadAsSLBuffer = false;// Use Bid-Ask Spread as SL Buffer
+input double                InpSLBufferPoints = 0.0;       // Stop Loss Buffer (points)
 
 input group "=== Risk Reward Settings ==="
 input ENUM_RISK_REWARD      InpRiskReward = RR_1_2;        // Risk Reward Ratio
@@ -244,11 +246,12 @@ void OnTick()
             }
          }
       }
+
+      // Plot VWAP Line on Chart for Visual feedback (in Live & Strategy Tester visual mode)
+      PlotVWAPLine();
+
       m_last_bar_time = current_bar_time;
    }
-
-   // Plot VWAP Line on Chart for Visual feedback (in Live & Strategy Tester visual mode)
-   PlotVWAPLine();
 
    // 2. Monitor Breakout Trigger on Every Tick
    if(m_signal_active)
@@ -258,17 +261,28 @@ void OnTick()
          if(!InpOnePositionOnly || CountOpenPositions() == 0)
          {
             double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-            if (ask <= 0.0)
+            double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+            if (ask <= 0.0 || bid <= 0.0)
             {
                m_symbol.RefreshRates();
                ask = m_symbol.Ask();
+               bid = m_symbol.Bid();
             }
             double breakout_level = m_signal_high + InpEntryBufferPoints * m_symbol.Point();
 
             if(ask > 0.0 && ask > breakout_level)
             {
                double entry_price = ask;
-               double sl_price = m_signal_low;
+
+               // Calculate dynamic Stop Loss Buffer
+               double sl_buffer = InpSLBufferPoints * m_symbol.Point();
+               if(InpUseSpreadAsSLBuffer && ask > bid)
+               {
+                  double spread_distance = ask - bid;
+                  sl_buffer += spread_distance;
+               }
+
+               double sl_price = m_signal_low - sl_buffer;
                double risk_dist = entry_price - sl_price;
 
                if(risk_dist > 0)
