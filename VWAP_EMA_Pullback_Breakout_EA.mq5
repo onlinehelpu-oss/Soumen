@@ -61,8 +61,10 @@ input ENUM_APPLIED_PRICE    InpVWAPSource = PRICE_CLOSE;   // VWAP Price Source
 
 input group "=== Entry Settings ==="
 input double                InpEntryBufferPoints = 0.0;    // Entry Buffer (points)
-input double                InpMinCandlePoints = 0.0;      // Min Candle Range (points)
-input double                InpMinCandlePct = 0.0;         // Min Candle Range (%)
+input double                InpMinCandlePoints = 0.0;      // Min Candle Range (points) - Avoid Tiny
+input double                InpMinCandlePct = 0.0;         // Min Candle Range (%) - Avoid Tiny
+input double                InpMaxCandlePoints = 0.0;      // Max Candle Range (points) - Ignore Too Big (0 to disable)
+input double                InpMaxCandlePct = 0.0;         // Max Candle Range (%) - Ignore Too Big (0 to disable)
 
 input group "=== Risk Reward Settings ==="
 input ENUM_RISK_REWARD      InpRiskReward = RR_1_2;        // Risk Reward Ratio
@@ -201,7 +203,7 @@ void OnTick()
          double vwap_val = GetVWAP(1);
          double ema_val = GetEMA(1);
 
-         // Evaluate "Avoid Tiny candle" conditions
+         // Evaluate candle size conditions (Avoid Tiny candle / Ignore Too Big candle)
          double candle_range = h_val - l_val;
          double candle_points = candle_range / m_symbol.Point();
          double candle_pct = (o_val > 0) ? (candle_range / o_val) * 100.0 : 0.0;
@@ -210,7 +212,11 @@ void OnTick()
          if(InpMinCandlePoints > 0 && candle_points < InpMinCandlePoints) is_tiny = true;
          if(InpMinCandlePct > 0 && candle_pct < InpMinCandlePct) is_tiny = true;
 
-         if(!is_tiny && vwap_val > 0 && ema_val > 0)
+         bool is_too_big = false;
+         if(InpMaxCandlePoints > 0 && candle_points > InpMaxCandlePoints) is_too_big = true;
+         if(InpMaxCandlePct > 0 && candle_pct > InpMaxCandlePct) is_too_big = true;
+
+         if(!is_tiny && !is_too_big && vwap_val > 0 && ema_val > 0)
          {
             // Signal Candle Condition 1: any candle open below VWAP and close above VWAP
             bool cond1 = (o_val < vwap_val && c_val > vwap_val);
