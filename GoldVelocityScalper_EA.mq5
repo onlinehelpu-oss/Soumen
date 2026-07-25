@@ -176,6 +176,10 @@ double         m_calibrated_velocity_threshold = 0.1;
 double         m_calibrated_acceleration_threshold = 0.02;
 double         m_calibrated_min_efficiency_ratio = 0.40;
 int            m_calibrated_tfi_threshold = 50;
+double         m_calibrated_min_impulse_height = 0.25;
+double         m_calibrated_breakout_buffer = 10.0;
+int            m_calibrated_setup_expiry = 25;
+double         m_calibrated_min_rocket_score = 75.0;
 
 //--- Pullback Setup State Variables
 bool           m_setup_active = false;
@@ -555,19 +559,27 @@ int OnInit()
    m_calibrated_acceleration_threshold = InpAccelerationThreshold;
    m_calibrated_min_efficiency_ratio = InpMinEfficiencyRatio;
    m_calibrated_tfi_threshold = InpTFIThreshold;
+   m_calibrated_min_impulse_height = InpMinImpulseHeight;
+   m_calibrated_breakout_buffer = InpBreakoutBufferPoints;
+   m_calibrated_setup_expiry = InpSetupExpirySeconds;
+   m_calibrated_min_rocket_score = InpMinRocketScore;
 
    // In the Strategy Tester, synthetic tick generators (OHLC or even Real Ticks) can have different intervals.
    // If Auto Calibration is enabled, scale down speed/velocity requirements in the Strategy Tester.
    if (MQLInfoInteger(MQL_TESTER) && InpTesterAutoCalibrate)
    {
-      m_calibrated_speed_threshold = (int)MathMax(2, InpTickSpeedThreshold / 4); // Scale speed threshold (e.g. 6 ticks instead of 25)
-      m_calibrated_velocity_threshold = InpPriceVelocityThreshold / 4.0; // Scale down price velocity (e.g. 0.06 instead of 0.25)
-      m_calibrated_acceleration_threshold = InpAccelerationThreshold / 4.0; // Scale down acceleration (e.g. 0.012 instead of 0.05)
+      m_calibrated_speed_threshold = (int)MathMax(2, InpTickSpeedThreshold / 5); // Scale speed threshold (e.g. 5 ticks instead of 25)
+      m_calibrated_velocity_threshold = InpPriceVelocityThreshold / 5.0; // Scale down price velocity (e.g. 0.05 instead of 0.25)
+      m_calibrated_acceleration_threshold = InpAccelerationThreshold / 5.0; // Scale down acceleration (e.g. 0.01 instead of 0.05)
+      m_calibrated_min_impulse_height = 0.05; // Extremely active setup impulse trigger in tester
+      m_calibrated_breakout_buffer = 1.0; // Tiny breakout confirmation points
+      m_calibrated_setup_expiry = 60; // Allow 1 full minute for pullbacks to build and break out
+      m_calibrated_min_rocket_score = 65.0; // Trigger setups much easier in Strategy Tester
       m_use_index_based_metrics = true; // Auto-activate adaptive index mode in tester for reliable delta calculations
 
       // Scale down overly tight filter requirements in the Strategy Tester to ensure active trading
-      if (m_calibrated_min_efficiency_ratio > 0.15) m_calibrated_min_efficiency_ratio = 0.15;
-      if (m_calibrated_tfi_threshold > 20) m_calibrated_tfi_threshold = 20;
+      m_calibrated_min_efficiency_ratio = 0.05;
+      m_calibrated_tfi_threshold = 10;
 
       Print("[GVS INIT] Tester mode detected with Auto-Calibration. Thresholds scaled: Speed: ", m_calibrated_speed_threshold, ", Vel: ", m_calibrated_velocity_threshold, ", Acc: ", m_calibrated_acceleration_threshold, ". Adaptive Index-Mode Activated.");
    }
@@ -1026,8 +1038,8 @@ void OnTick()
       }
    }
 
-   bool buy_eligible = (score_buy >= InpMinRocketScore && is_spread_valid_for_entry && is_noise_level_valid && is_buy_tfi_valid && trend_up);
-   bool sell_eligible = (score_sell >= InpMinRocketScore && is_spread_valid_for_entry && is_noise_level_valid && is_sell_tfi_valid && trend_down);
+   bool buy_eligible = (score_buy >= m_calibrated_min_rocket_score && is_spread_valid_for_entry && is_noise_level_valid && is_buy_tfi_valid && trend_up);
+   bool sell_eligible = (score_sell >= m_calibrated_min_rocket_score && is_spread_valid_for_entry && is_noise_level_valid && is_sell_tfi_valid && trend_down);
 
    // Periodic Journal Diagnostics (Every 100 ticks in Strategy Tester)
    static int tick_diag_counter = 0;
@@ -1037,7 +1049,7 @@ void OnTick()
       if (tick_diag_counter % 100 == 0)
       {
          Print("[GVS DIAGNOSTICS] Tick: ", tick_diag_counter,
-               " | Buy Score: ", score_buy, " (Min: ", InpMinRocketScore, ")",
+               " | Buy Score: ", score_buy, " (Min: ", m_calibrated_min_rocket_score, ")",
                " | Buy Eligible: ", buy_eligible,
                " | Speed: ", current_tick_speed, " (Calibrated limit: ", m_calibrated_speed_threshold, ")",
                " | Velocity: ", price_velocity, " (Calibrated limit: ", m_calibrated_velocity_threshold, ")",
@@ -1104,10 +1116,10 @@ void OnTick()
          else // Pullback or Breakout Setup is active
          {
             // Verify maximum lifetime limit
-            if (TimeCurrent() - m_setup_time > InpSetupExpirySeconds)
+            if (TimeCurrent() - m_setup_time > m_calibrated_setup_expiry)
             {
                m_setup_active = false;
-               Print("[GVS Setup] Setup expired.");
+               Print("[GVS Setup] Setup expired. Setup Time: ", m_setup_time, " Current Time: ", TimeCurrent());
             }
             else
             {
@@ -1118,7 +1130,7 @@ void OnTick()
                   m_setup_peak_price = MathMax(m_setup_peak_price, tick.bid);
                   double height = m_setup_peak_price - m_setup_start_price;
 
-                  if (height >= InpMinImpulseHeight)
+                  if (height >= m_calibrated_min_impulse_height)
                   {
                      double retracement = 0.0;
                      if (height > 0.0)
@@ -1151,9 +1163,9 @@ void OnTick()
                      else if (InpEntryMode == ENTRY_PEAK_BREAKOUT)
                      {
                         // Wait for pullback, then enter on peak breakout
-                        if (m_pullback_detected && tick.bid >= m_setup_peak_price + InpBreakoutBufferPoints * point)
+                        if (m_pullback_detected && tick.bid >= m_setup_peak_price + m_calibrated_breakout_buffer * point)
                         {
-                           Print("[GVS Entry] Peak breakout entry triggered for BUY. Peak: ", m_setup_peak_price, " Target: ", m_setup_peak_price + InpBreakoutBufferPoints * point);
+                           Print("[GVS Entry] Peak breakout entry triggered for BUY. Peak: ", m_setup_peak_price, " Target: ", m_setup_peak_price + m_calibrated_breakout_buffer * point);
                            ExecuteTrade(1);
                         }
                      }
@@ -1164,7 +1176,7 @@ void OnTick()
                   m_setup_peak_price = MathMin(m_setup_peak_price, tick.bid);
                   double height = m_setup_start_price - m_setup_peak_price;
 
-                  if (height >= InpMinImpulseHeight)
+                  if (height >= m_calibrated_min_impulse_height)
                   {
                      double retracement = 0.0;
                      if (height > 0.0)
@@ -1197,9 +1209,9 @@ void OnTick()
                      else if (InpEntryMode == ENTRY_PEAK_BREAKOUT)
                      {
                         // Wait for pullback, then enter on peak breakout
-                        if (m_pullback_detected && tick.bid <= m_setup_peak_price - InpBreakoutBufferPoints * point)
+                        if (m_pullback_detected && tick.bid <= m_setup_peak_price - m_calibrated_breakout_buffer * point)
                         {
-                           Print("[GVS Entry] Peak breakout entry triggered for SELL. Peak: ", m_setup_peak_price, " Target: ", m_setup_peak_price - InpBreakoutBufferPoints * point);
+                           Print("[GVS Entry] Peak breakout entry triggered for SELL. Peak: ", m_setup_peak_price, " Target: ", m_setup_peak_price - m_calibrated_breakout_buffer * point);
                            ExecuteTrade(-1);
                         }
                      }
