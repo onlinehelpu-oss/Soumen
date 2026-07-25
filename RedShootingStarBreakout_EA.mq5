@@ -107,6 +107,8 @@ CPositionInfo  m_position;
 datetime       m_last_checked_bar_time = 0;
 datetime       m_last_checked_m1_bar_time = 0;
 bool           m_trigger_active = false;
+bool           m_had_position_open = false;
+datetime       m_last_trade_closed_time = 0;
 double         m_trigger_low = 0;
 double         m_trigger_high = 0;
 datetime       m_trigger_start_time = 0;
@@ -238,6 +240,16 @@ void OnTick()
 
     // Perform tick backup check for standard risk SL/TP (safety net)
     CheckActivePositionsRisk();
+
+    // Detect position close to track the exact close timestamp
+    bool currently_open = IsPositionOpen();
+    if (m_had_position_open && !currently_open) {
+        m_last_trade_closed_time = TimeCurrent();
+        PrintFormat("ℹ️ EA Position closed at %s. 5-minute cooldown active until %s.",
+                    TimeToString(m_last_trade_closed_time),
+                    TimeToString(m_last_trade_closed_time + 300));
+    }
+    m_had_position_open = currently_open;
 
     // Update visual chart dashboard
     UpdateDashboard();
@@ -448,6 +460,16 @@ void ExecuteShortEntry(double trigger_price)
     if (InpOnePositionAtATime && IsPositionOpen()) {
         Print("⚠️ Position is already open and InpOnePositionAtATime is active. Skipping trade.");
         return;
+    }
+
+    // 5-Minute Cooldown Guard: Check if less than 5 minutes (300 seconds) has passed since the last trade was closed
+    if (m_last_trade_closed_time > 0) {
+        datetime current_time = TimeCurrent();
+        long elapsed = current_time - m_last_trade_closed_time;
+        if (elapsed < 300) {
+            PrintFormat("⚠️ Trade execution skipped. Cooldown in effect. Only %d seconds elapsed of the required 300 since last position close.", elapsed);
+            return;
+        }
     }
 
     double entry_price = NormalizePrice(m_symbol.Bid());
