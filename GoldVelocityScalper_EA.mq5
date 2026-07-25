@@ -78,9 +78,10 @@ input group "=== Strategy Tester Calibration ==="
 input bool              InpTesterAutoCalibrate     = true;              // Auto-calibrate thresholds in Strategy Tester
 
 input group "=== Exit Mechanics ==="
-input bool              InpExitOnMomentumFade      = true;              // Exit when momentum fades
+input bool              InpExitOnMomentumFade      = false;             // Exit when momentum fades (Disabled by default to avoid noise cuts)
 input double            InpPeakSpeedDropRatio      = 0.40;              // Tick speed drops below peak * ratio
-input bool              InpExitOnOppositeTicks     = true;              // Exit on 5 consecutive opposite ticks
+input bool              InpExitOnOppositeTicks     = false;             // Exit on 5 consecutive opposite ticks (Disabled by default to avoid noise cuts)
+input int               InpMinHoldTimeSeconds      = 5;                 // Minimum trade duration before momentum fade exits are allowed
 input bool              InpExitOnSpreadWidening    = true;              // Exit on spread widening
 input double            InpExitSpreadMultiplier    = 2.5;               // Exit spread vs avg multiplier
 input int               InpMaxTradeDuration        = 30;                // Max trade duration in seconds
@@ -793,48 +794,52 @@ void CheckExitConditions(double current_tick_speed, double avg_spread, double cu
 
             m_peak_tick_speed = MathMax(m_peak_tick_speed, current_tick_speed);
 
-            // 1. Tick speed fade exit
-            if (InpExitOnMomentumFade && m_peak_tick_speed > 10.0)
+            // Enforce minimum hold time before momentum fade or opposite tick exits are evaluated
+            if (current_time - open_time >= InpMinHoldTimeSeconds)
             {
-               if (current_tick_speed < InpPeakSpeedDropRatio * m_peak_tick_speed)
+               // 1. Tick speed fade exit
+               if (InpExitOnMomentumFade && m_peak_tick_speed > 10.0)
                {
-                  Print("[GVS Exit] Momentum faded. Speed: ", current_tick_speed, " Peak: ", m_peak_tick_speed, " Threshold: ", InpPeakSpeedDropRatio * m_peak_tick_speed);
-                  m_trade.PositionClose(ticket);
-                  continue;
+                  if (current_tick_speed < InpPeakSpeedDropRatio * m_peak_tick_speed)
+                  {
+                     Print("[GVS Exit] Momentum faded. Speed: ", current_tick_speed, " Peak: ", m_peak_tick_speed, " Threshold: ", InpPeakSpeedDropRatio * m_peak_tick_speed);
+                     m_trade.PositionClose(ticket);
+                     continue;
+                  }
                }
-            }
 
-            // 2. Acceleration turns negative (opposite direction) exit
-            if (InpExitOnMomentumFade)
-            {
-               if (type == POSITION_TYPE_BUY && acceleration < -0.05)
+               // 2. Acceleration turns negative (opposite direction) exit
+               if (InpExitOnMomentumFade)
                {
-                  Print("[GVS Exit] Acceleration negative for BUY: ", acceleration);
-                  m_trade.PositionClose(ticket);
-                  continue;
+                  if (type == POSITION_TYPE_BUY && acceleration < -0.05)
+                  {
+                     Print("[GVS Exit] Acceleration negative for BUY: ", acceleration);
+                     m_trade.PositionClose(ticket);
+                     continue;
+                  }
+                  else if (type == POSITION_TYPE_SELL && acceleration > 0.05)
+                  {
+                     Print("[GVS Exit] Acceleration positive for SELL: ", acceleration);
+                     m_trade.PositionClose(ticket);
+                     continue;
+                  }
                }
-               else if (type == POSITION_TYPE_SELL && acceleration > 0.05)
-               {
-                  Print("[GVS Exit] Acceleration positive for SELL: ", acceleration);
-                  m_trade.PositionClose(ticket);
-                  continue;
-               }
-            }
 
-            // 3. Five consecutive opposite ticks exit
-            if (InpExitOnOppositeTicks)
-            {
-               if (type == POSITION_TYPE_BUY && consecutive_down >= 5)
+               // 3. Five consecutive opposite ticks exit
+               if (InpExitOnOppositeTicks)
                {
-                  Print("[GVS Exit] 5 consecutive down ticks during BUY");
-                  m_trade.PositionClose(ticket);
-                  continue;
-               }
-               else if (type == POSITION_TYPE_SELL && consecutive_up >= 5)
-               {
-                  Print("[GVS Exit] 5 consecutive up ticks during SELL");
-                  m_trade.PositionClose(ticket);
-                  continue;
+                  if (type == POSITION_TYPE_BUY && consecutive_down >= 5)
+                  {
+                     Print("[GVS Exit] 5 consecutive down ticks during BUY");
+                     m_trade.PositionClose(ticket);
+                     continue;
+                  }
+                  else if (type == POSITION_TYPE_SELL && consecutive_up >= 5)
+                  {
+                     Print("[GVS Exit] 5 consecutive up ticks during SELL");
+                     m_trade.PositionClose(ticket);
+                     continue;
+                  }
                }
             }
 
