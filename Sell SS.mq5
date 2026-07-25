@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      "https://github.com"
-#property version   "1.00"
+#property version   "1.01"
 #property strict
 
 //--- Include Standard Libraries
@@ -15,8 +15,8 @@
 
 //--- Input parameters
 input group "--- Strategy Settings ---"
-input ENUM_TIMEFRAMES InpTimeframe         = PERIOD_M1;      // Timeframe to scan
-input double          InpRiskRewardRatio   = 1.0;            // Risk:Reward multiplier
+input ENUM_TIMEFRAMES InpTimeframe         = PERIOD_CURRENT; // Timeframe to scan (PERIOD_CURRENT to match chart)
+input double          InpRiskRewardRatio   = 1.5;            // Risk:Reward multiplier
 input double          InpFixedLotSize      = 0.1;            // Lot size (if not using dynamic lot)
 input bool            InpUseDynamicLot     = false;          // Use risk-based dynamic lot sizing?
 input double          InpRiskPercentage    = 1.0;            // % Risk per trade (if dynamic lot)
@@ -24,6 +24,7 @@ input double          InpMaxMarginUtilPct  = 70.0;           // Max Margin Utili
 input bool            InpOnePositionAtATime = true;          // Limit to one open position at a time?
 
 input group "--- Regime EMA Settings ---"
+input bool            InpUseEMAFilter      = false;          // Filter signals with Regime EMA (Close < EMA)?
 input int             InpRegimeEMAPeriod   = 26;             // Regime EMA Period
 input ENUM_APPLIED_PRICE InpEMAAppliedPrice = PRICE_CLOSE;   // EMA Applied Price
 
@@ -33,14 +34,15 @@ input double          InpUpperWickMax      = 80.0;           // Upper wick max p
 input double          InpBodyMin           = 5.0;            // Body min percentage (5-30%)
 input double          InpBodyMax           = 30.0;           // Body max percentage
 input double          InpLowerWickMax      = 25.0;           // Lower wick max percentage (0-25%)
-input double          InpMinRangePct       = 0.0015;         // Min candle range pct (H-L)/Close (default 0.15%)
-input int             InpMinRangePoints    = 100;            // Min candle range in points (100 pts = $1.00 on GOLD)
+input double          InpMinRangePct       = 0.0;            // Min candle range pct (H-L)/Close (0.0 to disable)
+input int             InpMinRangePoints    = 0;              // Min candle range in points (0 to disable)
 
 input group "--- Breakout & Execution Settings ---"
-input double          InpEntryBufferPoints = 5.0;            // Entry buffer below signal low in points (0.05 USD)
+input bool            InpUseTimeFilters    = false;          // Enable entry cutoff time filters?
+input double          InpEntryBufferPoints = 5.0;            // Entry buffer below signal low in points (0.05 USD on GOLD)
 input string          InpEntryCutoffTime   = "15:00";        // Cutoff time for entries (Broker HH:MM)
 input string          InpForceExitTime     = "15:09";        // Time to force exit all open positions (Broker HH:MM)
-input bool            InpForceExitDaily    = true;           // Force exit daily at cutoff time?
+input bool            InpForceExitDaily    = false;          // Force exit daily at cutoff time?
 input int             InpMagicNumber       = 20260225;       // Magic Number
 input string          InpTradeTag          = "RedShoot";     // Order Comment Tag
 
@@ -56,6 +58,7 @@ double         m_trigger_high = 0;
 datetime       m_trigger_start_time = 0;
 datetime       m_trigger_expiry_time = 0;
 int            m_ema_handle = INVALID_HANDLE;
+double         m_last_bid = 0;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -81,6 +84,7 @@ int OnInit()
     }
 
     m_last_checked_bar_time = iTime(_Symbol, InpTimeframe, 0);
+    m_last_bid = 0;
 
     // Run core tests to verify calculation logic matches expectations
     RunSelfTests();
@@ -110,6 +114,9 @@ void OnTick()
         return;
     }
 
+    double current_bid = m_symbol.Bid();
+    if (m_last_bid == 0) m_last_bid = current_bid;
+
     // Check for daily force exit
     if (InpForceExitDaily && IsPastTime(InpForceExitTime)) {
         if (IsPositionOpen()) {
@@ -118,6 +125,7 @@ void OnTick()
         }
         m_trigger_active = false;
         UpdateDashboard();
+        m_last_bid = current_bid;
         return;
     }
 
@@ -137,21 +145,24 @@ void OnTick()
             PrintFormat("⏳ Trigger expired for %s. Next candle completed without breakout.", _Symbol);
             m_trigger_active = false;
             UpdateDashboard();
+            m_last_bid = current_bid;
             return;
         }
 
         // Only active inside the breakout candle window
         if (current_time >= m_trigger_start_time) {
-            if (IsPastTime(InpEntryCutoffTime)) {
+            if (InpUseTimeFilters && IsPastTime(InpEntryCutoffTime)) {
                 PrintFormat("⏰ Cutoff time %s passed. Discarding trigger.", InpEntryCutoffTime);
                 m_trigger_active = false;
                 UpdateDashboard();
+                m_last_bid = current_bid;
                 return;
             }
 
             if (InpOnePositionAtATime && IsPositionOpen()) {
                 m_trigger_active = false;
                 UpdateDashboard();
+                m_last_bid = current_bid;
                 return;
             }
 
@@ -160,20 +171,14 @@ void OnTick()
             double threshold = m_trigger_low - buffer;
             threshold = NormalizePrice(threshold);
 
-            double current_bid = m_symbol.Bid();
-            static double last_bid = 0;
-            if (last_bid == 0) last_bid = current_bid;
-
             // First-touch crossing check
-            if (last_bid >= threshold && current_bid < threshold) {
+            if (m_last_bid >= threshold && current_bid < threshold) {
                 PrintFormat("🔥 BREAKOUT DETECTED: Bid %.2f crossed below threshold %.2f (Signal Low: %.2f, Buffer: %.2f)",
                             current_bid, threshold, m_trigger_low, buffer);
 
                 ExecuteShortEntry(threshold);
                 m_trigger_active = false; // Set to false immediately to prevent duplicate fills (Anti-Race Lock pattern)
             }
-
-            last_bid = current_bid;
         }
     }
 
@@ -182,6 +187,8 @@ void OnTick()
 
     // Update visual chart dashboard
     UpdateDashboard();
+
+    m_last_bid = current_bid;
 }
 
 //+------------------------------------------------------------------+
@@ -222,14 +229,14 @@ void CheckSignal()
 
     // Range percentage check
     double range_pct = total_range / MathMax(MathAbs(c), 1e-9);
-    if (range_pct < InpMinRangePct) {
+    if (InpMinRangePct > 0.0 && range_pct < InpMinRangePct) {
         PrintFormat("🔍 Candle rejected: Range percentage (%.4f%%) < Min Required (%.4f%%)", range_pct * 100, InpMinRangePct * 100);
         return;
     }
 
     // Range points check
     int range_points = (int)MathRound(total_range / m_symbol.Point());
-    if (range_points < InpMinRangePoints) {
+    if (InpMinRangePoints > 0 && range_points < InpMinRangePoints) {
         PrintFormat("🔍 Candle rejected: Range points (%d) < Min Required (%d)", range_points, InpMinRangePoints);
         return;
     }
@@ -239,27 +246,37 @@ void CheckSignal()
     double body_pct = ((o - c) / total_range) * 100.0;
     double lower_wick_pct = ((c - l) / total_range) * 100.0;
 
-    bool valid_geometry = (upper_wick_pct >= InpUpperWickMin && upper_wick_pct <= InpUpperWickMax) &&
-                          (body_pct >= InpBodyMin && body_pct <= InpBodyMax) &&
-                          (lower_wick_pct >= 0.0 && lower_wick_pct <= InpLowerWickMax);
+    // Detailed candidate logging
+    PrintFormat("📊 Candidate candle found. Upper Wick: %.1f%%, Body: %.1f%%, Lower Wick: %.1f%%, Range: %.2f",
+                upper_wick_pct, body_pct, lower_wick_pct, total_range);
 
-    if (!valid_geometry) {
+    if (upper_wick_pct < InpUpperWickMin || upper_wick_pct > InpUpperWickMax) {
+        PrintFormat("❌ Candle rejected: Upper Wick %.1f%% is outside bounds (%.1f%% - %.1f%%)", upper_wick_pct, InpUpperWickMin, InpUpperWickMax);
+        return;
+    }
+    if (body_pct < InpBodyMin || body_pct > InpBodyMax) {
+        PrintFormat("❌ Candle rejected: Body %.1f%% is outside bounds (%.1f%% - %.1f%%)", body_pct, InpBodyMin, InpBodyMax);
+        return;
+    }
+    if (lower_wick_pct < 0.0 || lower_wick_pct > InpLowerWickMax) {
+        PrintFormat("❌ Candle rejected: Lower Wick %.1f%% is outside bounds (0.0%% - %.1f%%)", lower_wick_pct, InpLowerWickMax);
         return;
     }
 
     // Regime EMA Filter Check:
-    // Close must be below EMA
-    double ema_values[];
-    ArraySetAsSeries(ema_values, true);
-    if (CopyBuffer(m_ema_handle, 0, 1, 1, ema_values) < 1) {
-        Print("⚠️ Error copying EMA values for trend filter.");
-        return;
-    }
-    double current_ema = ema_values[0];
+    if (InpUseEMAFilter) {
+        double ema_values[];
+        ArraySetAsSeries(ema_values, true);
+        if (CopyBuffer(m_ema_handle, 0, 1, 1, ema_values) < 1) {
+            Print("⚠️ Error copying EMA values for trend filter.");
+            return;
+        }
+        double current_ema = ema_values[0];
 
-    if (c >= current_ema) {
-        PrintFormat("🔍 Signal rejected: Close (%.2f) is above or equal to Regime EMA (%.2f)", c, current_ema);
-        return;
+        if (c >= current_ema) {
+            PrintFormat("🔍 Signal rejected: Close (%.2f) is above or equal to Regime EMA (%.2f)", c, current_ema);
+            return;
+        }
     }
 
     // We have a verified signal!
@@ -578,6 +595,7 @@ void UpdateDashboard()
                      "  Symbol: " + _Symbol + "\n" +
                      "  Timeframe: " + EnumToString(InpTimeframe) + "\n" +
                      "  Regime EMA (" + (string)InpRegimeEMAPeriod + "): " + (m_ema_handle != INVALID_HANDLE ? "OK" : "Error") + "\n" +
+                     "  EMA Filter: " + (InpUseEMAFilter ? "ENABLED" : "DISABLED") + "\n" +
                      "  Risk:Reward Ratio: " + DoubleToString(InpRiskRewardRatio, 2) + "\n" +
                      "  Lot Size: " + (InpUseDynamicLot ? "Dynamic (" + DoubleToString(InpRiskPercentage, 2) + "%)" : "Fixed (" + DoubleToString(InpFixedLotSize, 2) + ")") + "\n" +
                      "--------------------------------------------------\n" +
