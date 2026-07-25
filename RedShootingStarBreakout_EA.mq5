@@ -18,6 +18,7 @@ input group "--- Strategy Settings ---"
 input ENUM_TIMEFRAMES InpTimeframe         = PERIOD_CURRENT; // Timeframe to scan (PERIOD_CURRENT to match chart)
 input double          InpRiskRewardRatio   = 1.5;            // Risk:Reward multiplier
 input double          InpFixedLotSize      = 0.1;            // Lot size (if not using dynamic lot)
+input double          InpMinLotSizeOverride = 0.0;           // Minimum Lot Size Override (0.0 to use broker's SYMBOL_VOLUME_MIN)
 input bool            InpUseDynamicLot     = false;          // Use risk-based dynamic lot sizing?
 input double          InpRiskPercentage    = 1.0;            // % Risk per trade (if dynamic lot)
 input double          InpMaxMarginUtilPct  = 70.0;           // Max Margin Utilization Percentage (prevent Code 10019)
@@ -535,6 +536,9 @@ double CalculateDynamicLotSize(double risk)
 double NormalizeLotSize(double lots)
 {
     double min_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
+    if (InpMinLotSizeOverride > 0.0) {
+        min_lot = InpMinLotSizeOverride;
+    }
     double max_lot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MAX);
     double lot_step = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
 
