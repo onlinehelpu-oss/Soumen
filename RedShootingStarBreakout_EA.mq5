@@ -34,7 +34,11 @@ input bool            InpEnableC4          = true;           // Enable Pattern C
 input bool            InpEnableC5          = true;           // Enable Pattern C5 (Bearish Strong Rejection)
 input bool            InpEnableC6          = true;           // Enable Pattern C6 (Rejection, minimal lower wick)
 input bool            InpEnableC7          = true;           // Enable Pattern C7 (Extreme Gravestone Pinbar)
+input bool            InpEnableSwingSS     = true;           // Enable Swing Shooting Star Pattern
 input bool            InpEnableCustom      = true;           // Enable Custom Fallback Rejection Pattern
+
+input group "--- Pattern Swing Shooting Star Parameters ---"
+input int             InpSwingLength       = 5;              // Swing High Lookback Length
 
 input group "--- Pattern C2 (Classic Shooting Star) Parameters ---"
 input double          InpC2_MinUpperWickPct = 40.0;          // C2 Min Upper Wick % (relaxed from 55.0)
@@ -239,10 +243,13 @@ void CheckSignal()
         return;
     }
 
-    // Copy rates of completed bars (index 1 and index 2)
+    // We need at least 1 + InpSwingLength completed bars to check Swing Shooting Star.
+    // Index 1 is the completed signal candidate.
+    // Preceding candles are at indexes 2, 3, etc.
+    int lookback = MathMax(2, 1 + InpSwingLength);
     MqlRates rates[];
     ArraySetAsSeries(rates, true);
-    if (CopyRates(_Symbol, InpTimeframe, 1, 2, rates) < 2) {
+    if (CopyRates(_Symbol, InpTimeframe, 1, lookback, rates) < lookback) {
         Print("⚠️ Error copying rates for signal candle check.");
         return;
     }
@@ -286,6 +293,11 @@ void CheckSignal()
     double body_pct       = ((body_high - body_low) / total_range) * 100.0;
     double lower_wick_pct = ((body_low - l) / total_range) * 100.0;
 
+    // Absolute price variables for Swing Shooting Star Pattern
+    double abs_body       = MathAbs(c - o);
+    double abs_upper_wick = h - body_high;
+    double abs_lower_wick = body_low - l;
+
     // Check which enabled pattern matches:
     string matched_pattern = "";
 
@@ -307,7 +319,24 @@ void CheckSignal()
     else if (InpEnableC7 && upper_wick_pct >= InpC7_MinUpperWickPct && body_pct <= InpC7_MaxBodyPct && lower_wick_pct >= InpC7_MinLowerWickPct && lower_wick_pct <= InpC7_MaxLowerWickPct) {
         matched_pattern = "C7";
     }
-    else if (InpEnableCustom && upper_wick_pct >= InpUpperWickMin && upper_wick_pct <= InpUpperWickMax && body_pct >= InpBodyMin && body_pct <= InpBodyMax && lower_wick_pct >= 0.0 && lower_wick_pct <= InpLowerWickMax) {
+    else if (InpEnableSwingSS) {
+        // Swing Shooting Star Conditions:
+        // 1. Swing High: h > high of preceding InpSwingLength candles (lookback from rates[1] to rates[InpSwingLength])
+        bool is_swing_high = true;
+        for (int idx = 1; idx <= InpSwingLength && idx < lookback; idx++) {
+            if (h <= rates[idx].high) {
+                is_swing_high = false;
+                break;
+            }
+        }
+        // 2. Upper Wick > Body: abs_upper_wick > abs_body
+        // 3. Lower Wick < Body: abs_lower_wick < abs_body
+        if (is_swing_high && abs_upper_wick > abs_body && abs_lower_wick < abs_body) {
+            matched_pattern = "SwingSS";
+        }
+    }
+
+    if (matched_pattern == "" && InpEnableCustom && upper_wick_pct >= InpUpperWickMin && upper_wick_pct <= InpUpperWickMax && body_pct >= InpBodyMin && body_pct <= InpBodyMax && lower_wick_pct >= 0.0 && lower_wick_pct <= InpLowerWickMax) {
         matched_pattern = "Custom Fallback";
     }
 
@@ -640,7 +669,7 @@ void UpdateDashboard()
                      "  Red Candle Only: " + (InpRedCandleOnly ? "YES" : "NO") + "\n" +
                      "  Prev Green Required: " + (InpRequirePrevGreen ? "YES" : "NO") + "\n" +
                      "  Risk:Reward Ratio: " + DoubleToString(InpRiskRewardRatio, 2) + "\n" +
-                     "  Lot Size: " + (InpUseDynamicLot ? "Dynamic (" + DoubleToString(InpRiskPercentage, 2) + "%)" : "Fixed (" + DoubleToString(InpRiskPercentage, 2) + ")") + "\n" +
+                     "  Lot Size: " + (InpUseDynamicLot ? "Dynamic (" + DoubleToString(InpRiskPercentage, 2) + "%)" : "Fixed (" + DoubleToString(InpFixedLotSize, 2) + ")") + "\n" +
                      "--------------------------------------------------\n" +
                      "  Active Breakout Trigger: " + (m_trigger_active ? "YES" : "NO") + "\n";
 
