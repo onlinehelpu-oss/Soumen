@@ -5,14 +5,14 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Expert Developer"
 #property link      ""
-#property version   "1.00"
+#property version   "1.10"
 #property strict
 
 // Include standard trade library
 #include <Trade\Trade.mqh>
 
 /*
-   LuxAlgo Swing Candle Patterns EA
+   LuxAlgo Swing Candle Patterns EA - GOLD ONLY Optimized Edition
 
    Pattern Descriptions:
    - Hammer: The hammer candlestick pattern is formed of a short body with a long lower wick,
@@ -49,8 +49,8 @@
 
 //--- Input Parameters
 input group "=== LuxAlgo Strategy Settings ==="
-input int      InpLength          = 21;       // Swing Pivot Length (default 21)
-input double   InpMinCandlePoints = 100.0;    // Min Candle Range in Points to Avoid Tiny Candles (0 to disable)
+input int      InpLength          = 5;        // Swing Pivot Length (e.g., 5 for frequent signals, default 5)
+input double   InpMinCandleUSD    = 0.5;      // Min Candle Range in USD (e.g., 0.50 USD for Gold, 0 to disable)
 
 input group "=== Risk Management Settings ==="
 input double   InpRiskReward      = 2.0;      // Take Profit Risk-to-Reward Ratio (e.g. 1.5, 2.0)
@@ -74,6 +74,17 @@ int OnInit()
    // Configure trade filling mode dynamically
    SetTradeFillingMode(m_trade);
 
+   // Verify symbol is GOLD / XAUUSD
+   string symbol = Symbol();
+   StringToUpper(symbol);
+   bool is_gold = (StringFind(symbol, "XAU") >= 0 || StringFind(symbol, "GOLD") >= 0);
+   if(!is_gold)
+   {
+      Alert("Error: This Expert Advisor is optimized and restricted to GOLD (XAUUSD) only!");
+      Print("Error: Symbol '", Symbol(), "' is not a recognized GOLD or XAUUSD symbol.");
+      return INIT_PARAMETERS_INCORRECT;
+   }
+
    // Verify inputs
    if(InpLength <= 0)
    {
@@ -91,7 +102,7 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
 
-   Print("LuxAlgo Swing Candle Patterns EA Initialized Successfully.");
+   Print("LuxAlgo Swing Candle Patterns EA initialized successfully on GOLD symbol: ", Symbol());
    return INIT_SUCCEEDED;
 }
 
@@ -143,9 +154,11 @@ void OnTick()
    double d = MathAbs(c - o);
    double total_range = h - l;
 
-   // Filter out tiny candles if rule is enabled
-   if(InpMinCandlePoints > 0 && total_range < InpMinCandlePoints * SymbolInfoDouble(Symbol(), SYMBOL_POINT))
+   // Filter out tiny candles based on absolute USD price range (e.g. 0.50 USD for Gold)
+   if(InpMinCandleUSD > 0 && total_range < InpMinCandleUSD)
    {
+      m_last_signal_msg = StringFormat("Candle at [%d] ignored: range (%.2f USD) < Min USD (%.2f)", P, total_range, InpMinCandleUSD);
+      Print(m_last_signal_msg);
       return;
    }
 
@@ -156,6 +169,7 @@ void OnTick()
 
    bool is_hanging  = (MathMin(o, c) - l > d) && (h - MathMax(o, c) < d);
    bool is_shooting = (h - MathMax(o, c) > d) && (MathMin(o, c) - l < d);
+   // Corrected bearish engulfing formula from the source Pine Script copy-paste bug
    bool is_beareng  = (rates[P].close < rates[P].open) && (rates[P+1].close > rates[P+1].open) && (rates[P].close < rates[P+1].open) && (rates[P].open > rates[P+1].close);
 
    // Check for Swing Low (Pivot Low)
@@ -178,8 +192,12 @@ void OnTick()
          }
          else
          {
-            PrintFormat("Breakout failed: Next candle high (%.5f) did not exceed signal high (%.5f).", rates[InpLength].high, rates[P].high);
+            PrintFormat("Breakout failed: Next candle high (%.2f) did not exceed signal high (%.2f).", rates[InpLength].high, rates[P].high);
          }
+      }
+      else
+      {
+         PrintFormat("Swing Low detected at [%d] but no matching bullish pattern (Hammer, I-Hammer, Bull-Engulfing).", P);
       }
    }
 
@@ -203,8 +221,12 @@ void OnTick()
          }
          else
          {
-            PrintFormat("Breakout failed: Next candle low (%.5f) did not fall below signal low (%.5f).", rates[InpLength].low, rates[P].low);
+            PrintFormat("Breakout failed: Next candle low (%.2f) did not fall below signal low (%.2f).", rates[InpLength].low, rates[P].low);
          }
+      }
+      else
+      {
+         PrintFormat("Swing High detected at [%d] but no matching bearish pattern (Hanging Man, Shooting Star, Bear-Engulfing).", P);
       }
    }
 }
@@ -265,14 +287,17 @@ void ExecuteBuy(double signal_high, double signal_low)
       return;
    }
 
+   // Auto-adjust SL distance to comply with broker stop level requirements
+   double stop_level = SymbolInfoInteger(Symbol(), SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+   if(stop_level > 0 && sl_dist < stop_level)
+   {
+      sl_dist = stop_level + 5.0 * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+      sl = NormalizeDouble(ask - sl_dist, Digits());
+      PrintFormat("Adjusted SL distance to meet broker stops level limit. New SL: %.5f", sl);
+   }
+
    // Take Profit calculated by Risk-to-Reward Ratio
    double tp = NormalizeDouble(ask + InpRiskReward * sl_dist, Digits());
-
-   if(!IsSLTPValid(ORDER_TYPE_BUY, ask, sl, tp))
-   {
-      Print("Cannot open BUY: Stop Loss or Take Profit violates stop level requirements.");
-      return;
-   }
 
    PrintFormat("Opening BUY Position: Lot=%.2f, Entry=%.5f, SL=%.5f, TP=%.5f", lot, ask, sl, tp);
    m_trade.Buy(lot, Symbol(), ask, sl, tp, "LuxAlgo Swing Buy");
@@ -296,14 +321,17 @@ void ExecuteSell(double signal_high, double signal_low)
       return;
    }
 
+   // Auto-adjust SL distance to comply with broker stop level requirements
+   double stop_level = SymbolInfoInteger(Symbol(), SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+   if(stop_level > 0 && sl_dist < stop_level)
+   {
+      sl_dist = stop_level + 5.0 * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+      sl = NormalizeDouble(bid + sl_dist, Digits());
+      PrintFormat("Adjusted SL distance to meet broker stops level limit. New SL: %.5f", sl);
+   }
+
    // Take Profit calculated by Risk-to-Reward Ratio
    double tp = NormalizeDouble(bid - InpRiskReward * sl_dist, Digits());
-
-   if(!IsSLTPValid(ORDER_TYPE_SELL, bid, sl, tp))
-   {
-      Print("Cannot open SELL: Stop Loss or Take Profit violates stop level requirements.");
-      return;
-   }
 
    PrintFormat("Opening SELL Position: Lot=%.2f, Entry=%.5f, SL=%.5f, TP=%.5f", lot, bid, sl, tp);
    m_trade.Sell(lot, Symbol(), bid, sl, tp, "LuxAlgo Swing Sell");
@@ -379,39 +407,18 @@ double NormalizeVolume(double volume)
 }
 
 //+------------------------------------------------------------------+
-//| Validate SL & TP against broker stops level                      |
-//+------------------------------------------------------------------+
-bool IsSLTPValid(ENUM_ORDER_TYPE order_type, double entry, double sl, double tp)
-{
-   double stop_level = SymbolInfoInteger(Symbol(), SYMBOL_TRADE_STOPS_LEVEL) * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
-   if(stop_level == 0) return true;
-
-   if(order_type == ORDER_TYPE_BUY)
-   {
-      if(sl > 0 && entry - sl < stop_level) return false;
-      if(tp > 0 && tp - entry < stop_level) return false;
-   }
-   else if(order_type == ORDER_TYPE_SELL)
-   {
-      if(sl > 0 && sl - entry < stop_level) return false;
-      if(tp > 0 && entry - tp < stop_level) return false;
-   }
-   return true;
-}
-
-//+------------------------------------------------------------------+
 //| Visual dashboard update                                          |
 //+------------------------------------------------------------------+
 void UpdateDashboard()
 {
    string dashboard = "==================================================\n" +
-                      "   LUXALGO SWING CANDLE PATTERNS EA (MT5)\n" +
+                      "   LUXALGO SWING CANDLE PATTERNS EA (GOLD ONLY)\n" +
                       "==================================================\n" +
                       StringFormat("   Symbol: %s | Timeframe: %s\n", Symbol(), EnumToString(Period())) +
                       StringFormat("   Pivot Length: %d\n", InpLength) +
                       StringFormat("   Risk-to-Reward Ratio: 1 : %.1f\n", InpRiskReward) +
                       StringFormat("   Lot Size: %.2f | Magic Number: %I64u\n", InpLotSize, InpMagic) +
-                      StringFormat("   Min Candle Points: %.1f\n", InpMinCandlePoints) +
+                      StringFormat("   Min Candle USD Range: %.2f USD\n", InpMinCandleUSD) +
                       "--------------------------------------------------\n" +
                       "   Last Signal/Status:\n" +
                       "   " + m_last_signal_msg + "\n" +
