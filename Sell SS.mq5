@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      "https://github.com"
-#property version   "1.01"
+#property version   "1.02"
 #property strict
 
 //--- Include Standard Libraries
@@ -28,12 +28,16 @@ input bool            InpUseEMAFilter      = false;          // Filter signals w
 input int             InpRegimeEMAPeriod   = 26;             // Regime EMA Period
 input ENUM_APPLIED_PRICE InpEMAAppliedPrice = PRICE_CLOSE;   // EMA Applied Price
 
+input group "--- Candle Pattern Controls ---"
+input bool            InpRedCandleOnly     = false;          // Require signal candle to be Red? (false allows green rejection stars)
+input bool            InpRequirePrevGreen  = false;          // Require the previous candle to be Green?
+
 input group "--- Candle Geometry Settings ---"
-input double          InpUpperWickMin      = 50.0;           // Upper wick min percentage (50-80%)
-input double          InpUpperWickMax      = 80.0;           // Upper wick max percentage
-input double          InpBodyMin           = 5.0;            // Body min percentage (5-30%)
-input double          InpBodyMax           = 30.0;           // Body max percentage
-input double          InpLowerWickMax      = 25.0;           // Lower wick max percentage (0-25%)
+input double          InpUpperWickMin      = 50.0;           // Upper wick min percentage (e.g. >= 50% for strong rejection)
+input double          InpUpperWickMax      = 100.0;          // Upper wick max percentage (up to 100% for full pinbars)
+input double          InpBodyMin           = 0.0;            // Body min percentage (0% allows dojis)
+input double          InpBodyMax           = 40.0;           // Body max percentage (up to 40% for strong rejection stars)
+input double          InpLowerWickMax      = 30.0;           // Lower wick max percentage (up to 30% allows small lower shadows)
 input double          InpMinRangePct       = 0.0;            // Min candle range pct (H-L)/Close (0.0 to disable)
 input int             InpMinRangePoints    = 0;              // Min candle range in points (0 to disable)
 
@@ -44,7 +48,7 @@ input string          InpEntryCutoffTime   = "15:00";        // Cutoff time for 
 input string          InpForceExitTime     = "15:09";        // Time to force exit all open positions (Broker HH:MM)
 input bool            InpForceExitDaily    = false;          // Force exit daily at cutoff time?
 input int             InpMagicNumber       = 20260225;       // Magic Number
-input string          InpTradeTag          = "RedShoot";     // Order Comment Tag
+input string          InpTradeTag          = "ShootRej";     // Order Comment Tag
 
 //--- State Variables
 CTrade         m_trade;
@@ -211,7 +215,7 @@ void CheckSignal()
     }
 
     // rates[0] is the completed signal candidate (index 1)
-    // rates[1] is the previous candle (index 2, must be green)
+    // rates[1] is the previous candle (index 2, must be green if filter enabled)
     double o = rates[0].open;
     double h = rates[0].high;
     double l = rates[0].low;
@@ -221,8 +225,8 @@ void CheckSignal()
     double prev_c = rates[1].close;
 
     // Initial validation
-    if (c >= o) return;       // Candidate must be RED
-    if (prev_c <= prev_o) return;  // Previous candle must be GREEN
+    if (InpRedCandleOnly && c >= o) return;        // Candidate must be RED if filter enabled
+    if (InpRequirePrevGreen && prev_c <= prev_o) return; // Previous candle must be GREEN if filter enabled
     if (c == 0 || h <= l) return;
 
     double total_range = h - l;
@@ -241,14 +245,17 @@ void CheckSignal()
         return;
     }
 
-    // Geometry Calculations
-    double upper_wick_pct = ((h - o) / total_range) * 100.0;
-    double body_pct = ((o - c) / total_range) * 100.0;
-    double lower_wick_pct = ((c - l) / total_range) * 100.0;
+    // Geometry Calculations (Universal for both RED and GREEN rejection candles)
+    double body_high = MathMax(o, c);
+    double body_low  = MathMin(o, c);
+
+    double upper_wick_pct = ((h - body_high) / total_range) * 100.0;
+    double body_pct       = ((body_high - body_low) / total_range) * 100.0;
+    double lower_wick_pct = ((body_low - l) / total_range) * 100.0;
 
     // Detailed candidate logging
-    PrintFormat("📊 Candidate candle found. Upper Wick: %.1f%%, Body: %.1f%%, Lower Wick: %.1f%%, Range: %.2f",
-                upper_wick_pct, body_pct, lower_wick_pct, total_range);
+    PrintFormat("📊 Candidate candle found. Color: %s | Upper Wick: %.1f%%, Body: %.1f%%, Lower Wick: %.1f%%, Range: %.2f",
+                (c < o ? "RED" : "GREEN"), upper_wick_pct, body_pct, lower_wick_pct, total_range);
 
     if (upper_wick_pct < InpUpperWickMin || upper_wick_pct > InpUpperWickMax) {
         PrintFormat("❌ Candle rejected: Upper Wick %.1f%% is outside bounds (%.1f%% - %.1f%%)", upper_wick_pct, InpUpperWickMin, InpUpperWickMax);
@@ -286,8 +293,8 @@ void CheckSignal()
     m_trigger_start_time = iTime(_Symbol, InpTimeframe, 0); // Trigger begins at start of current bar 0
     m_trigger_expiry_time = m_trigger_start_time + PeriodSeconds(InpTimeframe); // Expires at end of bar 0
 
-    PrintFormat("🎯 BEARISH SIGNAL GENERATED: %s. Wick=%.1f%%, Body=%.1f%%, Lower=%.1f%%.",
-                _Symbol, upper_wick_pct, body_pct, lower_wick_pct);
+    PrintFormat("🎯 REJECTION SIGNAL GENERATED: %s (%s). Wick=%.1f%%, Body=%.1f%%, Lower=%.1f%%.",
+                _Symbol, (c < o ? "RED" : "GREEN"), upper_wick_pct, body_pct, lower_wick_pct);
     PrintFormat("👉 Breakout watch low: %.2f | SL target: %.2f | Window: %s to %s",
                 l, h, TimeToString(m_trigger_start_time), TimeToString(m_trigger_expiry_time));
 }
@@ -538,14 +545,15 @@ void ConfigureFillingMode()
 //+------------------------------------------------------------------+
 bool TestBearishShootingStarGeometry(double o, double h, double l, double c, double prev_o, double prev_c)
 {
-    if (c >= o) return false;
-    if (prev_c <= prev_o) return false;
-    if (c == 0 || h <= l) return false;
-
     double total_range = h - l;
-    double upper_wick_pct = ((h - o) / total_range) * 100.0;
-    double body_pct = ((o - c) / total_range) * 100.0;
-    double lower_wick_pct = ((c - l) / total_range) * 100.0;
+    if (total_range <= 0) return false;
+
+    double body_high = MathMax(o, c);
+    double body_low  = MathMin(o, c);
+
+    double upper_wick_pct = ((h - body_high) / total_range) * 100.0;
+    double body_pct       = ((body_high - body_low) / total_range) * 100.0;
+    double lower_wick_pct = ((body_low - l) / total_range) * 100.0;
 
     bool is_valid_geometry = (upper_wick_pct >= InpUpperWickMin && upper_wick_pct <= InpUpperWickMax) &&
                              (body_pct >= InpBodyMin && body_pct <= InpBodyMax) &&
@@ -561,20 +569,20 @@ void RunSelfTests()
 {
     Print("--- Running Core EA Self Tests ---");
 
-    // Test 1: Valid shooting star with updated geometry
+    // Test 1: Valid shooting star with updated geometry (RED CANDLE)
     // Upper: ~54.5%, Body: ~20.5%, Lower: 25.0%
     bool test1 = TestBearishShootingStarGeometry(100.0, 112.0, 90.0, 95.5, 95.0, 98.0);
-    PrintFormat("Test 1 (Valid Geometry): %s", test1 ? "PASSED ✅" : "FAILED ❌");
+    PrintFormat("Test 1 (Valid Red Geometry): %s", test1 ? "PASSED ✅" : "FAILED ❌");
 
     // Test 2: Upper wick too short (40%)
     bool test2 = TestBearishShootingStarGeometry(105.0, 109.0, 95.0, 102.0, 100.0, 102.0);
     PrintFormat("Test 2 (Upper wick too short): %s", !test2 ? "PASSED ✅" : "FAILED ❌");
 
-    // Test 3: Body too large (40%)
+    // Test 3: Body too large (45%)
     bool test3 = TestBearishShootingStarGeometry(108.0, 112.0, 98.0, 100.0, 100.0, 102.0);
     PrintFormat("Test 3 (Body too large): %s", !test3 ? "PASSED ✅" : "FAILED ❌");
 
-    // Test 4: Lower wick too long (30%)
+    // Test 4: Lower wick too long (35%)
     bool test4 = TestBearishShootingStarGeometry(108.0, 112.0, 98.0, 101.0, 100.0, 102.0);
     PrintFormat("Test 4 (Lower wick too long): %s", !test4 ? "PASSED ✅" : "FAILED ❌");
 }
@@ -596,6 +604,8 @@ void UpdateDashboard()
                      "  Timeframe: " + EnumToString(InpTimeframe) + "\n" +
                      "  Regime EMA (" + (string)InpRegimeEMAPeriod + "): " + (m_ema_handle != INVALID_HANDLE ? "OK" : "Error") + "\n" +
                      "  EMA Filter: " + (InpUseEMAFilter ? "ENABLED" : "DISABLED") + "\n" +
+                     "  Red Candle Only: " + (InpRedCandleOnly ? "YES" : "NO") + "\n" +
+                     "  Prev Green Required: " + (InpRequirePrevGreen ? "YES" : "NO") + "\n" +
                      "  Risk:Reward Ratio: " + DoubleToString(InpRiskRewardRatio, 2) + "\n" +
                      "  Lot Size: " + (InpUseDynamicLot ? "Dynamic (" + DoubleToString(InpRiskPercentage, 2) + "%)" : "Fixed (" + DoubleToString(InpFixedLotSize, 2) + ")") + "\n" +
                      "--------------------------------------------------\n" +
