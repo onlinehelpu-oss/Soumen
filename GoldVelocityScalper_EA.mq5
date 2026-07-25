@@ -1150,7 +1150,8 @@ void OnTick()
                      }
 
                      // Only apply percentage-based "pullback too deep" invalidations on solid developed swings (height >= 0.15 USD / 15 points)
-                     if (height >= 0.15 && retracement > InpMaxPullbackLimit)
+                     // If using PEAK_BREAKOUT entry mode, bypass pullback-too-deep invalidations to allow deep consolidation swings
+                     if (InpEntryMode != ENTRY_PEAK_BREAKOUT && height >= 0.15 && retracement > InpMaxPullbackLimit)
                      {
                         m_setup_active = false;
                         Print("[GVS Setup] BUY setup invalidated (pullback too deep: ", DoubleToString(retracement * 100, 1), "%).");
@@ -1205,7 +1206,8 @@ void OnTick()
                      }
 
                      // Only apply percentage-based "pullback too deep" invalidations on solid developed swings (height >= 0.15 USD / 15 points)
-                     if (height >= 0.15 && retracement > InpMaxPullbackLimit)
+                     // If using PEAK_BREAKOUT entry mode, bypass pullback-too-deep invalidations to allow deep consolidation swings
+                     if (InpEntryMode != ENTRY_PEAK_BREAKOUT && height >= 0.15 && retracement > InpMaxPullbackLimit)
                      {
                         m_setup_active = false;
                         Print("[GVS Setup] SELL setup invalidated (pullback too deep: ", DoubleToString(retracement * 100, 1), "%).");
