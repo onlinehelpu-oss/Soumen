@@ -37,6 +37,7 @@ input bool            InpEnableC6          = true;           // Enable Pattern C
 input bool            InpEnableC7          = true;           // Enable Pattern C7 (Extreme Gravestone Pinbar)
 input bool            InpEnableSwingSS     = true;           // Enable Swing Shooting Star Pattern
 input bool            InpEnable1MinPattern = true;           // Enable 1-Minute Custom Shooting Star Pattern (from image)
+input bool            InpEnableB1B2        = true;           // Enable Pattern B1/B2 (Extreme Upper Wick Pinbars)
 input bool            InpEnableCustom      = true;           // Enable Custom Fallback Rejection Pattern
 
 input group "--- Pattern Swing Shooting Star Parameters ---"
@@ -80,6 +81,11 @@ input double          InpC7_MinUpperWickPct = 45.0;          // C7 Min Upper Wic
 input double          InpC7_MaxBodyPct      = 35.0;          // C7 Max Body % (relaxed from 25.0)
 input double          InpC7_MinLowerWickPct = 0.0;           // C7 Min Lower Wick % (relaxed from 5.0)
 input double          InpC7_MaxLowerWickPct = 30.0;          // C7 Max Lower Wick % (relaxed from 20.0)
+
+input group "--- Pattern B1/B2 (Extreme Pinbars) Parameters ---"
+input double          InpB1B2_MinUpperWickPct = 70.0;        // B1/B2 Min Upper Wick % (extreme rejection)
+input double          InpB1B2_MaxBodyPct      = 25.0;        // B1/B2 Max Body %
+input double          InpB1B2_MaxLowerWickPct = 10.0;        // B1/B2 Max Lower Wick % (minimal tail)
 
 input group "--- Custom Fallback Rejection Settings ---"
 input double          InpUpperWickMin      = 30.0;           // Upper wick min percentage (relaxed from 50.0)
@@ -343,6 +349,9 @@ void CheckSignal()
     }
     else if (InpEnableC7 && upper_wick_pct >= InpC7_MinUpperWickPct && body_pct <= InpC7_MaxBodyPct && lower_wick_pct >= InpC7_MinLowerWickPct && lower_wick_pct <= InpC7_MaxLowerWickPct) {
         matched_pattern = "C7";
+    }
+    else if (InpEnableB1B2 && upper_wick_pct >= InpB1B2_MinUpperWickPct && body_pct <= InpB1B2_MaxBodyPct && lower_wick_pct <= InpB1B2_MaxLowerWickPct) {
+        matched_pattern = "B1B2_Extreme";
     }
     else if (InpEnableSwingSS) {
         // Swing Shooting Star Conditions:
