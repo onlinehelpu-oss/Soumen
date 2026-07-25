@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      "https://github.com"
-#property version   "1.02"
+#property version   "1.03"
 #property strict
 
 //--- Include Standard Libraries
@@ -22,11 +22,6 @@ input bool            InpUseDynamicLot     = false;          // Use risk-based d
 input double          InpRiskPercentage    = 1.0;            // % Risk per trade (if dynamic lot)
 input double          InpMaxMarginUtilPct  = 70.0;           // Max Margin Utilization Percentage (prevent Code 10019)
 input bool            InpOnePositionAtATime = true;          // Limit to one open position at a time?
-
-input group "--- Regime EMA Settings ---"
-input bool            InpUseEMAFilter      = false;          // Filter signals with Regime EMA (Close < EMA)?
-input int             InpRegimeEMAPeriod   = 26;             // Regime EMA Period
-input ENUM_APPLIED_PRICE InpEMAAppliedPrice = PRICE_CLOSE;   // EMA Applied Price
 
 input group "--- Candle Pattern Controls ---"
 input bool            InpRedCandleOnly     = false;          // Require signal candle to be Red? (false allows green rejection stars)
@@ -61,7 +56,6 @@ double         m_trigger_low = 0;
 double         m_trigger_high = 0;
 datetime       m_trigger_start_time = 0;
 datetime       m_trigger_expiry_time = 0;
-int            m_ema_handle = INVALID_HANDLE;
 double         m_last_bid = 0;
 
 //+------------------------------------------------------------------+
@@ -80,13 +74,6 @@ int OnInit()
     m_trade.SetExpertMagicNumber(InpMagicNumber);
     ConfigureFillingMode();
 
-    // Initialize EMA handle
-    m_ema_handle = iMA(_Symbol, InpTimeframe, InpRegimeEMAPeriod, 0, MODE_EMA, InpEMAAppliedPrice);
-    if (m_ema_handle == INVALID_HANDLE) {
-        Print("❌ Failed to create EMA indicator handle.");
-        return INIT_FAILED;
-    }
-
     m_last_checked_bar_time = iTime(_Symbol, InpTimeframe, 0);
     m_last_bid = 0;
 
@@ -102,9 +89,6 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-    if (m_ema_handle != INVALID_HANDLE) {
-        IndicatorRelease(m_ema_handle);
-    }
     Comment(""); // Clear chart comments
 }
 
@@ -268,22 +252,6 @@ void CheckSignal()
     if (lower_wick_pct < 0.0 || lower_wick_pct > InpLowerWickMax) {
         PrintFormat("❌ Candle rejected: Lower Wick %.1f%% is outside bounds (0.0%% - %.1f%%)", lower_wick_pct, InpLowerWickMax);
         return;
-    }
-
-    // Regime EMA Filter Check:
-    if (InpUseEMAFilter) {
-        double ema_values[];
-        ArraySetAsSeries(ema_values, true);
-        if (CopyBuffer(m_ema_handle, 0, 1, 1, ema_values) < 1) {
-            Print("⚠️ Error copying EMA values for trend filter.");
-            return;
-        }
-        double current_ema = ema_values[0];
-
-        if (c >= current_ema) {
-            PrintFormat("🔍 Signal rejected: Close (%.2f) is above or equal to Regime EMA (%.2f)", c, current_ema);
-            return;
-        }
     }
 
     // We have a verified signal!
@@ -598,12 +566,10 @@ void UpdateDashboard()
     }
 
     string comment = "==================================================\n" +
-                     "  RED SHOOTING STAR BREAKOUT EA (XM GOLD) \n" +
+                     "  REJECTION BREAKOUT EA (XM GOLD) \n" +
                      "==================================================\n" +
                      "  Symbol: " + _Symbol + "\n" +
                      "  Timeframe: " + EnumToString(InpTimeframe) + "\n" +
-                     "  Regime EMA (" + (string)InpRegimeEMAPeriod + "): " + (m_ema_handle != INVALID_HANDLE ? "OK" : "Error") + "\n" +
-                     "  EMA Filter: " + (InpUseEMAFilter ? "ENABLED" : "DISABLED") + "\n" +
                      "  Red Candle Only: " + (InpRedCandleOnly ? "YES" : "NO") + "\n" +
                      "  Prev Green Required: " + (InpRequirePrevGreen ? "YES" : "NO") + "\n" +
                      "  Risk:Reward Ratio: " + DoubleToString(InpRiskRewardRatio, 2) + "\n" +
