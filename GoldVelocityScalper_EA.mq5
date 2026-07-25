@@ -20,8 +20,9 @@ input double            InpATR_SL_Multiplier       = 1.5;               // ATR S
 input double            InpATR_TP_Multiplier       = 4.5;               // ATR Take Profit Multiplier (e.g. 4.5x ATR for 1:3 R:R)
 input double            InpStopLossPoints          = 120.0;             // Fixed Stop Loss if ATR disabled (Points, e.g. 120 = $1.2)
 input double            InpTakeProfitPoints        = 360.0;             // Fixed Take Profit if ATR disabled (Points, e.g. 360 = $3.6)
-input double            InpTrailingStopPoints      = 100.0;             // Trailing Stop (Points, 0 = Disabled)
-input double            InpBreakevenPoints         = 80.0;              // Breakeven Profit Trigger (Points, 0 = Disabled)
+input double            InpTrailingStopPoints      = 150.0;             // Trailing Stop (Points, 0 = Disabled)
+input double            InpBreakevenPoints         = 120.0;             // Breakeven Profit Trigger (Points, 0 = Disabled)
+input double            InpBreakevenProfitPoints   = 30.0;              // Breakeven Profit Locked-in (Points)
 input int               InpMagicNumber             = 888123;            // Magic Number
 
 input group "=== Institutional Trend Filter ==="
@@ -81,10 +82,10 @@ input group "=== Exit Mechanics ==="
 input bool              InpExitOnMomentumFade      = false;             // Exit when momentum fades (Disabled by default to avoid noise cuts)
 input double            InpPeakSpeedDropRatio      = 0.40;              // Tick speed drops below peak * ratio
 input bool              InpExitOnOppositeTicks     = false;             // Exit on 5 consecutive opposite ticks (Disabled by default to avoid noise cuts)
-input int               InpMinHoldTimeSeconds      = 5;                 // Minimum trade duration before momentum fade exits are allowed
+input int               InpMinHoldTimeSeconds      = 0;                 // Minimum trade duration before momentum fade exits are allowed
 input bool              InpExitOnSpreadWidening    = true;              // Exit on spread widening
 input double            InpExitSpreadMultiplier    = 2.5;               // Exit spread vs avg multiplier
-input int               InpMaxTradeDuration        = 30;                // Max trade duration in seconds
+input int               InpMaxTradeDuration        = 120;               // Max trade duration in seconds
 
 //--- Tick Record Structure
 struct TickRecord
@@ -720,7 +721,7 @@ void ManagePositions()
                {
                   if (bid - entry_price >= InpBreakevenPoints * point)
                   {
-                     double target_sl = entry_price + 5.0 * point;
+                     double target_sl = entry_price + InpBreakevenProfitPoints * point;
                      if (current_sl < target_sl)
                      {
                         m_trade.PositionModify(ticket, NormalizeDouble(target_sl, _Digits), NormalizeDouble(current_tp, _Digits));
@@ -731,7 +732,7 @@ void ManagePositions()
                {
                   if (entry_price - ask >= InpBreakevenPoints * point)
                   {
-                     double target_sl = entry_price - 5.0 * point;
+                     double target_sl = entry_price - InpBreakevenProfitPoints * point;
                      if (current_sl == 0 || current_sl > target_sl)
                      {
                         m_trade.PositionModify(ticket, NormalizeDouble(target_sl, _Digits), NormalizeDouble(current_tp, _Digits));
