@@ -628,8 +628,11 @@ void ExecuteMarketOrder(ENUM_ORDER_TYPE order_type, const MqlTick &tick)
       if(tick_size > 0.0)
       {
          double loss_points = sl_distance / point_val;
-         double risk_lots = risk_val / (loss_points * (tick_value / tick_size * point_val));
-         if(risk_lots > 0.0) lots = risk_lots;
+         if(loss_points > 0.0)
+         {
+            double risk_lots = risk_val / (loss_points * (tick_value / tick_size * point_val));
+            if(risk_lots > 0.0) lots = risk_lots;
+         }
       }
    }
 
@@ -679,8 +682,8 @@ void ManageOpenPosition(const MqlTick &tick)
    if(ticket == 0) return;
 
    double entry_price = PositionGetDouble(POSITION_PRICE_OPEN);
-   double current_sl = PositionGetDouble(POSITION_PRICE_CURRENT_SL);
-   double current_tp = PositionGetDouble(POSITION_PRICE_CURRENT_TP);
+   double current_sl = PositionGetDouble(POSITION_SL);
+   double current_tp = PositionGetDouble(POSITION_TP);
    double current_profit = PositionGetDouble(POSITION_PROFIT);
    long   pos_type = PositionGetInteger(POSITION_TYPE);
    datetime pos_time = (datetime)PositionGetInteger(POSITION_TIME);
