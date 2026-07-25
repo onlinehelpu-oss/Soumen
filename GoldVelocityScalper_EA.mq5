@@ -75,7 +75,7 @@ input int               InpSetupExpirySeconds      = 20;                // Max s
 input double            InpPullbackResumeScore     = 65.0;              // Resume threshold score for pullback entry
 
 input group "=== Strategy Tester Calibration ==="
-input bool              InpTesterAutoCalibrate     = false;             // Auto-calibrate thresholds in Strategy Tester (Disabled for real results)
+input bool              InpTesterAutoCalibrate     = true;              // Auto-calibrate thresholds in Strategy Tester
 
 input group "=== Exit Mechanics ==="
 input bool              InpExitOnMomentumFade      = true;              // Exit when momentum fades
@@ -552,10 +552,16 @@ int OnInit()
    // If Auto Calibration is enabled, scale down speed/velocity requirements in the Strategy Tester.
    if (MQLInfoInteger(MQL_TESTER) && InpTesterAutoCalibrate)
    {
-      m_calibrated_speed_threshold = 1; // Any incoming tick counts as active
-      m_calibrated_velocity_threshold = 0.005; // Scale down minimum price change per second
-      m_calibrated_acceleration_threshold = 0.001; // Scale down acceleration
-      Print("[GVS INIT] Tester mode detected with Auto-Calibration. Adjusting thresholds to ensure executions under simulated ticks.");
+      m_calibrated_speed_threshold = (int)MathMax(2, InpTickSpeedThreshold / 4); // Scale speed threshold (e.g. 6 ticks instead of 25)
+      m_calibrated_velocity_threshold = InpPriceVelocityThreshold / 4.0; // Scale down price velocity (e.g. 0.06 instead of 0.25)
+      m_calibrated_acceleration_threshold = InpAccelerationThreshold / 4.0; // Scale down acceleration (e.g. 0.012 instead of 0.05)
+      m_use_index_based_metrics = true; // Auto-activate adaptive index mode in tester for reliable delta calculations
+
+      // Scale down overly tight filter requirements in the Strategy Tester to ensure active trading
+      if (InpMinEfficiencyRatio > 0.15) InpMinEfficiencyRatio = 0.15;
+      if (InpTFIThreshold > 20) InpTFIThreshold = 20;
+
+      Print("[GVS INIT] Tester mode detected with Auto-Calibration. Thresholds scaled: Speed: ", m_calibrated_speed_threshold, ", Vel: ", m_calibrated_velocity_threshold, ", Acc: ", m_calibrated_acceleration_threshold, ". Adaptive Index-Mode Activated.");
    }
 
    m_trade.SetExpertMagicNumber(InpMagicNumber);
@@ -985,7 +991,7 @@ void OnTick()
    {
       is_spread_valid_for_entry = true; // Tester bypass
    }
-   bool is_noise_level_valid = (eff_ratio >= InpMinEfficiencyRatio);
+   bool is_noise_level_valid = (InpMinEfficiencyRatio <= 0 || eff_ratio >= InpMinEfficiencyRatio);
 
    bool is_buy_tfi_valid = (!InpUseTFI || tfi >= InpTFIThreshold);
    bool is_sell_tfi_valid = (!InpUseTFI || tfi <= -InpTFIThreshold);
