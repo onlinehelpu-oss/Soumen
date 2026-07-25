@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      "https://github.com"
-#property version   "1.03"
+#property version   "1.04"
 #property strict
 
 //--- Include Standard Libraries
@@ -27,7 +27,55 @@ input group "--- Candle Pattern Controls ---"
 input bool            InpRedCandleOnly     = false;          // Require signal candle to be Red? (false allows green rejection stars)
 input bool            InpRequirePrevGreen  = false;          // Require the previous candle to be Green?
 
-input group "--- Candle Geometry Settings ---"
+input group "--- Rejection Pattern Activation ---"
+input bool            InpEnableC2          = true;           // Enable Pattern C2 (Classic Shooting Star)
+input bool            InpEnableC3          = true;           // Enable Pattern C3 (Bearish Trend Bar)
+input bool            InpEnableC4          = true;           // Enable Pattern C4 (Bearish Pinbar with tail)
+input bool            InpEnableC5          = true;           // Enable Pattern C5 (Bearish Strong Rejection)
+input bool            InpEnableC6          = true;           // Enable Pattern C6 (Rejection, minimal lower wick)
+input bool            InpEnableC7          = true;           // Enable Pattern C7 (Extreme Gravestone Pinbar)
+input bool            InpEnableCustom      = true;           // Enable Custom Fallback Rejection Pattern
+
+input group "--- Pattern C2 (Classic Shooting Star) Parameters ---"
+input double          InpC2_MinUpperWickPct = 55.0;          // C2 Min Upper Wick %
+input double          InpC2_MaxBodyPct      = 35.0;          // C2 Max Body %
+input double          InpC2_MaxLowerWickPct = 5.0;           // C2 Max Lower Wick %
+
+input group "--- Pattern C3 (Bearish Trend Bar) Parameters ---"
+input double          InpC3_MinUpperWickPct = 10.0;          // C3 Min Upper Wick %
+input double          InpC3_MaxUpperWickPct = 35.0;          // C3 Max Upper Wick %
+input double          InpC3_MinBodyPct      = 55.0;          // C3 Min Body %
+input double          InpC3_MaxLowerWickPct = 15.0;          // C3 Max Lower Wick %
+
+input group "--- Pattern C4 (Bearish Pinbar) Parameters ---"
+input double          InpC4_MinUpperWickPct = 35.0;          // C4 Min Upper Wick %
+input double          InpC4_MaxUpperWickPct = 55.0;          // C4 Max Upper Wick %
+input double          InpC4_MinBodyPct      = 30.0;          // C4 Min Body %
+input double          InpC4_MaxBodyPct      = 50.0;          // C4 Max Body %
+input double          InpC4_MinLowerWickPct = 10.0;          // C4 Min Lower Wick %
+input double          InpC4_MaxLowerWickPct = 25.0;          // C4 Max Lower Wick %
+
+input group "--- Pattern C5 (Strong Rejection) Parameters ---"
+input double          InpC5_MinUpperWickPct = 35.0;          // C5 Min Upper Wick %
+input double          InpC5_MaxUpperWickPct = 50.0;          // C5 Max Upper Wick %
+input double          InpC5_MinBodyPct      = 45.0;          // C5 Min Body %
+input double          InpC5_MaxBodyPct      = 60.0;          // C5 Max Body %
+input double          InpC5_MaxLowerWickPct = 15.0;          // C5 Max Lower Wick %
+
+input group "--- Pattern C6 (Minimal Lower Wick Rejection) Parameters ---"
+input double          InpC6_MinUpperWickPct = 40.0;          // C6 Min Upper Wick %
+input double          InpC6_MaxUpperWickPct = 60.0;          // C6 Max Upper Wick %
+input double          InpC6_MinBodyPct      = 35.0;          // C6 Min Body %
+input double          InpC6_MaxBodyPct      = 55.0;          // C6 Max Body %
+input double          InpC6_MaxLowerWickPct = 5.0;           // C6 Max Lower Wick %
+
+input group "--- Pattern C7 (Extreme Gravestone Pinbar) Parameters ---"
+input double          InpC7_MinUpperWickPct = 60.0;          // C7 Min Upper Wick %
+input double          InpC7_MaxBodyPct      = 25.0;          // C7 Max Body %
+input double          InpC7_MinLowerWickPct = 5.0;           // C7 Min Lower Wick %
+input double          InpC7_MaxLowerWickPct = 20.0;          // C7 Max Lower Wick %
+
+input group "--- Custom Fallback Rejection Settings ---"
 input double          InpUpperWickMin      = 50.0;           // Upper wick min percentage (e.g. >= 50% for strong rejection)
 input double          InpUpperWickMax      = 100.0;          // Upper wick max percentage (up to 100% for full pinbars)
 input double          InpBodyMin           = 0.0;            // Body min percentage (0% allows dojis)
@@ -57,6 +105,7 @@ double         m_trigger_high = 0;
 datetime       m_trigger_start_time = 0;
 datetime       m_trigger_expiry_time = 0;
 double         m_last_bid = 0;
+string         m_matched_pattern_name = "";
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -161,8 +210,8 @@ void OnTick()
 
             // First-touch crossing check
             if (m_last_bid >= threshold && current_bid < threshold) {
-                PrintFormat("🔥 BREAKOUT DETECTED: Bid %.2f crossed below threshold %.2f (Signal Low: %.2f, Buffer: %.2f)",
-                            current_bid, threshold, m_trigger_low, buffer);
+                PrintFormat("🔥 BREAKOUT DETECTED: Bid %.2f crossed below threshold %.2f (Signal Low: %.2f, Buffer: %.2f) (Pattern: %s)",
+                            current_bid, threshold, m_trigger_low, buffer, m_matched_pattern_name);
 
                 ExecuteShortEntry(threshold);
                 m_trigger_active = false; // Set to false immediately to prevent duplicate fills (Anti-Race Lock pattern)
@@ -237,32 +286,49 @@ void CheckSignal()
     double body_pct       = ((body_high - body_low) / total_range) * 100.0;
     double lower_wick_pct = ((body_low - l) / total_range) * 100.0;
 
-    // Detailed candidate logging
-    PrintFormat("📊 Candidate candle found. Color: %s | Upper Wick: %.1f%%, Body: %.1f%%, Lower Wick: %.1f%%, Range: %.2f",
-                (c < o ? "RED" : "GREEN"), upper_wick_pct, body_pct, lower_wick_pct, total_range);
+    // Check which enabled pattern matches:
+    string matched_pattern = "";
 
-    if (upper_wick_pct < InpUpperWickMin || upper_wick_pct > InpUpperWickMax) {
-        PrintFormat("❌ Candle rejected: Upper Wick %.1f%% is outside bounds (%.1f%% - %.1f%%)", upper_wick_pct, InpUpperWickMin, InpUpperWickMax);
-        return;
+    if (InpEnableC2 && upper_wick_pct >= InpC2_MinUpperWickPct && body_pct <= InpC2_MaxBodyPct && lower_wick_pct <= InpC2_MaxLowerWickPct) {
+        matched_pattern = "C2";
     }
-    if (body_pct < InpBodyMin || body_pct > InpBodyMax) {
-        PrintFormat("❌ Candle rejected: Body %.1f%% is outside bounds (%.1f%% - %.1f%%)", body_pct, InpBodyMin, InpBodyMax);
-        return;
+    else if (InpEnableC3 && upper_wick_pct >= InpC3_MinUpperWickPct && upper_wick_pct <= InpC3_MaxUpperWickPct && body_pct >= InpC3_MinBodyPct && lower_wick_pct <= InpC3_MaxLowerWickPct) {
+        matched_pattern = "C3";
     }
-    if (lower_wick_pct < 0.0 || lower_wick_pct > InpLowerWickMax) {
-        PrintFormat("❌ Candle rejected: Lower Wick %.1f%% is outside bounds (0.0%% - %.1f%%)", lower_wick_pct, InpLowerWickMax);
-        return;
+    else if (InpEnableC4 && upper_wick_pct >= InpC4_MinUpperWickPct && upper_wick_pct <= InpC4_MaxUpperWickPct && body_pct >= InpC4_MinBodyPct && body_pct <= InpC4_MaxBodyPct && lower_wick_pct >= InpC4_MinLowerWickPct && lower_wick_pct <= InpC4_MaxLowerWickPct) {
+        matched_pattern = "C4";
+    }
+    else if (InpEnableC5 && upper_wick_pct >= InpC5_MinUpperWickPct && upper_wick_pct <= InpC5_MaxUpperWickPct && body_pct >= InpC5_MinBodyPct && body_pct <= InpC5_MaxBodyPct && lower_wick_pct <= InpC5_MaxLowerWickPct) {
+        matched_pattern = "C5";
+    }
+    else if (InpEnableC6 && upper_wick_pct >= InpC6_MinUpperWickPct && upper_wick_pct <= InpC6_MaxUpperWickPct && body_pct >= InpC6_MinBodyPct && body_pct <= InpC6_MaxBodyPct && lower_wick_pct <= InpC6_MaxLowerWickPct) {
+        matched_pattern = "C6";
+    }
+    else if (InpEnableC7 && upper_wick_pct >= InpC7_MinUpperWickPct && body_pct <= InpC7_MaxBodyPct && lower_wick_pct >= InpC7_MinLowerWickPct && lower_wick_pct <= InpC7_MaxLowerWickPct) {
+        matched_pattern = "C7";
+    }
+    else if (InpEnableCustom && upper_wick_pct >= InpUpperWickMin && upper_wick_pct <= InpUpperWickMax && body_pct >= InpBodyMin && body_pct <= InpBodyMax && lower_wick_pct >= 0.0 && lower_wick_pct <= InpLowerWickMax) {
+        matched_pattern = "Custom Fallback";
+    }
+
+    // Detailed candidate logging
+    PrintFormat("📊 Candidate candle found. Color: %s | Upper Wick: %.1f%%, Body: %.1f%%, Lower Wick: %.1f%%, Range: %.2f | Matched Pattern: %s",
+                (c < o ? "RED" : "GREEN"), upper_wick_pct, body_pct, lower_wick_pct, total_range, (matched_pattern != "" ? matched_pattern : "None"));
+
+    if (matched_pattern == "") {
+        return; // No enabled pattern matches this candle's geometry
     }
 
     // We have a verified signal!
     m_trigger_active = true;
     m_trigger_low = l;
     m_trigger_high = h;
+    m_matched_pattern_name = matched_pattern;
     m_trigger_start_time = iTime(_Symbol, InpTimeframe, 0); // Trigger begins at start of current bar 0
     m_trigger_expiry_time = m_trigger_start_time + PeriodSeconds(InpTimeframe); // Expires at end of bar 0
 
-    PrintFormat("🎯 REJECTION SIGNAL GENERATED: %s (%s). Wick=%.1f%%, Body=%.1f%%, Lower=%.1f%%.",
-                _Symbol, (c < o ? "RED" : "GREEN"), upper_wick_pct, body_pct, lower_wick_pct);
+    PrintFormat("🎯 REJECTION SIGNAL GENERATED (%s): %s (%s). Wick=%.1f%%, Body=%.1f%%, Lower=%.1f%%.",
+                matched_pattern, _Symbol, (c < o ? "RED" : "GREEN"), upper_wick_pct, body_pct, lower_wick_pct);
     PrintFormat("👉 Breakout watch low: %.2f | SL target: %.2f | Window: %s to %s",
                 l, h, TimeToString(m_trigger_start_time), TimeToString(m_trigger_expiry_time));
 }
@@ -317,11 +383,12 @@ void ExecuteShortEntry(double trigger_price)
 
     // Order execution
     ResetLastError();
-    if (m_trade.Sell(lots, _Symbol, entry_price, sl_price, tp_price, InpTradeTag)) {
+    string comment_tag = InpTradeTag + "_" + m_matched_pattern_name;
+    if (m_trade.Sell(lots, _Symbol, entry_price, sl_price, tp_price, comment_tag)) {
         ulong ticket = m_trade.ResultOrder();
         if (ticket > 0 || m_trade.ResultRetcode() == 10009) {
-            PrintFormat("✅ TRADE SUCCESSFUL: Short position entered on %s. Lots: %.2f, Entry: %.2f, SL: %.2f, TP: %.2f",
-                        _Symbol, lots, entry_price, sl_price, tp_price);
+            PrintFormat("✅ TRADE SUCCESSFUL: Short position entered on %s. Lots: %.2f, Entry: %.2f, SL: %.2f, TP: %.2f (Pattern: %s)",
+                        _Symbol, lots, entry_price, sl_price, tp_price, m_matched_pattern_name);
         } else {
             PrintFormat("❌ Order rejected. Retcode: %d, Description: %s",
                         m_trade.ResultRetcode(), m_trade.ResultComment());
@@ -580,6 +647,7 @@ void UpdateDashboard()
     if (m_trigger_active) {
         comment += "  Trigger Candle Low: " + DoubleToString(m_trigger_low, _Digits) + "\n" +
                    "  Trigger Candle High (SL): " + DoubleToString(m_trigger_high, _Digits) + "\n" +
+                   "  Matched Pattern: " + m_matched_pattern_name + "\n" +
                    "  Start Time: " + TimeToString(m_trigger_start_time, TIME_DATE|TIME_MINUTES) + "\n" +
                    "  Expiry Time: " + TimeToString(m_trigger_expiry_time, TIME_DATE|TIME_MINUTES) + "\n";
     }
