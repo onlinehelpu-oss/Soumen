@@ -170,6 +170,8 @@ bool           m_use_index_based_metrics = false;
 int            m_calibrated_speed_threshold = 10;
 double         m_calibrated_velocity_threshold = 0.1;
 double         m_calibrated_acceleration_threshold = 0.02;
+double         m_calibrated_min_efficiency_ratio = 0.40;
+int            m_calibrated_tfi_threshold = 50;
 
 //--- Pullback Setup State Variables
 bool           m_setup_active = false;
@@ -228,7 +230,7 @@ double GetPriceVelocity(const CTickHistory &history, int seconds, double &out_de
    }
 
    long limit_time = latest.time_msc - seconds * 1000;
-   TickRecord target_rec;
+   TickRecord target_rec = {0};
    bool found = false;
    for (int i = 1; i < history.Count(); i++)
    {
@@ -278,8 +280,8 @@ double GetPriceAcceleration(const CTickHistory &history, int seconds)
    long mid_time = latest.time_msc - (long)(half_window * 1000.0);
    long limit_time = latest.time_msc - seconds * 1000;
 
-   TickRecord rec_mid;
-   TickRecord rec_old;
+   TickRecord rec_mid = {0};
+   TickRecord rec_old = {0};
    bool found_mid = false, found_old = false;
 
    for (int i = 1; i < history.Count(); i++)
@@ -547,6 +549,8 @@ int OnInit()
    m_calibrated_speed_threshold = InpTickSpeedThreshold;
    m_calibrated_velocity_threshold = InpPriceVelocityThreshold;
    m_calibrated_acceleration_threshold = InpAccelerationThreshold;
+   m_calibrated_min_efficiency_ratio = InpMinEfficiencyRatio;
+   m_calibrated_tfi_threshold = InpTFIThreshold;
 
    // In the Strategy Tester, synthetic tick generators (OHLC or even Real Ticks) can have different intervals.
    // If Auto Calibration is enabled, scale down speed/velocity requirements in the Strategy Tester.
@@ -558,8 +562,8 @@ int OnInit()
       m_use_index_based_metrics = true; // Auto-activate adaptive index mode in tester for reliable delta calculations
 
       // Scale down overly tight filter requirements in the Strategy Tester to ensure active trading
-      if (InpMinEfficiencyRatio > 0.15) InpMinEfficiencyRatio = 0.15;
-      if (InpTFIThreshold > 20) InpTFIThreshold = 20;
+      if (m_calibrated_min_efficiency_ratio > 0.15) m_calibrated_min_efficiency_ratio = 0.15;
+      if (m_calibrated_tfi_threshold > 20) m_calibrated_tfi_threshold = 20;
 
       Print("[GVS INIT] Tester mode detected with Auto-Calibration. Thresholds scaled: Speed: ", m_calibrated_speed_threshold, ", Vel: ", m_calibrated_velocity_threshold, ", Acc: ", m_calibrated_acceleration_threshold, ". Adaptive Index-Mode Activated.");
    }
@@ -991,10 +995,10 @@ void OnTick()
    {
       is_spread_valid_for_entry = true; // Tester bypass
    }
-   bool is_noise_level_valid = (InpMinEfficiencyRatio <= 0 || eff_ratio >= InpMinEfficiencyRatio);
+   bool is_noise_level_valid = (m_calibrated_min_efficiency_ratio <= 0 || eff_ratio >= m_calibrated_min_efficiency_ratio);
 
-   bool is_buy_tfi_valid = (!InpUseTFI || tfi >= InpTFIThreshold);
-   bool is_sell_tfi_valid = (!InpUseTFI || tfi <= -InpTFIThreshold);
+   bool is_buy_tfi_valid = (!InpUseTFI || tfi >= m_calibrated_tfi_threshold);
+   bool is_sell_tfi_valid = (!InpUseTFI || tfi <= -m_calibrated_tfi_threshold);
 
    // Higher Timeframe Trend Filter Evaluation
    bool trend_up = true;
@@ -1031,7 +1035,7 @@ void OnTick()
                " | Velocity: ", price_velocity, " (Calibrated limit: ", m_calibrated_velocity_threshold, ")",
                " | Acceleration: ", acceleration, " (Calibrated limit: ", m_calibrated_acceleration_threshold, ")",
                " | Spread Valid: ", is_spread_valid_for_entry, " (Current Spread: ", current_spread, ")",
-               " | Noise ER Valid: ", is_noise_level_valid, " (ER: ", eff_ratio, " Min ER: ", InpMinEfficiencyRatio, ")",
+               " | Noise ER Valid: ", is_noise_level_valid, " (ER: ", eff_ratio, " Min ER: ", m_calibrated_min_efficiency_ratio, ")",
                " | TFI Valid: ", is_buy_tfi_valid, " (TFI: ", tfi, ")",
                " | Trend Up: ", trend_up, " Trend Down: ", trend_down,
                " | Adaptive Index Mode Active: ", m_use_index_based_metrics);
@@ -1192,8 +1196,8 @@ void OnTick()
                             "            GOLD VELOCITY SCALPER (GVS) - REALTIME DASHBOARD\n" +
                             "=========================================================\n" +
                             "Symbol: " + Symbol() + " | Spread: " + DoubleToString(current_spread, _Digits) + " (Avg: " + DoubleToString(avg_spread, _Digits) + ")\n" +
-                            "TFI Score: " + IntegerToString(tfi) + " (Threshold: " + IntegerToString(InpTFIThreshold) + ")\n" +
-                            "Efficiency Ratio: " + DoubleToString(eff_ratio, 2) + " (Min: " + DoubleToString(InpMinEfficiencyRatio, 2) + ")\n\n" +
+                            "TFI Score: " + IntegerToString(tfi) + " (Threshold: " + IntegerToString(m_calibrated_tfi_threshold) + ")\n" +
+                            "Efficiency Ratio: " + DoubleToString(eff_ratio, 2) + " (Min: " + DoubleToString(m_calibrated_min_efficiency_ratio, 2) + ")\n\n" +
                             "--- ROCKET SCORE COMPONENT BREAKDOWN ---\n" +
                             "[1] Tick Speed: " + IntegerToString(current_tick_speed) + " t/sec (Target: " + IntegerToString(m_calibrated_speed_threshold) + ") -> Score: " + IntegerToString(current_tick_speed >= m_calibrated_speed_threshold ? 20 : (current_tick_speed >= m_calibrated_speed_threshold * 0.5 ? 10 : 0)) + "/20\n" +
                             "[2] Price Velocity: " + DoubleToString(price_velocity, 2) + " / sec (Target: " + DoubleToString(m_calibrated_velocity_threshold, 2) + ") -> Score (BUY/SELL): " + IntegerToString(price_velocity >= m_calibrated_velocity_threshold ? 20 : (price_velocity >= m_calibrated_velocity_threshold * 0.5 ? 10 : 0)) + " / " + IntegerToString(price_velocity <= -m_calibrated_velocity_threshold ? 20 : (price_velocity <= -m_calibrated_velocity_threshold * 0.5 ? 10 : 0)) + " / 20\n" +
