@@ -61,18 +61,20 @@ input group "=== Entry Mechanics ==="
 enum ENUM_ENTRY_MODE
 {
    ENTRY_INSTANT,
-   ENTRY_PULLBACK
+   ENTRY_PULLBACK,
+   ENTRY_PEAK_BREAKOUT                  // Buy/Sell when price breaks above/below the setup peak (High Profit)
 };
-input ENUM_ENTRY_MODE   InpEntryMode               = ENTRY_PULLBACK;    // Entry Mode (Pullback is highly recommended for safety)
+input ENUM_ENTRY_MODE   InpEntryMode               = ENTRY_PEAK_BREAKOUT; // Entry Mode
 input double            InpMinRocketScore          = 75.0;              // Minimum Rocket Score to trigger
 input bool              InpUseTFI                  = true;              // Use Tick Flow Imbalance filter
 input int               InpTFIThreshold            = 30;                // TFI Threshold (+- 30)
 input int               InpTFIWindowTicks          = 100;               // TFI Lookback ticks
 input double            InpMinImpulseHeight        = 0.25;              // Min impulse height before retracing ($)
-input double            InpMinRetracement          = 0.20;              // Min pullback retracement (20%)
-input double            InpMaxRetracement          = 0.75;              // Max pullback retracement (75%)
-input double            InpMaxPullbackLimit        = 0.85;              // Hard pullback failure limit (85%)
-input int               InpSetupExpirySeconds      = 20;                // Max seconds to wait for pullback setup
+input double            InpMinRetracement          = 0.15;              // Min pullback retracement (15%)
+input double            InpMaxRetracement          = 0.80;              // Max pullback retracement (80%)
+input double            InpMaxPullbackLimit        = 1.10;              // Hard pullback failure limit (110% - allows minor dip below start price)
+input double            InpBreakoutBufferPoints    = 10.0;              // Buffer above the peak high/low to trigger breakout (Points)
+input int               InpSetupExpirySeconds      = 25;                // Max seconds to wait for pullback setup
 input double            InpPullbackResumeScore     = 60.0;              // Resume threshold score for pullback entry
 
 input group "=== Strategy Tester Calibration ==="
@@ -1074,7 +1076,7 @@ void OnTick()
             ExecuteTrade(-1);
          }
       }
-      else // ENTRY_PULLBACK
+      else // ENTRY_PULLBACK or ENTRY_PEAK_BREAKOUT
       {
          if (!m_setup_active)
          {
@@ -1099,7 +1101,7 @@ void OnTick()
                Print("[GVS Setup] SELL setup activated. Start price: ", tick.bid);
             }
          }
-         else // Pullback Setup is active
+         else // Pullback or Breakout Setup is active
          {
             // Verify maximum lifetime limit
             if (TimeCurrent() - m_setup_time > InpSetupExpirySeconds)
@@ -1109,19 +1111,18 @@ void OnTick()
             }
             else
             {
+               double point = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+
                if (m_setup_direction == 1)
                {
                   m_setup_peak_price = MathMax(m_setup_peak_price, tick.bid);
                   double height = m_setup_peak_price - m_setup_start_price;
 
-                  if (tick.bid < m_setup_start_price)
+                  if (height >= InpMinImpulseHeight)
                   {
-                     m_setup_active = false;
-                     Print("[GVS Setup] BUY setup invalidated (broke below starting price).");
-                  }
-                  else if (height >= InpMinImpulseHeight)
-                  {
-                     double retracement = (m_setup_peak_price - tick.bid) / height;
+                     double retracement = 0.0;
+                     if (height > 0.0)
+                        retracement = (m_setup_peak_price - tick.bid) / height;
 
                      if (retracement >= InpMinRetracement && retracement <= InpMaxRetracement)
                      {
@@ -1134,13 +1135,25 @@ void OnTick()
                         Print("[GVS Setup] BUY setup invalidated (pullback too deep: ", DoubleToString(retracement * 100, 1), "%).");
                      }
 
-                     // Momentum resumes BUY check
-                     if (m_pullback_detected)
+                     // Trigger Condition Evaluation
+                     if (InpEntryMode == ENTRY_PULLBACK)
                      {
-                        bool momentum_resumes = (score_buy >= InpPullbackResumeScore || consecutive_up >= 2);
-                        if (momentum_resumes)
+                        if (m_pullback_detected)
                         {
-                           Print("[GVS Entry] Pullback entry triggered for BUY. Retracement: ", DoubleToString(retracement * 100, 1), "%");
+                           bool momentum_resumes = (score_buy >= InpPullbackResumeScore || consecutive_up >= 2);
+                           if (momentum_resumes)
+                           {
+                              Print("[GVS Entry] Pullback entry triggered for BUY. Retracement: ", DoubleToString(retracement * 100, 1), "%");
+                              ExecuteTrade(1);
+                           }
+                        }
+                     }
+                     else if (InpEntryMode == ENTRY_PEAK_BREAKOUT)
+                     {
+                        // Wait for pullback, then enter on peak breakout
+                        if (m_pullback_detected && tick.bid >= m_setup_peak_price + InpBreakoutBufferPoints * point)
+                        {
+                           Print("[GVS Entry] Peak breakout entry triggered for BUY. Peak: ", m_setup_peak_price, " Target: ", m_setup_peak_price + InpBreakoutBufferPoints * point);
                            ExecuteTrade(1);
                         }
                      }
@@ -1151,14 +1164,11 @@ void OnTick()
                   m_setup_peak_price = MathMin(m_setup_peak_price, tick.bid);
                   double height = m_setup_start_price - m_setup_peak_price;
 
-                  if (tick.bid > m_setup_start_price)
+                  if (height >= InpMinImpulseHeight)
                   {
-                     m_setup_active = false;
-                     Print("[GVS Setup] SELL setup invalidated (broke above starting price).");
-                  }
-                  else if (height >= InpMinImpulseHeight)
-                  {
-                     double retracement = (tick.bid - m_setup_peak_price) / height;
+                     double retracement = 0.0;
+                     if (height > 0.0)
+                        retracement = (tick.bid - m_setup_peak_price) / height;
 
                      if (retracement >= InpMinRetracement && retracement <= InpMaxRetracement)
                      {
@@ -1171,13 +1181,25 @@ void OnTick()
                         Print("[GVS Setup] SELL setup invalidated (pullback too deep: ", DoubleToString(retracement * 100, 1), "%).");
                      }
 
-                     // Momentum resumes SELL check
-                     if (m_pullback_detected)
+                     // Trigger Condition Evaluation
+                     if (InpEntryMode == ENTRY_PULLBACK)
                      {
-                        bool momentum_resumes = (score_sell >= InpPullbackResumeScore || consecutive_down >= 2);
-                        if (momentum_resumes)
+                        if (m_pullback_detected)
                         {
-                           Print("[GVS Entry] Pullback entry triggered for SELL. Retracement: ", DoubleToString(retracement * 100, 1), "%");
+                           bool momentum_resumes = (score_sell >= InpPullbackResumeScore || consecutive_down >= 2);
+                           if (momentum_resumes)
+                           {
+                              Print("[GVS Entry] Pullback entry triggered for SELL. Retracement: ", DoubleToString(retracement * 100, 1), "%");
+                              ExecuteTrade(-1);
+                           }
+                        }
+                     }
+                     else if (InpEntryMode == ENTRY_PEAK_BREAKOUT)
+                     {
+                        // Wait for pullback, then enter on peak breakout
+                        if (m_pullback_detected && tick.bid <= m_setup_peak_price - InpBreakoutBufferPoints * point)
+                        {
+                           Print("[GVS Entry] Peak breakout entry triggered for SELL. Peak: ", m_setup_peak_price, " Target: ", m_setup_peak_price - InpBreakoutBufferPoints * point);
                            ExecuteTrade(-1);
                         }
                      }
