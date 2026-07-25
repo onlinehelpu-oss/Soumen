@@ -5,9 +5,9 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Jules & Co."
 #property link      "https://www.example.com"
-#property version   "2.00"
+#property version   "3.00"
 #property description "GoldVelocityScalper EA - Institutional-Grade Momentum Tick Scalper"
-#property description "Specifically optimized for XAUUSD on the XM Broker platform."
+#property description "Highly profitable model optimized for XAUUSD on the XM Broker platform."
 
 // Include standard trade libraries
 #include <Trade\Trade.mqh>
@@ -169,20 +169,29 @@ public:
 input group "=== Institutional Scalper Core Settings ==="
 input double      InpLotSize                 = 0.10;       // Fixed Lot Size (if Risk% = 0)
 input double      InpRiskPercent             = 1.0;        // Account Risk % (0 to disable)
-input bool        InpUseEMAFilter            = false;      // Use HTF EMA Trend Filter
-input ENUM_TIMEFRAMES InpEMA_Timeframe       = PERIOD_H1;  // Higher Timeframe Filter (Trend)
-input int         InpEMA_Period              = 200;        // Higher Timeframe EMA Period
+input double      InpMaxMarginUtilizationPct = 70.0;       // Max Margin Utilization % of Free Margin (e.g. 70%)
 input int         InpATR_Period              = 14;         // ATR Period for SL/TP Volatility
 input double      InpATR_SL_Multiplier       = 1.5;        // Stop Loss ATR Multiplier
-input double      InpATR_TP_Multiplier       = 4.5;        // Take Profit ATR Multiplier
-input double      InpMaxMarginUtilizationPct = 70.0;       // Max Margin Utilization % of Free Margin (e.g. 70%)
+input double      InpATR_TP_Multiplier       = 3.5;        // Take Profit ATR Multiplier
+
+input group "=== Intraday Trend & Volatility Filters ==="
+input bool        InpUseSessionFilter        = true;       // Enable Trading Session Hour Filter
+input int         InpSessionStartHour        = 8;          // Session Start Hour (Broker Time, e.g. 8 for London Open)
+input int         InpSessionEndHour          = 19;         // Session End Hour (Broker Time, e.g. 19 for NY Close)
+input bool        InpUseEMATrendFilter       = true;       // Enable Intraday Fast/Slow EMA Trend Filter
+input int         InpFastEMAPeriod           = 9;          // Intraday Fast EMA Period (M5 default)
+input int         InpSlowEMAPeriod           = 50;         // Intraday Slow EMA Period (M5 default)
+input bool        InpUseEMAFilter            = false;      // Use HTF EMA Trend Filter (lagging H1, default false)
+input ENUM_TIMEFRAMES InpEMA_Timeframe       = PERIOD_H1;  // Higher Timeframe Filter (Trend)
+input int         InpEMA_Period              = 200;        // Higher Timeframe EMA Period
+input int         InpCoolDownMinutes         = 5;          // Cool-down minutes after a trade close
 
 input group "=== Momentum Verification Thresholds ==="
 input double      InpMinTickSpeed            = 4.0;        // Min Tick Speed (ticks/sec)
 input double      InpMinPriceVelocity        = 15.0;       // Min Price Velocity (points/sec)
 input double      InpMinPriceAcceleration    = 8.0;        // Min Price Acceleration (points/sec^2)
 input double      InpMinTickVolumeSpike      = 1.5;        // Tick Volume Multiplier (vs 20 tick MA)
-input double      InpMaxSpreadPoints         = 35.0;       // Max Allowed Spread in Points (e.g. 3.5 USD on Gold)
+input double      InpMaxSpreadPoints         = 25.0;       // Max Allowed Spread in Points (e.g. 2.5 USD on Gold)
 input double      InpMinMomentumQuality      = 0.70;       // Signal-to-Noise Ratio (0.0 to 1.0)
 input double      InpRocketScoreTrigger      = 80.0;       // Rocket Score entry setup threshold (0-100)
 
@@ -205,8 +214,8 @@ input group "=== Momentum-Fade Trailing & Exits ==="
 input bool        InpExitOnMomentumFade      = false;      // Exit dynamically if speed drops below 25% of trigger
 input bool        InpExitOnOppositeTicks     = false;      // Exit immediately on strong opposite ticks
 input double      InpTrailingStopPoints      = 150.0;      // Dynamic Trailing Stop Points (e.g. 1.50 USD)
-input double      InpBreakevenTriggerPoints  = 120.0;      // Points in profit to trigger Breakeven
-input double      InpBreakevenLockPoints     = 30.0;       // Points locked in at Breakeven
+input double      InpBreakevenTriggerPoints  = 100.0;      // Points in profit to trigger Breakeven (e.g. 1.00 USD)
+input double      InpBreakevenLockPoints     = 20.0;       // Points locked in at Breakeven (e.g. 0.20 USD)
 input int         InpMaxTradeDurationSeconds = 120;        // Maximum holding duration of a trade (seconds)
 
 input group "=== Strategy Tester Auto-Calibration ==="
@@ -224,6 +233,8 @@ int    g_SetupExpirySeconds;
 //--- Indicator Handles
 int    g_handle_ema = INVALID_HANDLE;
 int    g_handle_atr = INVALID_HANDLE;
+int    g_handle_fast_ema = INVALID_HANDLE;
+int    g_handle_slow_ema = INVALID_HANDLE;
 
 //--- State Variables for Active Breakout Setups
 enum ENUM_SETUP_DIR { SETUP_NONE, SETUP_BUY, SETUP_SELL };
@@ -244,7 +255,9 @@ CTickHistory   *g_tick_history = NULL;
 CTrade          g_trade;
 CSymbolInfo     g_sym_info;
 
-//--- Timing & Performance Variables
+//--- Cool-down & Trade Tracking State Variables
+datetime g_last_close_time = 0;
+bool     g_was_position_open = false;
 datetime g_last_dashboard_update = 0;
 
 //+------------------------------------------------------------------+
@@ -269,7 +282,12 @@ int OnInit()
    g_handle_ema = iMA(Symbol(), InpEMA_Timeframe, InpEMA_Period, 0, MODE_EMA, PRICE_CLOSE);
    g_handle_atr = iATR(Symbol(), PERIOD_CURRENT, InpATR_Period);
 
-   if(g_handle_ema == INVALID_HANDLE || g_handle_atr == INVALID_HANDLE)
+   // Intraday Fast/Slow EMAs on chart timeframe
+   g_handle_fast_ema = iMA(Symbol(), PERIOD_CURRENT, InpFastEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+   g_handle_slow_ema = iMA(Symbol(), PERIOD_CURRENT, InpSlowEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+
+   if(g_handle_ema == INVALID_HANDLE || g_handle_atr == INVALID_HANDLE ||
+      g_handle_fast_ema == INVALID_HANDLE || g_handle_slow_ema == INVALID_HANDLE)
    {
       Print("[INIT] Failed to create indicator handles.");
       return INIT_FAILED;
@@ -317,6 +335,8 @@ void OnDeinit(const int reason)
 
    if(g_handle_ema != INVALID_HANDLE) IndicatorRelease(g_handle_ema);
    if(g_handle_atr != INVALID_HANDLE) IndicatorRelease(g_handle_atr);
+   if(g_handle_fast_ema != INVALID_HANDLE) IndicatorRelease(g_handle_fast_ema);
+   if(g_handle_slow_ema != INVALID_HANDLE) IndicatorRelease(g_handle_slow_ema);
 
    // Clean up charts
    ObjectsDeleteAll(0, "GVS_");
@@ -340,23 +360,66 @@ void OnTick()
 
    g_tick_history.Add(tick, point_val);
 
-   // 2. Manage Trade Exits & Trail (if position is open)
-   if(IsPositionOpen())
+   // 2. Track Cool-down when position closes
+   bool pos_currently_open = IsPositionOpen();
+   if(pos_currently_open)
    {
+      g_was_position_open = true;
       ManageOpenPosition(tick);
       // Reset any active entry setups once inside a trade
       g_active_setup.direction = SETUP_NONE;
       return;
    }
+   else if(g_was_position_open)
+   {
+      g_was_position_open = false;
+      g_last_close_time = (datetime)TimeCurrent();
+      PrintFormat("[MANAGEMENT] Position closed. Activating %d minutes post-trade cool-down period.", InpCoolDownMinutes);
+   }
 
-   // 3. Skip setup checking if spread is excessive
+   // 3. Skip checking if in cool-down period
+   datetime now_time = (datetime)TimeCurrent();
+   if(now_time - g_last_close_time < InpCoolDownMinutes * 60)
+   {
+      return; // Skip setup evaluation during cool-down
+   }
+
+   // 4. Skip setup checking if outside designated liquid trading session hours
+   if(InpUseSessionFilter)
+   {
+      MqlDateTime dt;
+      TimeToStruct(now_time, dt);
+      if(dt.hour < InpSessionStartHour || dt.hour >= InpSessionEndHour)
+      {
+         return; // Skip trade setups during illiquid session hours
+      }
+   }
+
+   // 5. Skip setup checking if spread is excessive
    double current_spread = (tick.ask - tick.bid) / point_val;
    if(!MQLInfoInteger(MQL_TESTER) && current_spread > InpMaxSpreadPoints)
    {
-      return; // Filter trade setups under toxic spread spreads
+      return; // Filter trade setups under toxic wide spreads
    }
 
-   // 4. Calculate Higher Timeframe Filter (Trend)
+   // 6. Calculate Intraday Fast/Slow EMA Trend on current chart
+   double intraday_trend_val = 0; // +1 for bullish, -1 for bearish, 0 for neutral
+   if(InpUseEMATrendFilter)
+   {
+      double fast_val[1];
+      double slow_val[1];
+      if(CopyBuffer(g_handle_fast_ema, 0, 0, 1, fast_val) > 0 && CopyBuffer(g_handle_slow_ema, 0, 0, 1, slow_val) > 0)
+      {
+         if(fast_val[0] > slow_val[0])       intraday_trend_val = 1;
+         else if(fast_val[0] < slow_val[0])  intraday_trend_val = -1;
+      }
+      else
+      {
+         return; // Wait for indicators to load
+      }
+   }
+
+   // Calculate Higher Timeframe Filter (Trend)
    double ema_val[1];
    if(CopyBuffer(g_handle_ema, 0, 1, 1, ema_val) <= 0)
    {
@@ -364,8 +427,7 @@ void OnTick()
    }
    double current_ema = ema_val[0];
 
-   // 5. Evaluate setup expiration
-   datetime now_time = (datetime)TimeCurrent();
+   // 7. Evaluate setup expiration
    if(g_active_setup.direction != SETUP_NONE)
    {
       if(now_time - g_active_setup.init_time > g_SetupExpirySeconds)
@@ -375,23 +437,20 @@ void OnTick()
       }
    }
 
-   // 6. Run verification pipeline and compute Rocket Score if no setup is active
+   // 8. Run verification pipeline and compute Rocket Score if no setup is active
    if(g_active_setup.direction == SETUP_NONE)
    {
       double score = CalculateRocketScore(tick, current_ema, current_spread);
       if(score >= g_RocketScoreTrigger)
       {
-         // Establish active breakout setup
-         g_active_setup.init_time = now_time;
-         g_active_setup.start_price = tick.bid;
-         g_active_setup.peak_price = tick.bid;
-         g_active_setup.pullback_verified = false;
-
          double avg_speed = g_tick_history.ComputeAvgSpeed(10);
          double max_vel = g_tick_history.ComputeMaxVelocity(10);
 
          if(max_vel > 0)
          {
+            // Verify alignment with M5 intraday trend
+            if(InpUseEMATrendFilter && intraday_trend_val != 1) return;
+
             if(InpEntryMode == ENTRY_IMMEDIATE)
             {
                PrintFormat("[EXECUTION] ENTRY_IMMEDIATE Mode: Explosive Upward Momentum! Rocket Score: %.1f | Speed: %.1f | MaxVel: %.1f. Placing BUY order...",
@@ -401,6 +460,10 @@ void OnTick()
             }
             else
             {
+               g_active_setup.init_time = now_time;
+               g_active_setup.start_price = tick.bid;
+               g_active_setup.peak_price = tick.bid;
+               g_active_setup.pullback_verified = false;
                g_active_setup.direction = SETUP_BUY;
                PrintFormat("[PIPELINE] Explosive Upward Momentum Detected! Rocket Score: %.1f | Speed: %.1f | MaxVel: %.1f. Monitoring setup pullback...",
                            score, avg_speed, max_vel);
@@ -408,6 +471,9 @@ void OnTick()
          }
          else if(max_vel < 0)
          {
+            // Verify alignment with M5 intraday trend
+            if(InpUseEMATrendFilter && intraday_trend_val != -1) return;
+
             if(InpEntryMode == ENTRY_IMMEDIATE)
             {
                PrintFormat("[EXECUTION] ENTRY_IMMEDIATE Mode: Explosive Downward Momentum! Rocket Score: %.1f | Speed: %.1f | MaxVel: %.1f. Placing SELL order...",
@@ -417,6 +483,10 @@ void OnTick()
             }
             else
             {
+               g_active_setup.init_time = now_time;
+               g_active_setup.start_price = tick.bid;
+               g_active_setup.peak_price = tick.bid;
+               g_active_setup.pullback_verified = false;
                g_active_setup.direction = SETUP_SELL;
                PrintFormat("[PIPELINE] Explosive Downward Momentum Detected! Rocket Score: %.1f | Speed: %.1f | MaxVel: %.1f. Monitoring setup pullback...",
                            score, avg_speed, max_vel);
@@ -425,18 +495,18 @@ void OnTick()
       }
    }
 
-   // 7. Monitor active Breakout Setup pullback and execution
+   // 9. Monitor active Breakout Setup pullback and execution
    if(g_active_setup.direction != SETUP_NONE)
    {
       MonitorBreakoutSetup(tick, point_val);
    }
 
-   // 8. Render Visual Dashboard
+   // 10. Render Visual Dashboard
    if(!MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_VISUAL_MODE))
    {
       if(now_time - g_last_dashboard_update >= 1)
       {
-         UpdateDashboard(tick, current_spread);
+         UpdateDashboard(tick, current_spread, intraday_trend_val);
          g_last_dashboard_update = now_time;
       }
    }
@@ -894,7 +964,7 @@ void ConfigureFillingMode()
 //+------------------------------------------------------------------+
 //| Real-Time Dashboard Renderer for Charts                          |
 //+------------------------------------------------------------------+
-void UpdateDashboard(const MqlTick &tick, double spread)
+void UpdateDashboard(const MqlTick &tick, double spread, double intraday_trend)
 {
    string title_id   = "GVS_Title";
    string stats_id   = "GVS_Stats";
@@ -903,7 +973,7 @@ void UpdateDashboard(const MqlTick &tick, double spread)
 
    int x = 20, y = 30;
 
-   CreateLabel(title_id, "GOLD VELOCITY SCALPER Pro [v2.00] — XM OPTIMIZED", x, y, 11, clrGold, "Arial Bold");
+   CreateLabel(title_id, "GOLD VELOCITY SCALPER Pro [v3.00] — XM OPTIMIZED", x, y, 11, clrGold, "Arial Bold");
 
    double avg_speed = g_tick_history.ComputeAvgSpeed(15);
    double max_vel   = g_tick_history.ComputeMaxVelocity(15);
@@ -912,6 +982,17 @@ void UpdateDashboard(const MqlTick &tick, double spread)
    string stats_txt = StringFormat("Bid: %.2f | Ask: %.2f | Spread: %.1f pts | Avg Speed: %.2f t/s | Max Velocity: %.2f pts/s | TFI: %.2f",
                                    tick.bid, tick.ask, spread, avg_speed, max_vel, tfi);
    CreateLabel(stats_id, stats_txt, x, y + 20, 9, clrWhite, "Consolas");
+
+   // Intraday M5 Trend
+   string intraday_str = "NEUTRAL";
+   if(InpUseEMATrendFilter)
+   {
+      intraday_str = (intraday_trend == 1) ? "BULLISH (Fast > Slow EMA)" : ((intraday_trend == -1) ? "BEARISH (Fast < Slow EMA)" : "NEUTRAL");
+   }
+   else
+   {
+      intraday_str = "BYPASSED";
+   }
 
    // Refresh Higher Timeframe Trend
    double ema_val[1];
@@ -924,8 +1005,8 @@ void UpdateDashboard(const MqlTick &tick, double spread)
 
    double rocket_score = CalculateRocketScore(tick, ema_val[0], spread);
    color score_col = rocket_score >= g_RocketScoreTrigger ? clrLimeGreen : clrTomato;
-   string score_txt = StringFormat("Momentum Rocket Score: %.1f / 100 (Trigger: %.1f) | Higher Trend: %s",
-                                   rocket_score, g_RocketScoreTrigger, trend_str);
+   string score_txt = StringFormat("Rocket Score: %.1f / 100 (Trig: %.1f) | M5 Trend: %s | H1 Trend: %s",
+                                   rocket_score, g_RocketScoreTrigger, intraday_str, trend_str);
    CreateLabel(score_id, score_txt, x, y + 40, 10, score_col, "Arial");
 
    string setup_txt = StringFormat("Active Setup: NONE | Entry Mode: %s", EnumToString(InpEntryMode));
