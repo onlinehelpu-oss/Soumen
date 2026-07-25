@@ -184,8 +184,14 @@ input double      InpMaxSpreadPoints         = 35.0;       // Max Allowed Spread
 input double      InpMinMomentumQuality      = 0.70;       // Signal-to-Noise Ratio (0.0 to 1.0)
 input double      InpRocketScoreTrigger      = 80.0;       // Rocket Score entry setup threshold (0-100)
 
+enum ENUM_ENTRY_MODE
+{
+   ENTRY_IMMEDIATE,       // ENTRY_IMMEDIATE (Instant Momentum Entry)
+   ENTRY_PEAK_BREAKOUT    // ENTRY_PEAK_BREAKOUT (Pullback + Peak Breakout)
+};
+
 input group "=== Pullback & Breakout Entry Options ==="
-input string      InpEntryModeDescription    = "ENTRY_PEAK_BREAKOUT (Velocity Pullback)";
+input ENUM_ENTRY_MODE InpEntryMode           = ENTRY_IMMEDIATE; // Entry Execution Mode
 input double      InpMinPullbackPct          = 20.0;       // Minimum Pullback Percentage to qualify
 input double      InpMaxPullbackPct          = 75.0;       // Maximum Pullback Percentage before invalidation
 input double      InpMinImpulseHeight        = 0.20;       // Minimum initial momentum height in USD (XAUUSD points = 100 * USD)
@@ -384,15 +390,35 @@ void OnTick()
 
          if(max_vel > 0)
          {
-            g_active_setup.direction = SETUP_BUY;
-            PrintFormat("[PIPELINE] Explosive Upward Momentum Detected! Rocket Score: %.1f | Speed: %.1f | MaxVel: %.1f. Monitoring setup pullback...",
-                        score, avg_speed, max_vel);
+            if(InpEntryMode == ENTRY_IMMEDIATE)
+            {
+               PrintFormat("[EXECUTION] ENTRY_IMMEDIATE Mode: Explosive Upward Momentum! Rocket Score: %.1f | Speed: %.1f | MaxVel: %.1f. Placing BUY order...",
+                           score, avg_speed, max_vel);
+               ExecuteMarketOrder(ORDER_TYPE_BUY, tick);
+               g_active_setup.direction = SETUP_NONE;
+            }
+            else
+            {
+               g_active_setup.direction = SETUP_BUY;
+               PrintFormat("[PIPELINE] Explosive Upward Momentum Detected! Rocket Score: %.1f | Speed: %.1f | MaxVel: %.1f. Monitoring setup pullback...",
+                           score, avg_speed, max_vel);
+            }
          }
          else if(max_vel < 0)
          {
-            g_active_setup.direction = SETUP_SELL;
-            PrintFormat("[PIPELINE] Explosive Downward Momentum Detected! Rocket Score: %.1f | Speed: %.1f | MaxVel: %.1f. Monitoring setup pullback...",
-                        score, avg_speed, max_vel);
+            if(InpEntryMode == ENTRY_IMMEDIATE)
+            {
+               PrintFormat("[EXECUTION] ENTRY_IMMEDIATE Mode: Explosive Downward Momentum! Rocket Score: %.1f | Speed: %.1f | MaxVel: %.1f. Placing SELL order...",
+                           score, avg_speed, max_vel);
+               ExecuteMarketOrder(ORDER_TYPE_SELL, tick);
+               g_active_setup.direction = SETUP_NONE;
+            }
+            else
+            {
+               g_active_setup.direction = SETUP_SELL;
+               PrintFormat("[PIPELINE] Explosive Downward Momentum Detected! Rocket Score: %.1f | Speed: %.1f | MaxVel: %.1f. Monitoring setup pullback...",
+                           score, avg_speed, max_vel);
+            }
          }
       }
    }
@@ -874,7 +900,7 @@ void UpdateDashboard(const MqlTick &tick, double spread)
                                    rocket_score, g_RocketScoreTrigger, trend_str);
    CreateLabel(score_id, score_txt, x, y + 40, 10, score_col, "Arial");
 
-   string setup_txt = "Active Setup: NONE";
+   string setup_txt = StringFormat("Active Setup: NONE | Entry Mode: %s", EnumToString(InpEntryMode));
    color setup_col = clrDarkGray;
    if(g_active_setup.direction != SETUP_NONE)
    {
@@ -882,9 +908,9 @@ void UpdateDashboard(const MqlTick &tick, double spread)
       double pullback_depth = (g_active_setup.direction == SETUP_BUY) ? (g_active_setup.peak_price - tick.bid) : (tick.bid - g_active_setup.peak_price);
       double pullback_pct = g_active_setup.impulse_range > 0 ? (pullback_depth / g_active_setup.impulse_range) * 100.0 : 0.0;
 
-      setup_txt = StringFormat("Active Setup: %s | Peak Price: %.2f | Impulse Range: %.2f | Pullback: %.1f%% (Verified: %s)",
+      setup_txt = StringFormat("Active Setup: %s | Peak Price: %.2f | Impulse Range: %.2f | Pullback: %.1f%% (Verified: %s) | Entry Mode: %s",
                                EnumToString(g_active_setup.direction), g_active_setup.peak_price, g_active_setup.impulse_range,
-                               pullback_pct, g_active_setup.pullback_verified ? "YES" : "NO");
+                               pullback_pct, g_active_setup.pullback_verified ? "YES" : "NO", EnumToString(InpEntryMode));
    }
    CreateLabel(setup_id, setup_txt, x, y + 60, 9, setup_col, "Consolas");
 }
