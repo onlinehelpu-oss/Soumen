@@ -77,7 +77,7 @@ input int               InpMaxTradeDuration        = 30;                // Max t
 //--- Tick Record Structure
 struct TickRecord
 {
-   datetime_msc time_msc;
+   long         time_msc;
    double       bid;
    double       ask;
    double       spread;
@@ -168,7 +168,7 @@ int GetTickSpeed(const CTickHistory &history, int seconds)
    TickRecord latest;
    if (!history.GetAt(0, latest)) return 0;
 
-   datetime_msc limit_time = latest.time_msc - seconds * 1000;
+   long limit_time = latest.time_msc - seconds * 1000;
    int count = 0;
    for (int i = 0; i < history.Count(); i++)
    {
@@ -191,7 +191,7 @@ double GetPriceVelocity(const CTickHistory &history, int seconds, double &out_de
    TickRecord latest;
    if (!history.GetAt(0, latest)) return 0.0;
 
-   datetime_msc limit_time = latest.time_msc - seconds * 1000;
+   long limit_time = latest.time_msc - seconds * 1000;
    TickRecord target_rec;
    bool found = false;
    for (int i = 1; i < history.Count(); i++)
@@ -226,10 +226,11 @@ double GetPriceAcceleration(const CTickHistory &history, int seconds)
    if (!history.GetAt(0, latest)) return 0.0;
 
    double half_window = (double)seconds / 2.0;
-   datetime_msc mid_time = latest.time_msc - (datetime_msc)(half_window * 1000.0);
-   datetime_msc limit_time = latest.time_msc - seconds * 1000;
+   long mid_time = latest.time_msc - (long)(half_window * 1000.0);
+   long limit_time = latest.time_msc - seconds * 1000;
 
-   TickRecord rec_mid, rec_old;
+   TickRecord rec_mid;
+   TickRecord rec_old;
    bool found_mid = false, found_old = false;
 
    for (int i = 1; i < history.Count(); i++)
