@@ -1130,6 +1130,14 @@ void OnTick()
                   m_setup_peak_price = MathMax(m_setup_peak_price, tick.bid);
                   double height = m_setup_peak_price - m_setup_start_price;
 
+                  // Hard Point-Based protection instead of instant invalidation on tiny noise
+                  if (tick.bid < m_setup_start_price - 50.0 * point)
+                  {
+                     m_setup_active = false;
+                     Print("[GVS Setup] BUY setup invalidated (broke below starting price buffer limit).");
+                     return;
+                  }
+
                   if (height >= m_calibrated_min_impulse_height)
                   {
                      double retracement = 0.0;
@@ -1141,7 +1149,8 @@ void OnTick()
                         m_pullback_detected = true;
                      }
 
-                     if (retracement > InpMaxPullbackLimit)
+                     // Only apply percentage-based "pullback too deep" invalidations on solid developed swings (height >= 0.15 USD / 15 points)
+                     if (height >= 0.15 && retracement > InpMaxPullbackLimit)
                      {
                         m_setup_active = false;
                         Print("[GVS Setup] BUY setup invalidated (pullback too deep: ", DoubleToString(retracement * 100, 1), "%).");
@@ -1176,6 +1185,14 @@ void OnTick()
                   m_setup_peak_price = MathMin(m_setup_peak_price, tick.bid);
                   double height = m_setup_start_price - m_setup_peak_price;
 
+                  // Hard Point-Based protection instead of instant invalidation on tiny noise
+                  if (tick.bid > m_setup_start_price + 50.0 * point)
+                  {
+                     m_setup_active = false;
+                     Print("[GVS Setup] SELL setup invalidated (broke above starting price buffer limit).");
+                     return;
+                  }
+
                   if (height >= m_calibrated_min_impulse_height)
                   {
                      double retracement = 0.0;
@@ -1187,7 +1204,8 @@ void OnTick()
                         m_pullback_detected = true;
                      }
 
-                     if (retracement > InpMaxPullbackLimit)
+                     // Only apply percentage-based "pullback too deep" invalidations on solid developed swings (height >= 0.15 USD / 15 points)
+                     if (height >= 0.15 && retracement > InpMaxPullbackLimit)
                      {
                         m_setup_active = false;
                         Print("[GVS Setup] SELL setup invalidated (pullback too deep: ", DoubleToString(retracement * 100, 1), "%).");
