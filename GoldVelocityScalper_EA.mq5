@@ -169,11 +169,13 @@ public:
 input group "=== Institutional Scalper Core Settings ==="
 input double      InpLotSize                 = 0.10;       // Fixed Lot Size (if Risk% = 0)
 input double      InpRiskPercent             = 1.0;        // Account Risk % (0 to disable)
+input bool        InpUseEMAFilter            = false;      // Use HTF EMA Trend Filter
 input ENUM_TIMEFRAMES InpEMA_Timeframe       = PERIOD_H1;  // Higher Timeframe Filter (Trend)
 input int         InpEMA_Period              = 200;        // Higher Timeframe EMA Period
 input int         InpATR_Period              = 14;         // ATR Period for SL/TP Volatility
 input double      InpATR_SL_Multiplier       = 1.5;        // Stop Loss ATR Multiplier
 input double      InpATR_TP_Multiplier       = 4.5;        // Take Profit ATR Multiplier
+input double      InpMaxMarginUtilizationPct = 70.0;       // Max Margin Utilization % of Free Margin (e.g. 70%)
 
 input group "=== Momentum Verification Thresholds ==="
 input double      InpMinTickSpeed            = 4.0;        // Min Tick Speed (ticks/sec)
@@ -496,8 +498,11 @@ double CalculateRocketScore(const MqlTick &tick, double htf_ema, double spread)
    score += accel_points;
 
    // Higher Timeframe Trend Filter Validation
-   if(max_vel > 0 && tick.bid < htf_ema) score *= 0.2; // suppress long signals below EMA
-   if(max_vel < 0 && tick.bid > htf_ema) score *= 0.2; // suppress short signals above EMA
+   if(InpUseEMAFilter)
+   {
+      if(max_vel > 0 && tick.bid < htf_ema) score *= 0.2; // suppress long signals below EMA
+      if(max_vel < 0 && tick.bid > htf_ema) score *= 0.2; // suppress short signals above EMA
+   }
 
    return score;
 }
@@ -613,6 +618,7 @@ void MonitorBreakoutSetup(const MqlTick &tick, double point_val)
 void ExecuteMarketOrder(ENUM_ORDER_TYPE order_type, const MqlTick &tick)
 {
    double point_val = SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+   if(point_val <= 0.0) return;
 
    // Copy dynamic ATR for volatility stop-loss scaling
    double atr_val[1];
@@ -622,9 +628,11 @@ void ExecuteMarketOrder(ENUM_ORDER_TYPE order_type, const MqlTick &tick)
    }
    double current_atr = atr_val[0];
 
-   // Calculate Dynamic Stop Loss & Take Profit
-   double sl_distance = current_atr * InpATR_SL_Multiplier;
-   double tp_distance = current_atr * InpATR_TP_Multiplier;
+   double spread = (tick.ask - tick.bid) / point_val;
+
+   // Calculate Dynamic Stop Loss & Take Profit with spread protection buffering
+   double sl_distance = (current_atr * InpATR_SL_Multiplier) + (spread * point_val);
+   double tp_distance = (current_atr * InpATR_TP_Multiplier) + (spread * point_val);
 
    double entry_price = (order_type == ORDER_TYPE_BUY) ? tick.ask : tick.bid;
    double sl = 0.0;
@@ -646,7 +654,6 @@ void ExecuteMarketOrder(ENUM_ORDER_TYPE order_type, const MqlTick &tick)
    if(InpRiskPercent > 0.0)
    {
       double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-      double margin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
       double risk_val = balance * (InpRiskPercent / 100.0);
       double tick_value = SymbolInfoDouble(Symbol(), SYMBOL_TRADE_TICK_VALUE);
       double tick_size = SymbolInfoDouble(Symbol(), SYMBOL_TRADE_TICK_SIZE);
@@ -658,6 +665,26 @@ void ExecuteMarketOrder(ENUM_ORDER_TYPE order_type, const MqlTick &tick)
          {
             double risk_lots = risk_val / (loss_points * (tick_value / tick_size * point_val));
             if(risk_lots > 0.0) lots = risk_lots;
+         }
+      }
+   }
+
+   // Scale down lots if necessary to comply with dynamic free margin limitations and prevent Code 10019 (No Money)
+   double free_margin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+   if(free_margin > 0.0)
+   {
+      double required_margin = 0.0;
+      ENUM_ORDER_TYPE margin_calc_type = (order_type == ORDER_TYPE_BUY) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      if(OrderCalcMargin(margin_calc_type, Symbol(), lots, entry_price, required_margin) && required_margin > 0.0)
+      {
+         double max_allowed_margin = free_margin * (InpMaxMarginUtilizationPct / 100.0);
+         if(required_margin > max_allowed_margin)
+         {
+            double margin_scale = max_allowed_margin / required_margin;
+            double adjusted_lots = lots * margin_scale;
+            PrintFormat("[EXECUTION] Lot size scaled down from %.2f to %.2f due to free margin limits (Required Margin: %.2f, Max Allowed Margin: %.2f, Free Margin: %.2f)",
+                        lots, adjusted_lots, required_margin, max_allowed_margin, free_margin);
+            lots = adjusted_lots;
          }
       }
    }
@@ -891,7 +918,8 @@ void UpdateDashboard(const MqlTick &tick, double spread)
    string trend_str = "UNKNOWN";
    if(CopyBuffer(g_handle_ema, 0, 0, 1, ema_val) > 0)
    {
-      trend_str = tick.bid > ema_val[0] ? "BULLISH (above 200 EMA)" : "BEARISH (below 200 EMA)";
+      string filter_status = InpUseEMAFilter ? "ACTIVE" : "BYPASSED";
+      trend_str = tick.bid > ema_val[0] ? StringFormat("BULLISH (above 200 EMA, Filter: %s)", filter_status) : StringFormat("BEARISH (below 200 EMA, Filter: %s)", filter_status);
    }
 
    double rocket_score = CalculateRocketScore(tick, ema_val[0], spread);
