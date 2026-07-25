@@ -24,7 +24,7 @@ input double          InpMaxMarginUtilPct  = 70.0;           // Max Margin Utili
 input bool            InpOnePositionAtATime = true;          // Limit to one open position at a time?
 
 input group "--- Candle Pattern Controls ---"
-input bool            InpRedCandleOnly     = false;          // Require signal candle to be Red? (false allows green rejection stars)
+input bool            InpRedCandleOnly     = true;           // Require signal candle to be Red? (always true by default as requested)
 input bool            InpRequirePrevGreen  = false;          // Require the previous candle to be Green?
 
 input group "--- Rejection Pattern Activation ---"
@@ -443,6 +443,12 @@ void Check1MinSignal()
 //+------------------------------------------------------------------+
 void ExecuteShortEntry(double trigger_price)
 {
+    // Strict Guard: If one position at a time is active and a position is open, cancel entry
+    if (InpOnePositionAtATime && IsPositionOpen()) {
+        Print("⚠️ Position is already open and InpOnePositionAtATime is active. Skipping trade.");
+        return;
+    }
+
     double entry_price = NormalizePrice(m_symbol.Bid());
     double sl_price = m_trigger_high;
     double risk = sl_price - entry_price;
@@ -577,25 +583,27 @@ void CheckActivePositionsRisk()
     double current_bid = m_symbol.Bid();
 
     for (int i = PositionsTotal() - 1; i >= 0; i--) {
-        if (PositionGetSymbol(i) == _Symbol) {
-            long magic = PositionGetInteger(POSITION_MAGIC);
-            if (magic != InpMagicNumber) continue;
+        ulong ticket = PositionGetTicket(i);
+        if (ticket > 0) {
+            if (PositionGetString(POSITION_SYMBOL) == _Symbol) {
+                long magic = PositionGetInteger(POSITION_MAGIC);
+                if (magic != InpMagicNumber) continue;
 
-            long type = PositionGetInteger(POSITION_TYPE);
-            if (type != POSITION_TYPE_SELL) continue;
+                long type = PositionGetInteger(POSITION_TYPE);
+                if (type != POSITION_TYPE_SELL) continue;
 
-            ulong ticket = PositionGetInteger(POSITION_TICKET);
-            double sl = PositionGetDouble(POSITION_SL);
-            double tp = PositionGetDouble(POSITION_TP);
+                double sl = PositionGetDouble(POSITION_SL);
+                double tp = PositionGetDouble(POSITION_TP);
 
-            // If price violates SL or TP, execute immediate close
-            if (sl > 0 && current_bid >= sl) {
-                PrintFormat("⚡ Tick protection triggered: SL hit for ticket %I64u at %.2f (SL: %.2f). Closing position.", ticket, current_bid, sl);
-                m_trade.PositionClose(ticket);
-            }
-            else if (tp > 0 && current_bid <= tp) {
-                PrintFormat("⚡ Tick protection triggered: TP hit for ticket %I64u at %.2f (TP: %.2f). Closing position.", ticket, current_bid, tp);
-                m_trade.PositionClose(ticket);
+                // If price violates SL or TP, execute immediate close
+                if (sl > 0 && current_bid >= sl) {
+                    PrintFormat("⚡ Tick protection triggered: SL hit for ticket %I64u at %.2f (SL: %.2f). Closing position.", ticket, current_bid, sl);
+                    m_trade.PositionClose(ticket);
+                }
+                else if (tp > 0 && current_bid <= tp) {
+                    PrintFormat("⚡ Tick protection triggered: TP hit for ticket %I64u at %.2f (TP: %.2f). Closing position.", ticket, current_bid, tp);
+                    m_trade.PositionClose(ticket);
+                }
             }
         }
     }
@@ -628,9 +636,12 @@ bool IsPastTime(string time_str)
 bool IsPositionOpen()
 {
     for (int i = PositionsTotal() - 1; i >= 0; i--) {
-        if (PositionGetSymbol(i) == _Symbol) {
-            long magic = PositionGetInteger(POSITION_MAGIC);
-            if (magic == InpMagicNumber) return true;
+        ulong ticket = PositionGetTicket(i);
+        if (ticket > 0) {
+            if (PositionGetString(POSITION_SYMBOL) == _Symbol) {
+                long magic = PositionGetInteger(POSITION_MAGIC);
+                if (magic == InpMagicNumber) return true;
+            }
         }
     }
     return false;
@@ -642,12 +653,14 @@ bool IsPositionOpen()
 void CloseAllPositions()
 {
     for (int i = PositionsTotal() - 1; i >= 0; i--) {
-        if (PositionGetSymbol(i) == _Symbol) {
-            long magic = PositionGetInteger(POSITION_MAGIC);
-            if (magic == InpMagicNumber) {
-                ulong ticket = PositionGetInteger(POSITION_TICKET);
-                m_trade.PositionClose(ticket);
-                PrintFormat("✅ Closed Position Ticket: %I64u.", ticket);
+        ulong ticket = PositionGetTicket(i);
+        if (ticket > 0) {
+            if (PositionGetString(POSITION_SYMBOL) == _Symbol) {
+                long magic = PositionGetInteger(POSITION_MAGIC);
+                if (magic == InpMagicNumber) {
+                    m_trade.PositionClose(ticket);
+                    PrintFormat("✅ Closed Position Ticket: %I64u.", ticket);
+                }
             }
         }
     }
