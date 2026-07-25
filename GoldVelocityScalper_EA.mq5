@@ -16,10 +16,10 @@
 input group "=== GVS Trading Settings ==="
 input double            InpLotSize                 = 0.1;               // Fixed Trade Volume
 input bool              InpUseDynamicATR_Risk      = true;              // Use Volatility-Based ATR Risk (SL/TP)
-input double            InpATR_SL_Multiplier       = 1.8;               // ATR Stop Loss Multiplier (e.g. 1.8x ATR)
-input double            InpATR_TP_Multiplier       = 3.6;               // ATR Take Profit Multiplier (e.g. 3.6x ATR)
-input double            InpStopLossPoints          = 150.0;             // Fixed Stop Loss if ATR disabled (Points, e.g. 150 = $1.5)
-input double            InpTakeProfitPoints        = 300.0;             // Fixed Take Profit if ATR disabled (Points, e.g. 300 = $3.0)
+input double            InpATR_SL_Multiplier       = 1.5;               // ATR Stop Loss Multiplier (e.g. 1.5x ATR)
+input double            InpATR_TP_Multiplier       = 4.5;               // ATR Take Profit Multiplier (e.g. 4.5x ATR for 1:3 R:R)
+input double            InpStopLossPoints          = 120.0;             // Fixed Stop Loss if ATR disabled (Points, e.g. 120 = $1.2)
+input double            InpTakeProfitPoints        = 360.0;             // Fixed Take Profit if ATR disabled (Points, e.g. 360 = $3.6)
 input double            InpTrailingStopPoints      = 100.0;             // Trailing Stop (Points, 0 = Disabled)
 input double            InpBreakevenPoints         = 80.0;              // Breakeven Profit Trigger (Points, 0 = Disabled)
 input int               InpMagicNumber             = 888123;            // Magic Number
@@ -35,7 +35,7 @@ input int               InpTickSpeedThreshold      = 25;                // Thres
 
 input group "=== Stage 2: Price Velocity ==="
 input int               InpVelocityWindow          = 2;                 // Window size in seconds
-input double            InpPriceVelocityThreshold  = 0.25;              // Threshold ($ / sec, e.g. 0.25)
+input double            InpPriceVelocityThreshold  = 0.15;              // Threshold ($ / sec, e.g. 0.15)
 
 input group "=== Stage 3: Tick Volume Explosion ==="
 input double            InpVolumeMultiplier        = 2.5;               // Current volume vs 30-candle avg
@@ -46,11 +46,11 @@ input int               InpSpreadWindowTicks       = 100;               // Lookb
 
 input group "=== Stage 5 & 7: Directional Ticks & Noise ==="
 input int               InpDirectionalTicksWindow  = 20;                // Lookback ticks
-input double            InpDirectionalTicksRatio   = 0.75;              // Ratio (e.g. 15/20 = 0.75)
-input double            InpMinEfficiencyRatio      = 0.40;              // Min Efficiency Ratio (0.0 to 1.0, 0 = Disabled)
+input double            InpDirectionalTicksRatio   = 0.70;              // Ratio (e.g. 14/20 = 0.70)
+input double            InpMinEfficiencyRatio      = 0.20;              // Min Efficiency Ratio (0.0 to 1.0, 0 = Disabled)
 
 input group "=== Stage 6: Price Acceleration ==="
-input double            InpAccelerationThreshold   = 0.05;              // Threshold ($ / sec^2)
+input double            InpAccelerationThreshold   = 0.02;              // Threshold ($ / sec^2)
 
 input group "=== ATR Expansion ==="
 input int               InpATRPeriod               = 14;                // ATR Period
@@ -63,16 +63,16 @@ enum ENUM_ENTRY_MODE
    ENTRY_PULLBACK
 };
 input ENUM_ENTRY_MODE   InpEntryMode               = ENTRY_PULLBACK;    // Entry Mode (Pullback is highly recommended for safety)
-input double            InpMinRocketScore          = 85.0;              // Minimum Rocket Score to trigger
+input double            InpMinRocketScore          = 75.0;              // Minimum Rocket Score to trigger
 input bool              InpUseTFI                  = true;              // Use Tick Flow Imbalance filter
-input int               InpTFIThreshold            = 50;                // TFI Threshold (+- 50)
+input int               InpTFIThreshold            = 30;                // TFI Threshold (+- 30)
 input int               InpTFIWindowTicks          = 100;               // TFI Lookback ticks
-input double            InpMinImpulseHeight        = 0.40;              // Min impulse height before retracing ($)
-input double            InpMinRetracement          = 0.30;              // Min pullback retracement (30% - Fib Golden zone entry)
-input double            InpMaxRetracement          = 0.65;              // Max pullback retracement (65% - Fib Golden zone entry)
-input double            InpMaxPullbackLimit        = 0.75;              // Hard pullback failure limit (75%)
+input double            InpMinImpulseHeight        = 0.25;              // Min impulse height before retracing ($)
+input double            InpMinRetracement          = 0.20;              // Min pullback retracement (20%)
+input double            InpMaxRetracement          = 0.75;              // Max pullback retracement (75%)
+input double            InpMaxPullbackLimit        = 0.85;              // Hard pullback failure limit (85%)
 input int               InpSetupExpirySeconds      = 20;                // Max seconds to wait for pullback setup
-input double            InpPullbackResumeScore     = 65.0;              // Resume threshold score for pullback entry
+input double            InpPullbackResumeScore     = 60.0;              // Resume threshold score for pullback entry
 
 input group "=== Strategy Tester Calibration ==="
 input bool              InpTesterAutoCalibrate     = true;              // Auto-calibrate thresholds in Strategy Tester
