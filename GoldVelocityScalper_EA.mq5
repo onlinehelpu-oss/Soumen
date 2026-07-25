@@ -15,22 +15,30 @@
 //--- Input Parameters
 input group "=== GVS Trading Settings ==="
 input double            InpLotSize                 = 0.1;               // Fixed Trade Volume
-input double            InpStopLossPoints          = 150.0;             // Stop Loss (Points, e.g. 150 = $1.5)
-input double            InpTakeProfitPoints        = 300.0;             // Take Profit (Points, e.g. 300 = $3.0)
+input bool              InpUseDynamicATR_Risk      = true;              // Use Volatility-Based ATR Risk (SL/TP)
+input double            InpATR_SL_Multiplier       = 1.8;               // ATR Stop Loss Multiplier (e.g. 1.8x ATR)
+input double            InpATR_TP_Multiplier       = 3.6;               // ATR Take Profit Multiplier (e.g. 3.6x ATR)
+input double            InpStopLossPoints          = 150.0;             // Fixed Stop Loss if ATR disabled (Points, e.g. 150 = $1.5)
+input double            InpTakeProfitPoints        = 300.0;             // Fixed Take Profit if ATR disabled (Points, e.g. 300 = $3.0)
 input double            InpTrailingStopPoints      = 100.0;             // Trailing Stop (Points, 0 = Disabled)
 input double            InpBreakevenPoints         = 80.0;              // Breakeven Profit Trigger (Points, 0 = Disabled)
 input int               InpMagicNumber             = 888123;            // Magic Number
 
+input group "=== Institutional Trend Filter ==="
+input bool              InpUseTrendFilter          = true;              // Filter Trades with High Timeframe Trend
+input ENUM_TIMEFRAMES   InpTrendTimeframe          = PERIOD_M5;         // Trend Higher Timeframe
+input int               InpTrendEMAPeriod          = 200;               // Trend EMA Period
+
 input group "=== Stage 1: Tick Speed ==="
 input int               InpTickSpeedWindow         = 1;                 // Window size in seconds
-input int               InpTickSpeedThreshold      = 10;                // Threshold (ticks / window)
+input int               InpTickSpeedThreshold      = 25;                // Threshold (ticks / window)
 
 input group "=== Stage 2: Price Velocity ==="
 input int               InpVelocityWindow          = 2;                 // Window size in seconds
-input double            InpPriceVelocityThreshold  = 0.1;               // Threshold ($ / sec, e.g. 0.1)
+input double            InpPriceVelocityThreshold  = 0.25;              // Threshold ($ / sec, e.g. 0.25)
 
 input group "=== Stage 3: Tick Volume Explosion ==="
-input double            InpVolumeMultiplier        = 1.5;               // Current volume vs 30-candle avg
+input double            InpVolumeMultiplier        = 2.5;               // Current volume vs 30-candle avg
 
 input group "=== Stage 4: Spread Stability ==="
 input double            InpSpreadMultiplier        = 1.5;               // Max spread ratio (current / avg)
@@ -39,10 +47,10 @@ input int               InpSpreadWindowTicks       = 100;               // Lookb
 input group "=== Stage 5 & 7: Directional Ticks & Noise ==="
 input int               InpDirectionalTicksWindow  = 20;                // Lookback ticks
 input double            InpDirectionalTicksRatio   = 0.75;              // Ratio (e.g. 15/20 = 0.75)
-input double            InpMinEfficiencyRatio      = 0.0;               // Min Efficiency Ratio (0.0 to 1.0, 0 = Disabled)
+input double            InpMinEfficiencyRatio      = 0.40;              // Min Efficiency Ratio (0.0 to 1.0, 0 = Disabled)
 
 input group "=== Stage 6: Price Acceleration ==="
-input double            InpAccelerationThreshold   = 0.02;              // Threshold ($ / sec^2)
+input double            InpAccelerationThreshold   = 0.05;              // Threshold ($ / sec^2)
 
 input group "=== ATR Expansion ==="
 input int               InpATRPeriod               = 14;                // ATR Period
@@ -54,20 +62,20 @@ enum ENUM_ENTRY_MODE
    ENTRY_INSTANT,
    ENTRY_PULLBACK
 };
-input ENUM_ENTRY_MODE   InpEntryMode               = ENTRY_INSTANT;     // Entry Mode (Instant by default for testing)
-input double            InpMinRocketScore          = 75.0;              // Minimum Rocket Score to trigger
-input bool              InpUseTFI                  = false;             // Use Tick Flow Imbalance filter
-input int               InpTFIThreshold            = 60;                // TFI Threshold (+- 60)
+input ENUM_ENTRY_MODE   InpEntryMode               = ENTRY_PULLBACK;    // Entry Mode (Pullback is highly recommended for safety)
+input double            InpMinRocketScore          = 85.0;              // Minimum Rocket Score to trigger
+input bool              InpUseTFI                  = true;              // Use Tick Flow Imbalance filter
+input int               InpTFIThreshold            = 50;                // TFI Threshold (+- 50)
 input int               InpTFIWindowTicks          = 100;               // TFI Lookback ticks
-input double            InpMinImpulseHeight        = 0.20;              // Min impulse height before retracing ($)
-input double            InpMinRetracement          = 0.10;              // Min pullback retracement (10%)
-input double            InpMaxRetracement          = 0.25;              // Max pullback retracement (25%)
-input double            InpMaxPullbackLimit        = 0.35;              // Hard pullback failure limit (35%)
-input int               InpSetupExpirySeconds      = 15;                // Max seconds to wait for pullback setup
-input double            InpPullbackResumeScore     = 60.0;              // Resume threshold score for pullback entry
+input double            InpMinImpulseHeight        = 0.40;              // Min impulse height before retracing ($)
+input double            InpMinRetracement          = 0.30;              // Min pullback retracement (30% - Fib Golden zone entry)
+input double            InpMaxRetracement          = 0.65;              // Max pullback retracement (65% - Fib Golden zone entry)
+input double            InpMaxPullbackLimit        = 0.75;              // Hard pullback failure limit (75%)
+input int               InpSetupExpirySeconds      = 20;                // Max seconds to wait for pullback setup
+input double            InpPullbackResumeScore     = 65.0;              // Resume threshold score for pullback entry
 
 input group "=== Strategy Tester Calibration ==="
-input bool              InpTesterAutoCalibrate     = true;              // Auto-calibrate thresholds in Strategy Tester
+input bool              InpTesterAutoCalibrate     = false;             // Auto-calibrate thresholds in Strategy Tester (Disabled for real results)
 
 input group "=== Exit Mechanics ==="
 input bool              InpExitOnMomentumFade      = true;              // Exit when momentum fades
@@ -153,6 +161,7 @@ public:
 CTrade         m_trade;
 CTickHistory   m_tick_history;
 int            m_atr_handle = INVALID_HANDLE;
+int            m_trend_ema_handle = INVALID_HANDLE;
 double         m_last_bid = 0.0;
 double         m_peak_tick_speed = 0.0;
 bool           m_use_index_based_metrics = false;
@@ -558,6 +567,16 @@ int OnInit()
       return INIT_FAILED;
    }
 
+   if (InpUseTrendFilter)
+   {
+      m_trend_ema_handle = iMA(Symbol(), InpTrendTimeframe, InpTrendEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+      if (m_trend_ema_handle == INVALID_HANDLE)
+      {
+         Print("[GVS INIT] Failed to create Trend EMA indicator handle!");
+         return INIT_FAILED;
+      }
+   }
+
    ConfigureTradeFilling();
 
    Print("[GVS INIT] Gold Velocity Scalper Initialized successfully. Magic: ", InpMagicNumber);
@@ -571,6 +590,11 @@ void OnDeinit(const int reason)
    {
       IndicatorRelease(m_atr_handle);
       m_atr_handle = INVALID_HANDLE;
+   }
+   if (m_trend_ema_handle != INVALID_HANDLE)
+   {
+      IndicatorRelease(m_trend_ema_handle);
+      m_trend_ema_handle = INVALID_HANDLE;
    }
    Comment("");
 }
@@ -588,13 +612,47 @@ void ExecuteTrade(int direction)
    double sl_price = 0.0;
    double tp_price = 0.0;
 
+   // Handle dynamic ATR SL / TP
+   if (InpUseDynamicATR_Risk && m_atr_handle != INVALID_HANDLE)
+   {
+      double atr_values[1];
+      if (CopyBuffer(m_atr_handle, 0, 0, 1, atr_values) > 0 && atr_values[0] > 0)
+      {
+         double atr = atr_values[0];
+         if (direction == 1)
+         {
+            sl_price = entry_price - (atr * InpATR_SL_Multiplier);
+            tp_price = entry_price + (atr * InpATR_TP_Multiplier);
+         }
+         else
+         {
+            sl_price = entry_price + (atr * InpATR_SL_Multiplier);
+            tp_price = entry_price - (atr * InpATR_TP_Multiplier);
+         }
+      }
+   }
+
+   // Fallback to fixed points if ATR is disabled or copy failed
+   if (sl_price == 0.0 || tp_price == 0.0)
+   {
+      if (direction == 1)
+      {
+         if (InpStopLossPoints > 0)
+            sl_price = entry_price - InpStopLossPoints * point;
+         if (InpTakeProfitPoints > 0)
+            tp_price = entry_price + InpTakeProfitPoints * point;
+      }
+      else
+      {
+         if (InpStopLossPoints > 0)
+            sl_price = entry_price + InpStopLossPoints * point;
+         if (InpTakeProfitPoints > 0)
+            tp_price = entry_price - InpTakeProfitPoints * point;
+      }
+   }
+
    if (direction == 1)
    {
-      if (InpStopLossPoints > 0)
-         sl_price = entry_price - InpStopLossPoints * point;
-      if (InpTakeProfitPoints > 0)
-         tp_price = entry_price + InpTakeProfitPoints * point;
-
       double lot = NormalizeLotSize(InpLotSize);
       bool res = m_trade.Buy(lot, Symbol(), ask, NormalizeDouble(sl_price, _Digits), NormalizeDouble(tp_price, _Digits), "GVS BUY");
       uint ret_code = m_trade.ResultRetcode();
@@ -609,11 +667,6 @@ void ExecuteTrade(int direction)
    }
    else if (direction == -1)
    {
-      if (InpStopLossPoints > 0)
-         sl_price = entry_price + InpStopLossPoints * point;
-      if (InpTakeProfitPoints > 0)
-         tp_price = entry_price - InpTakeProfitPoints * point;
-
       double lot = NormalizeLotSize(InpLotSize);
       bool res = m_trade.Sell(lot, Symbol(), bid, NormalizeDouble(sl_price, _Digits), NormalizeDouble(tp_price, _Digits), "GVS SELL");
       uint ret_code = m_trade.ResultRetcode();
@@ -937,8 +990,26 @@ void OnTick()
    bool is_buy_tfi_valid = (!InpUseTFI || tfi >= InpTFIThreshold);
    bool is_sell_tfi_valid = (!InpUseTFI || tfi <= -InpTFIThreshold);
 
-   bool buy_eligible = (score_buy >= InpMinRocketScore && is_spread_valid_for_entry && is_noise_level_valid && is_buy_tfi_valid);
-   bool sell_eligible = (score_sell >= InpMinRocketScore && is_spread_valid_for_entry && is_noise_level_valid && is_sell_tfi_valid);
+   // Higher Timeframe Trend Filter Evaluation
+   bool trend_up = true;
+   bool trend_down = true;
+   if (InpUseTrendFilter && m_trend_ema_handle != INVALID_HANDLE)
+   {
+      double ema_values[1];
+      if (CopyBuffer(m_trend_ema_handle, 0, 0, 1, ema_values) > 0)
+      {
+         double ema = ema_values[0];
+         double close_price = iClose(Symbol(), InpTrendTimeframe, 0);
+         if (close_price > 0 && ema > 0)
+         {
+            trend_up = (close_price > ema);
+            trend_down = (close_price < ema);
+         }
+      }
+   }
+
+   bool buy_eligible = (score_buy >= InpMinRocketScore && is_spread_valid_for_entry && is_noise_level_valid && is_buy_tfi_valid && trend_up);
+   bool sell_eligible = (score_sell >= InpMinRocketScore && is_spread_valid_for_entry && is_noise_level_valid && is_sell_tfi_valid && trend_down);
 
    // Periodic Journal Diagnostics (Every 100 ticks in Strategy Tester)
    static int tick_diag_counter = 0;
@@ -956,6 +1027,7 @@ void OnTick()
                " | Spread Valid: ", is_spread_valid_for_entry, " (Current Spread: ", current_spread, ")",
                " | Noise ER Valid: ", is_noise_level_valid, " (ER: ", eff_ratio, " Min ER: ", InpMinEfficiencyRatio, ")",
                " | TFI Valid: ", is_buy_tfi_valid, " (TFI: ", tfi, ")",
+               " | Trend Up: ", trend_up, " Trend Down: ", trend_down,
                " | Adaptive Index Mode Active: ", m_use_index_based_metrics);
       }
    }
@@ -1128,6 +1200,7 @@ void OnTick()
                             "TOTAL ROCKET SCORE (BUY / SELL): " + DoubleToString(score_buy, 0) + " / " + DoubleToString(score_sell, 0) + " (Required: " + DoubleToString(InpMinRocketScore, 0) + ")\n" +
                             "---------------------------------------------------------\n" +
                             "Setup Status: " + setup_str + "\n" +
+                            "Trend Filters (Buy / Sell Allowed): " + (trend_up ? "YES" : "NO") + " / " + (trend_down ? "YES" : "NO") + "\n" +
                             "Start Price: " + DoubleToString(m_setup_start_price, _Digits) + " | Peak Price: " + DoubleToString(m_setup_peak_price, _Digits) + "\n" +
                             "Active Positions: " + IntegerToString(open_positions) + " (Magic: " + IntegerToString(InpMagicNumber) + ")\n" +
                             "=========================================================";
