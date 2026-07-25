@@ -35,6 +35,7 @@ input bool            InpEnableC5          = true;           // Enable Pattern C
 input bool            InpEnableC6          = true;           // Enable Pattern C6 (Rejection, minimal lower wick)
 input bool            InpEnableC7          = true;           // Enable Pattern C7 (Extreme Gravestone Pinbar)
 input bool            InpEnableSwingSS     = true;           // Enable Swing Shooting Star Pattern
+input bool            InpEnable1MinPattern = true;           // Enable 1-Minute Custom Shooting Star Pattern (from image)
 input bool            InpEnableCustom      = true;           // Enable Custom Fallback Rejection Pattern
 
 input group "--- Pattern Swing Shooting Star Parameters ---"
@@ -103,6 +104,7 @@ CSymbolInfo    m_symbol;
 CPositionInfo  m_position;
 
 datetime       m_last_checked_bar_time = 0;
+datetime       m_last_checked_m1_bar_time = 0;
 bool           m_trigger_active = false;
 double         m_trigger_low = 0;
 double         m_trigger_high = 0;
@@ -128,6 +130,7 @@ int OnInit()
     ConfigureFillingMode();
 
     m_last_checked_bar_time = iTime(_Symbol, InpTimeframe, 0);
+    m_last_checked_m1_bar_time = iTime(_Symbol, PERIOD_M1, 0);
     m_last_bid = 0;
 
     // Run core tests to verify calculation logic matches expectations
@@ -170,11 +173,20 @@ void OnTick()
         return;
     }
 
-    // Check for new bar completion to scan for signal
+    // Check for new bar completion to scan for main timeframe signal
     datetime current_bar_time = iTime(_Symbol, InpTimeframe, 0);
     if (current_bar_time != m_last_checked_bar_time) {
         m_last_checked_bar_time = current_bar_time;
         CheckSignal();
+    }
+
+    // Check for 1-minute custom pattern signal if enabled and main timeframe is not M1 (to prevent duplicate checking)
+    if (InpEnable1MinPattern) {
+        datetime current_m1_bar_time = iTime(_Symbol, PERIOD_M1, 0);
+        if (current_m1_bar_time != m_last_checked_m1_bar_time) {
+            m_last_checked_m1_bar_time = current_m1_bar_time;
+            Check1MinSignal();
+        }
     }
 
     // Track breakout if trigger is active
@@ -360,6 +372,70 @@ void CheckSignal()
                 matched_pattern, _Symbol, (c < o ? "RED" : "GREEN"), upper_wick_pct, body_pct, lower_wick_pct);
     PrintFormat("👉 Breakout watch low: %.2f | SL target: %.2f | Window: %s to %s",
                 l, h, TimeToString(m_trigger_start_time), TimeToString(m_trigger_expiry_time));
+}
+
+//+------------------------------------------------------------------+
+//| Check 1-minute custom pattern signal from image                  |
+//+------------------------------------------------------------------+
+void Check1MinSignal()
+{
+    // If we only allow one position and one is open, skip signal scanning
+    if (InpOnePositionAtATime && IsPositionOpen()) {
+        m_trigger_active = false;
+        return;
+    }
+
+    // Copy rates of completed bars (index 1 and index 2 on M1)
+    MqlRates m1_rates[];
+    ArraySetAsSeries(m1_rates, true);
+    if (CopyRates(_Symbol, PERIOD_M1, 1, 2, m1_rates) < 2) {
+        return;
+    }
+
+    // Candle 1 (completed candidate at index 0 in rates array, which corresponds to index 1 on chart):
+    // - Must be Red: Open > Close
+    // - Bracket( High - Open ) >= Bracket( 2 * Bracket( Open - Close ) )
+    // - Bracket( Bracket( Close - Low ) / Bracket( Open - Close ) ) < 1
+    double o1 = m1_rates[0].open;
+    double h1 = m1_rates[0].high;
+    double l1 = m1_rates[0].low;
+    double c1 = m1_rates[0].close;
+
+    // Candle 2 (previous completed candle at index 1 in rates array, which corresponds to index 2 on chart):
+    // - Must be Green: Close > Open
+    double o2 = m1_rates[1].open;
+    double c2 = m1_rates[1].close;
+
+    bool is_red = o1 > c1;
+    bool is_prev_green = c2 > o2;
+
+    if (!is_red || !is_prev_green) {
+        return;
+    }
+
+    double body = o1 - c1;
+    if (body <= 0) return;
+
+    double upper_wick = h1 - o1;
+    double lower_wick = c1 - l1;
+
+    bool condition1 = (upper_wick >= 2.0 * body);
+    bool condition2 = ((lower_wick / body) < 1.0);
+
+    if (condition1 && condition2) {
+        // M1 Shooting Star Pattern verified!
+        m_trigger_active = true;
+        m_trigger_low = l1;
+        m_trigger_high = h1;
+        m_matched_pattern_name = "M1_ShootingStar";
+        m_trigger_start_time = iTime(_Symbol, PERIOD_M1, 0); // Trigger begins at start of current bar 0 on M1
+        m_trigger_expiry_time = m_trigger_start_time + 60;   // Expires at end of 1-minute bar 0
+
+        PrintFormat("🎯 1-MINUTE REJECTION SIGNAL GENERATED (M1_ShootingStar): %s. High: %.2f, Low: %.2f, Open: %.2f, Close: %.2f. Prev Close: %.2f, Prev Open: %.2f",
+                    _Symbol, h1, l1, o1, c1, c2, o2);
+        PrintFormat("👉 Breakout watch low: %.2f | SL target: %.2f | Window: %s to %s",
+                    l1, h1, TimeToString(m_trigger_start_time), TimeToString(m_trigger_expiry_time));
+    }
 }
 
 //+------------------------------------------------------------------+
