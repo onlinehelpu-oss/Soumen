@@ -18,7 +18,7 @@ input group "--- Strategy Settings ---"
 input ENUM_TIMEFRAMES InpTimeframe         = PERIOD_CURRENT; // Timeframe to scan (PERIOD_CURRENT to match chart)
 input double          InpRiskRewardRatio   = 1.5;            // Risk:Reward multiplier
 input double          InpFixedLotSize      = 0.1;            // Lot size (if not using dynamic lot)
-input double          InpMinLotSizeOverride = 0.0;           // Minimum Lot Size Override (0.0 to use broker's SYMBOL_VOLUME_MIN)
+input double          InpMinLotSizeOverride = 0.01;          // Minimum Lot Size Override (0.01 standard minimum for Gold on XM)
 input bool            InpUseDynamicLot     = false;          // Use risk-based dynamic lot sizing?
 input double          InpRiskPercentage    = 1.0;            // % Risk per trade (if dynamic lot)
 input double          InpMaxMarginUtilPct  = 70.0;           // Max Margin Utilization Percentage (prevent Code 10019)
