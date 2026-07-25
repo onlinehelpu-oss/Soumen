@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026, Jules C."
 #property link      "https://www.mql5.com"
-#property version   "1.00"
+#property version   "2.00"
 #property strict
 
 // Include Standard Library Trades
@@ -14,55 +14,69 @@
 #include <Trade\PositionInfo.mqh>
 
 //--- Expert Advisor Inputs ---
-input string      Inp_EADesc                 = "--- QUANTUM FRACTAL VELOCITY SYSTEM ---"; // System Strategy Description
-input group       "--- RISK & MONEY MANAGEMENT ---"
+input string      Inp_EADesc                 = "--- QUANTUM BREAKOUT VELOCITY SYSTEM ---"; // System Strategy Description
+input group       "--- RISK & MONEY MANAGEMENT ---";
 input double      Inp_FixedLotSize           = 0.1;           // Fixed Lot Size (if AutoRisk = 0)
 input double      Inp_RiskPercent            = 1.0;           // Risk Percentage per Trade (0 = Disabled, uses Fixed Lot)
-input double      Inp_MaxSpreadPoints        = 50.0;          // Max Allowed Spread in Points (1 point = 0.01 on Gold)
+input double      Inp_MaxSpreadPoints        = 40.0;          // Max Allowed Spread in Points (1 point = 0.01 on Gold)
 input double      Inp_SlippagePoints         = 30.0;          // Execution Slippage in Points
 input ulong       Inp_MagicNumber            = 882026;        // EA Unique Magic Number
 
-input group       "--- FRACTAL REGIME FILTER (HURST) ---"
-input int         Inp_HurstPeriod            = 30;            // Period for Hurst Exponent Calculation (Bars)
-input double      Inp_HurstTrendThreshold    = 0.56;          // Threshold (> this is Persistent Trend, buy breakouts)
-input double      Inp_HurstMeanRevertThresh  = 0.44;          // Threshold (< this is Anti-Persistent, buy pullbacks)
+input group       "--- TREND & REJECTION FILTERS ---";
+input ENUM_TIMEFRAMES Inp_Timeframe          = PERIOD_M15;    // Trading & Analysis Timeframe (M15/M30 is optimal for XAUUSD)
+input int         Inp_FastEMAPeriod          = 21;            // Fast EMA Period
+input int         Inp_SlowEMAPeriod          = 200;           // Slow EMA Period for Major Trend Filter
+input double      Inp_MinWickPct             = 45.0;          // Minimum Rejection Wick Percentage (e.g. 45%)
+input double      Inp_EntryBufferPoints      = 10.0;          // Entry breakout buffer above/below signal high/low (points)
+input double      Inp_MinCandlePoints        = 50.0;          // Ignore tiny candle noise (points)
 
-input group       "--- DYNAMIC VOLATILITY BANDS ---"
-input int         Inp_ATRPeriod              = 14;            // ATR Period for volatility scaling
-input double      Inp_KeltnerMultiplier      = 2.0;           // Keltner Channel Volatility Multiplier
-input ENUM_TIMEFRAMES Inp_SignalTimeframe    = PERIOD_H1;     // Analysis/Regime Identification Timeframe
+input group       "--- RISK-REWARD RATIOS (STRUCTURAL SL/TP) ---";
+input double      Inp_RewardToRiskRatio      = 2.5;           // TP is this multiplier of the tight structural SL distance
+input double      Inp_MinSLPoints            = 80.0;          // Minimum allowed structural Stop Loss (points) to avoid spreads
+input double      Inp_MaxSLPoints            = 350.0;         // Maximum allowed structural Stop Loss (points) to cut huge risk
+input bool        Inp_EnableTrailingStop     = true;          // Enable Trailing Stop
+input double      Inp_TrailingStartPoints    = 150.0;         // Trailing Trigger Points from Entry
+input double      Inp_TrailingStepPoints     = 50.0;          // Trailing Step Points
 
-input group       "--- RISK-REWARD RATIOS (ATR MULTIPLIERS) ---"
-input double      Inp_SL_ATRMultiplier       = 1.5;           // Stop Loss ATR Multiplier
-input double      Inp_TP_ATRMultiplier       = 3.0;           // Take Profit ATR Multiplier
-input bool        Inp_EnableTrailingStop     = true;          // Enable ATR-based Trailing Stop
-input double      Inp_TrailingTriggerATRMult = 1.0;           // Trailing Start Trigger ATR Multiplier
-input double      Inp_TrailingStopATRMult    = 1.2;           // Trailing Distance ATR Multiplier
-
-input group       "--- SESSION & TIME CONTROLS ---"
+input group       "--- SESSION & TIME CONTROLS ---";
 input bool        Inp_UseSessionFilter       = true;          // Restrict Entries to High Volume Sessions
 input int         Inp_StartHourGMT           = 7;             // Session Start Hour (GMT/EET Broker Time - London Open)
-input int         Inp_EndHourGMT             = 21;            // Session End Hour (GMT/EET Broker Time - NY Close)
+input int         Inp_EndHourGMT             = 20;            // Session End Hour (GMT/EET Broker Time - NY Session)
+
+//--- Struct to hold Signal Candle setup data ---
+struct SignalSetup
+{
+   bool     isActive;         // Whether a signal is active and waiting for a next-candle breakout
+   datetime setupTime;        // Time of the signal candle
+   int      direction;        // 1 for BUY, -1 for SELL
+   double   triggerPrice;     // High + Buffer (for BUY), Low - Buffer (for SELL)
+   double   stopLoss;         // Low - Buffer (for BUY), High + Buffer (for SELL)
+   double   takeProfit;       // SL Distance * RR Ratio
+   double   signalHigh;       // Cache signal high
+   double   signalLow;        // Cache signal low
+};
 
 //--- Global Variables ---
 CTrade            m_trade;                                    // CTrade Execution Object
 CSymbolInfo       m_symbol;                                   // CSymbolInfo Helper Object
 CPositionInfo     m_position;                                 // CPositionInfo Helper Object
-int               m_atr_handle         = INVALID_HANDLE;      // ATR Indicator Handle
+int               m_fast_ema_handle    = INVALID_HANDLE;      // Fast EMA Handle
+int               m_slow_ema_handle    = INVALID_HANDLE;      // Slow EMA Handle
 double            m_points_scale       = 1.0;                 // Points conversion scale based on digits
 bool              m_is_tester          = false;               // Cache for Strategy Tester state
 bool              m_is_visual          = false;               // Cache for Visual Mode state
+datetime          m_last_checked_bar   = 0;                   // Keep track of evaluated bars
+SignalSetup       m_active_setup;                             // Tracks pending breakouts
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   // Check if we are running on XAUUSD / GOLD
    string symbol_name = Symbol();
    if(StringFind(symbol_name, "XAU") < 0 && StringFind(symbol_name, "GOLD") < 0)
    {
-      Print("[WARNING] QuantumFractal EA is designed and optimized specifically for XAUUSD (GOLD). Running on a different symbol may produce suboptimal results.");
+      Print("[WARNING] Quantum Breakout EA is designed and optimized specifically for XAUUSD (GOLD).");
    }
 
    // Initialize Symbol Info Helper
@@ -76,25 +90,28 @@ int OnInit()
    // Set Magic Number for trade operations
    m_trade.SetExpertMagicNumber(Inp_MagicNumber);
 
-   // Determine Broker Execution Mode & Filling Mode dynamically (Crucial for XM Netting/Hedging types)
+   // Configure Broker Execution Filling Mode dynamically
    ConfigureFillingMode();
 
-   // Scale Points configuration for Gold (usually 2 digits, i.e. 1 point = 0.01)
    m_points_scale = m_symbol.Point();
-
-   // Cache Strategy Tester state to bypass live trade checks and heavy rendering
    m_is_tester = (bool)MQLInfoInteger(MQL_TESTER);
    m_is_visual = (bool)MQLInfoInteger(MQL_VISUAL_MODE);
 
-   // Initialize ATR Indicator for Volatility Analysis
-   m_atr_handle = iATR(symbol_name, Inp_SignalTimeframe, Inp_ATRPeriod);
-   if(m_atr_handle == INVALID_HANDLE)
+   // Initialize EMA Indicators
+   m_fast_ema_handle = iMA(symbol_name, Inp_Timeframe, Inp_FastEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+   m_slow_ema_handle = iMA(symbol_name, Inp_Timeframe, Inp_SlowEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+
+   if(m_fast_ema_handle == INVALID_HANDLE || m_slow_ema_handle == INVALID_HANDLE)
    {
-      Print("[ERROR] Failed to initialize ATR indicator handle. OnInit aborted.");
+      Print("[ERROR] Failed to initialize indicator handles. OnInit aborted.");
       return(INIT_FAILED);
    }
 
-   Print("[INIT SUCCESS] QuantumFractal EA Initialized. Magic: ", Inp_MagicNumber, " | Digits: ", m_symbol.Digits(), " | Pt Scale: ", m_points_scale);
+   // Reset Signal Setup struct
+   m_active_setup.isActive = false;
+   m_last_checked_bar = 0;
+
+   Print("[INIT SUCCESS] Quantum Breakout EA Initialized. Magic: ", Inp_MagicNumber, " | Digits: ", m_symbol.Digits());
    return(INIT_SUCCEEDED);
 }
 
@@ -103,13 +120,9 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   // Release indicator handles
-   if(m_atr_handle != INVALID_HANDLE)
-   {
-      IndicatorRelease(m_atr_handle);
-      m_atr_handle = INVALID_HANDLE;
-   }
-   Print("[DEINIT] QuantumFractal EA cleaned up and stopped. Reason: ", reason);
+   if(m_fast_ema_handle != INVALID_HANDLE) IndicatorRelease(m_fast_ema_handle);
+   if(m_slow_ema_handle != INVALID_HANDLE) IndicatorRelease(m_slow_ema_handle);
+   Print("[DEINIT] Quantum Breakout EA stopped. Reason: ", reason);
 }
 
 //+------------------------------------------------------------------+
@@ -118,277 +131,247 @@ void OnDeinit(const int reason)
 void OnTick()
 {
    // Refresh Symbol Market Data
-   if(!m_symbol.RefreshRates())
-   {
-      return;
-   }
+   if(!m_symbol.RefreshRates()) return;
 
-   // Check spread filter (Bypass in Strategy Tester if OHLC/Open Price modes don't provide real-time spread logs)
+   // Check spread filter (Bypass in Strategy Tester)
    double current_spread = (m_symbol.Ask() - m_symbol.Bid()) / m_symbol.Point();
    if(!m_is_tester && current_spread > Inp_MaxSpreadPoints)
    {
-      if(m_is_visual)
-      {
-         Comment("Spread too high: ", DoubleToString(current_spread, 1), " points.");
-      }
       return;
    }
 
-   // Manage trailing stops and active positions first
+   // Manage Trailing Stops on active positions
    ManageActivePositions();
 
-   // Trade restriction checks
+   // One Position at a Time Constraint
+   if(HasOpenPosition())
+   {
+      m_active_setup.isActive = false; // Reset setup if trade is already active
+      return;
+   }
+
+   // Identify the start of a new bar on Inp_Timeframe
+   datetime bar_time[];
+   if(CopyTime(Symbol(), Inp_Timeframe, 0, 1, bar_time) < 1) return;
+
+   bool is_new_bar = (bar_time[0] != m_last_checked_bar);
+
+   // If a new bar opened, check if the previous pending breakout has expired (Strict 1-candle rule)
+   if(is_new_bar)
+   {
+      if(m_active_setup.isActive)
+      {
+         // If a setup was defined on the previous bar, and we've now opened a new bar without entry, discard it!
+         Print("[SETUP EXPIRED] Breakout did not occur during the next immediate candle. Discarding setup at ", m_active_setup.setupTime);
+         m_active_setup.isActive = false;
+      }
+
+      m_last_checked_bar = bar_time[0];
+
+      // Perform Signal Identification on the newly completed bar (Index 1)
+      DetectSignalCandle();
+   }
+
+   // Check live intraday price movement for breakout triggers on the active signal setup
+   if(m_active_setup.isActive)
+   {
+      CheckBreakoutTrigger();
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Detects qualified pullback/rejection signal candle on bar index 1 |
+//+------------------------------------------------------------------+
+void DetectSignalCandle()
+{
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+   if(CopyRates(Symbol(), Inp_Timeframe, 1, 2, rates) < 2) return;
+
+   MqlRates sig = rates[0]; // Completed candle (index 1)
+
+   double range = (sig.high - sig.low) / m_points_scale;
+   if(range < Inp_MinCandlePoints) return; // Ignore tiny noise candles
+
+   // Calculate body and wicks
+   double open_price = sig.open;
+   double close_price = sig.close;
+   double body_high = MathMax(open_price, close_price);
+   double body_low = MathMin(open_price, close_price);
+
+   double body_size = (body_high - body_low) / m_points_scale;
+   double upper_wick = (sig.high - body_high) / m_points_scale;
+   double lower_wick = (body_low - sig.low) / m_points_scale;
+
+   // Calculate EMAs for Trend Filtering
+   double fast_ema_array[], slow_ema_array[];
+   ArraySetAsSeries(fast_ema_array, true);
+   ArraySetAsSeries(slow_ema_array, true);
+
+   if(CopyBuffer(m_fast_ema_handle, 0, 1, 1, fast_ema_array) < 1 ||
+      CopyBuffer(m_slow_ema_handle, 0, 1, 1, slow_ema_array) < 1)
+   {
+      return;
+   }
+
+   double fast_ema = fast_ema_array[0];
+   double slow_ema = slow_ema_array[0];
+
+   bool is_uptrend = (fast_ema > slow_ema);
+   bool is_downtrend = (fast_ema < slow_ema);
+
+   // Restrict trading to specified active sessions
    if(!IsMarketSessionOpen()) return;
-   if(HasOpenPosition()) return; // One position at a time rule
 
-   // Verify we have completed bars available to prevent signal repainting
-   datetime current_bar_time[];
-   if(CopyTime(Symbol(), Inp_SignalTimeframe, 0, 2, current_bar_time) < 2)
+   // 1. BUY SIGNAL: BULLISH REJECTION / PULLBACK (e.g. Hammer / Pinbar / Touch 21 EMA in Uptrend)
+   if(is_uptrend)
    {
-      return;
-   }
+      double lower_wick_pct = (range > 0) ? (lower_wick / range) * 100.0 : 0;
 
-   // Check and Execute Trading Strategy
-   CheckStrategySignal();
-}
+      // Candidate if we have a strong lower wick (rejection of lower prices)
+      // OR if price has pulled back to touch the 21 EMA and closes above it
+      bool lower_rejection = (lower_wick_pct >= Inp_MinWickPct);
+      bool ema_pullback = (sig.low <= fast_ema && sig.close > fast_ema);
 
-//+------------------------------------------------------------------+
-//| Dynamically configures the filling mode for CTrade               |
-//+------------------------------------------------------------------+
-void ConfigureFillingMode()
-{
-   uint filling_flags = (uint)SymbolInfoInteger(Symbol(), SYMBOL_FILLING_MODE);
-
-   if((filling_flags & SYMBOL_FILLING_FOK) != 0)
-   {
-      m_trade.SetTypeFilling(ORDER_FILLING_FOK);
-   }
-   else if((filling_flags & SYMBOL_FILLING_IOC) != 0)
-   {
-      m_trade.SetTypeFilling(ORDER_FILLING_IOC);
-   }
-   else
-   {
-      m_trade.SetTypeFilling(ORDER_FILLING_RETURN);
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Strategy Signal Evaluation & Execution                           |
-//+------------------------------------------------------------------+
-void CheckStrategySignal()
-{
-   // Retrieve ATR Value
-   double atr_values[];
-   ArraySetAsSeries(atr_values, true);
-   if(CopyBuffer(m_atr_handle, 0, 1, 2, atr_values) < 2)
-   {
-      Print("[STRATEGY] Error copying ATR values. Execution bypassed.");
-      return;
-   }
-   double current_atr = atr_values[0];
-   if(current_atr <= 0) return;
-
-   // Calculate Hurst Exponent on the signal timeframe using completed bars (bars 1 to Inp_HurstPeriod)
-   double hurst = CalculateHurstExponent(Inp_SignalTimeframe, Inp_HurstPeriod);
-   if(hurst < 0) return; // Error in calculation
-
-   // Get Keltner Channels (using MA + ATR multiplier)
-   double close_array[];
-   ArraySetAsSeries(close_array, true);
-   if(CopyClose(Symbol(), Inp_SignalTimeframe, 1, Inp_HurstPeriod, close_array) < Inp_HurstPeriod)
-   {
-      return;
-   }
-
-   // Compute Simple Moving Average of Close
-   double sma = 0;
-   for(int i = 0; i < Inp_HurstPeriod; i++)
-   {
-      sma += close_array[i];
-   }
-   sma /= (double)Inp_HurstPeriod;
-
-   double upper_keltner = sma + (Inp_KeltnerMultiplier * current_atr);
-   double lower_keltner = sma - (Inp_KeltnerMultiplier * current_atr);
-   double last_close = close_array[0];
-
-   // Decision logic based on Hurst Exponent Regimes
-   bool signal_buy = false;
-   bool signal_sell = false;
-   string regime_desc = "";
-
-   if(hurst >= Inp_HurstTrendThreshold)
-   {
-      // --- TREND PERSISTENT REGIME ---
-      // Breakout Strategy: Trend is strong, buy when price breaks out of the upper Keltner channel, sell on lower breakout
-      regime_desc = "Strong Trend Regime (Hurst >= " + DoubleToString(Inp_HurstTrendThreshold, 2) + ")";
-      if(last_close > upper_keltner)
+      if(lower_rejection || ema_pullback)
       {
-         signal_buy = true;
-      }
-      else if(last_close < lower_keltner)
-      {
-         signal_sell = true;
+         m_active_setup.isActive = true;
+         m_active_setup.setupTime = sig.time;
+         m_active_setup.direction = 1;
+         m_active_setup.signalHigh = sig.high;
+         m_active_setup.signalLow = sig.low;
+
+         // Trigger price is the high of the signal candle + breakout buffer
+         m_active_setup.triggerPrice = sig.high + (Inp_EntryBufferPoints * m_points_scale);
+
+         // TIGHT STRUCTURAL STOP LOSS: Exactly under the low of the signal candle!
+         double sl_distance = sig.high - sig.low + (Inp_EntryBufferPoints * 2.0 * m_points_scale);
+         double sl_points = sl_distance / m_points_scale;
+
+         // Constrain SL to safe structural points
+         if(sl_points < Inp_MinSLPoints) sl_distance = Inp_MinSLPoints * m_points_scale;
+         if(sl_points > Inp_MaxSLPoints) sl_distance = Inp_MaxSLPoints * m_points_scale;
+
+         m_active_setup.stopLoss = m_active_setup.triggerPrice - sl_distance;
+         m_active_setup.takeProfit = m_active_setup.triggerPrice + (sl_distance * Inp_RewardToRiskRatio);
+
+         Print("[SETUP PENDING] Bullish Setup defined at ", sig.time,
+               " | Trigger Ask: ", m_active_setup.triggerPrice,
+               " | Structural SL: ", m_active_setup.stopLoss,
+               " | Expected TP: ", m_active_setup.takeProfit);
       }
    }
-   else if(hurst <= Inp_HurstMeanRevertThresh)
+
+   // 2. SELL SIGNAL: BEARISH REJECTION / PULLBACK (e.g. Shooting Star / Touch 21 EMA in Downtrend)
+   if(is_downtrend && !m_active_setup.isActive)
    {
-      // --- MEAN-REVERTING REGIME ---
-      // Pullback Strategy: Market oscillates, buy when price touches lower channel (oversold), sell when price touches upper channel (overbought)
-      regime_desc = "Mean-Reverting Regime (Hurst <= " + DoubleToString(Inp_HurstMeanRevertThresh, 2) + ")";
-      if(last_close < lower_keltner)
+      double upper_wick_pct = (range > 0) ? (upper_wick / range) * 100.0 : 0;
+
+      bool upper_rejection = (upper_wick_pct >= Inp_MinWickPct);
+      bool ema_pullback = (sig.high >= fast_ema && sig.close < fast_ema);
+
+      if(upper_rejection || ema_pullback)
       {
-         signal_buy = true;
+         m_active_setup.isActive = true;
+         m_active_setup.setupTime = sig.time;
+         m_active_setup.direction = -1;
+         m_active_setup.signalHigh = sig.high;
+         m_active_setup.signalLow = sig.low;
+
+         // Trigger price is the low of the signal candle - breakout buffer
+         m_active_setup.triggerPrice = sig.low - (Inp_EntryBufferPoints * m_points_scale);
+
+         // TIGHT STRUCTURAL STOP LOSS: Exactly above the high of the signal candle!
+         double sl_distance = sig.high - sig.low + (Inp_EntryBufferPoints * 2.0 * m_points_scale);
+         double sl_points = sl_distance / m_points_scale;
+
+         // Constrain SL to safe structural points
+         if(sl_points < Inp_MinSLPoints) sl_distance = Inp_MinSLPoints * m_points_scale;
+         if(sl_points > Inp_MaxSLPoints) sl_distance = Inp_MaxSLPoints * m_points_scale;
+
+         m_active_setup.stopLoss = m_active_setup.triggerPrice + sl_distance;
+         m_active_setup.takeProfit = m_active_setup.triggerPrice - (sl_distance * Inp_RewardToRiskRatio);
+
+         Print("[SETUP PENDING] Bearish Setup defined at ", sig.time,
+               " | Trigger Bid: ", m_active_setup.triggerPrice,
+               " | Structural SL: ", m_active_setup.stopLoss,
+               " | Expected TP: ", m_active_setup.takeProfit);
       }
-      else if(last_close > upper_keltner)
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Check Live Tick Prices to see if next candle breakout occurred   |
+//+------------------------------------------------------------------+
+void CheckBreakoutTrigger()
+{
+   if(!m_active_setup.isActive) return;
+
+   if(m_active_setup.direction == 1)
+   {
+      // Buy Entry: price breaks above triggerPrice (Ask price)
+      double current_ask = m_symbol.Ask();
+      if(current_ask >= m_active_setup.triggerPrice)
       {
-         signal_sell = true;
+         // Verify we don't have extremely deep gap breakout beyond the SL/TP ratio
+         if(current_ask > m_active_setup.triggerPrice + (150 * m_points_scale))
+         {
+            Print("[TRIGGER CANCELLED] Extreme breakout gap. Bypassing high risk buy at ", current_ask);
+            m_active_setup.isActive = false;
+            return;
+         }
+
+         double lot_size = CalculateLotSize(current_ask - m_active_setup.stopLoss);
+
+         // Anti-race lock
+         m_active_setup.isActive = false;
+
+         if(m_trade.Buy(lot_size, Symbol(), current_ask, m_active_setup.stopLoss, m_active_setup.takeProfit, "Quantum Breakout BUY"))
+         {
+            Print("[ORDER SUCCESS] Long Breakout Triggered. Entry: ", current_ask,
+                  " | SL: ", m_active_setup.stopLoss,
+                  " | TP: ", m_active_setup.takeProfit,
+                  " | Lots: ", lot_size,
+                  " | Risk: ", DoubleToString(Inp_RiskPercent, 1), "%");
+         }
+         else
+         {
+            Print("[ORDER FAILED] Long Entry failed: ", m_trade.ResultRetcodeDescription());
+         }
       }
    }
-   else
+   else if(m_active_setup.direction == -1)
    {
-      // --- RANDOM WALK REGIME ---
-      // Sideways/No edge. Stand aside to preserve capital.
-      regime_desc = "Random Walk Regime (No Clear Edge)";
-   }
+      // Sell Entry: price breaks below triggerPrice (Bid price)
+      double current_bid = m_symbol.Bid();
+      if(current_bid <= m_active_setup.triggerPrice)
+      {
+         // Verify we don't have extremely deep gap breakout
+         if(current_bid < m_active_setup.triggerPrice - (150 * m_points_scale))
+         {
+            Print("[TRIGGER CANCELLED] Extreme breakout gap. Bypassing high risk sell at ", current_bid);
+            m_active_setup.isActive = false;
+            return;
+         }
 
-   // Display Diagnostic Dashboard on screen (Only if visual mode is active to prevent Strategy Tester lag)
-   if(m_is_visual)
-   {
-      string comment_text = "=== QUANTUM FRACTAL VELOCITY SYSTEM ===\n" +
-                            "Symbol: " + Symbol() + "\n" +
-                            "Hurst Exponent: " + DoubleToString(hurst, 3) + " (" + regime_desc + ")\n" +
-                            "ATR Volatility: " + DoubleToString(current_atr, 2) + " USD\n" +
-                            "Keltner Upper: " + DoubleToString(upper_keltner, 2) + "\n" +
-                            "Keltner Lower: " + DoubleToString(lower_keltner, 2) + "\n" +
-                            "Last Close: " + DoubleToString(last_close, 2) + "\n" +
-                            "=====================================";
-      Comment(comment_text);
-   }
+         double lot_size = CalculateLotSize(m_active_setup.stopLoss - current_bid);
 
-   // Execute Trade
-   if(signal_buy)
-   {
-      ExecuteBuyTrade(current_atr);
-   }
-   else if(signal_sell)
-   {
-      ExecuteSellTrade(current_atr);
-   }
-}
+         // Anti-race lock
+         m_active_setup.isActive = false;
 
-//+------------------------------------------------------------------+
-//| Calculate Hurst Exponent using Rescaled Range (R/S) Method       |
-//+------------------------------------------------------------------+
-double CalculateHurstExponent(ENUM_TIMEFRAMES timeframe, int period)
-{
-   double closes[];
-   ArraySetAsSeries(closes, true);
-
-   // Copy historical close data (+1 to perform returns calculation)
-   int copied = CopyClose(Symbol(), timeframe, 1, period + 1, closes);
-   if(copied < period + 1)
-   {
-      return -1.0;
-   }
-
-   // 1. Calculate Logarithmic Returns
-   double returns[];
-   ArrayResize(returns, period);
-   double mean_return = 0;
-
-   for(int i = 0; i < period; i++)
-   {
-      returns[i] = MathLog(closes[i] / closes[i + 1]);
-      mean_return += returns[i];
-   }
-   mean_return /= (double)period;
-
-   // 2. Calculate Mean-Adjusted Deviations & Cumulative Deviation (Z)
-   double cum_deviation[];
-   ArrayResize(cum_deviation, period);
-   double sum_deviation = 0;
-   double max_z = -99999999.0;
-   double min_z = 99999999.0;
-
-   for(int i = 0; i < period; i++)
-   {
-      sum_deviation += (returns[i] - mean_return);
-      cum_deviation[i] = sum_deviation;
-      if(cum_deviation[i] > max_z) max_z = cum_deviation[i];
-      if(cum_deviation[i] < min_z) min_z = cum_deviation[i];
-   }
-
-   // 3. Calculate Range (R)
-   double range = max_z - min_z;
-
-   // 4. Calculate Standard Deviation (S)
-   double sum_variance = 0;
-   for(int i = 0; i < period; i++)
-   {
-      sum_variance += MathPow(returns[i] - mean_return, 2);
-   }
-   double std_dev = MathSqrt(sum_variance / (double)period);
-
-   if(std_dev == 0) return 0.5; // Avoid division by zero, defaults to random walk
-
-   // 5. Calculate Rescaled Range (R/S)
-   double rs_ratio = range / std_dev;
-
-   // 6. Calculate Hurst Exponent (H = log(R/S) / log(N))
-   double hurst = MathLog(rs_ratio) / MathLog((double)period);
-
-   // Bound the Hurst Exponent dynamically to the theoretical limit [0, 1]
-   if(hurst < 0.0) hurst = 0.0;
-   if(hurst > 1.0) hurst = 1.0;
-
-   return hurst;
-}
-
-//+------------------------------------------------------------------+
-//| Execute BUY Order                                                |
-//+------------------------------------------------------------------+
-void ExecuteBuyTrade(double atr_val)
-{
-   double ask = m_symbol.Ask();
-   double stop_loss = NormalizeDouble(ask - (Inp_SL_ATRMultiplier * atr_val), m_symbol.Digits());
-   double take_profit = NormalizeDouble(ask + (Inp_TP_ATRMultiplier * atr_val), m_symbol.Digits());
-   double lot_size = CalculateLotSize(ask - stop_loss);
-
-   // Set Anti-Race Lock check to ensure no duplicates
-   if(HasOpenPosition()) return;
-
-   if(m_trade.Buy(lot_size, Symbol(), ask, stop_loss, take_profit, "QuantumFractal BUY"))
-   {
-      Print("[ORDER SUCCESS] Long Entry Triggered. Entry: ", ask, " | SL: ", stop_loss, " | TP: ", take_profit, " | Lots: ", lot_size);
-   }
-   else
-   {
-      Print("[ORDER FAILED] Long Entry failed. Error code: ", m_trade.ResultRetcode(), " Description: ", m_trade.ResultRetcodeDescription());
-   }
-}
-
-//+------------------------------------------------------------------+
-//| Execute SELL Order                                               |
-//+------------------------------------------------------------------+
-void ExecuteSellTrade(double atr_val)
-{
-   double bid = m_symbol.Bid();
-   double stop_loss = NormalizeDouble(bid + (Inp_SL_ATRMultiplier * atr_val), m_symbol.Digits());
-   double take_profit = NormalizeDouble(bid - (Inp_TP_ATRMultiplier * atr_val), m_symbol.Digits());
-   double lot_size = CalculateLotSize(stop_loss - bid);
-
-   // Set Anti-Race Lock check to ensure no duplicates
-   if(HasOpenPosition()) return;
-
-   if(m_trade.Sell(lot_size, Symbol(), bid, stop_loss, take_profit, "QuantumFractal SELL"))
-   {
-      Print("[ORDER SUCCESS] Short Entry Triggered. Entry: ", bid, " | SL: ", stop_loss, " | TP: ", take_profit, " | Lots: ", lot_size);
-   }
-   else
-   {
-      Print("[ORDER FAILED] Short Entry failed. Error code: ", m_trade.ResultRetcode(), " Description: ", m_trade.ResultRetcodeDescription());
+         if(m_trade.Sell(lot_size, Symbol(), current_bid, m_active_setup.stopLoss, m_active_setup.takeProfit, "Quantum Breakout SELL"))
+         {
+            Print("[ORDER SUCCESS] Short Breakout Triggered. Entry: ", current_bid,
+                  " | SL: ", m_active_setup.stopLoss,
+                  " | TP: ", m_active_setup.takeProfit,
+                  " | Lots: ", lot_size,
+                  " | Risk: ", DoubleToString(Inp_RiskPercent, 1), "%");
+         }
+         else
+         {
+            Print("[ORDER FAILED] Short Entry failed: ", m_trade.ResultRetcodeDescription());
+         }
+      }
    }
 }
 
@@ -411,9 +394,8 @@ double CalculateLotSize(double sl_distance)
       return NormalizeLotSize(Inp_FixedLotSize);
    }
 
-   // Risk Formula: Position Size = (Balance * Risk%) / (SL in points * PointValue)
    double risk_amount = free_margin * (Inp_RiskPercent / 100.0);
-   double sl_points = sl_distance / m_symbol.Point();
+   double sl_points = sl_distance / m_points_scale;
    double point_value = (tick_value / tick_size) * m_symbol.Point();
 
    double computed_lot = risk_amount / (sl_points * point_value);
@@ -439,20 +421,32 @@ double NormalizeLotSize(double computed_lot)
 }
 
 //+------------------------------------------------------------------+
+//| Dynamically configures the filling mode for CTrade               |
+//+------------------------------------------------------------------+
+void ConfigureFillingMode()
+{
+   uint filling_flags = (uint)SymbolInfoInteger(Symbol(), SYMBOL_FILLING_MODE);
+
+   if((filling_flags & SYMBOL_FILLING_FOK) != 0)
+   {
+      m_trade.SetTypeFilling(ORDER_FILLING_FOK);
+   }
+   else if((filling_flags & SYMBOL_FILLING_IOC) != 0)
+   {
+      m_trade.SetTypeFilling(ORDER_FILLING_IOC);
+   }
+   else
+   {
+      m_trade.SetTypeFilling(ORDER_FILLING_RETURN);
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Manage Trailing Stop-Loss for Active Positions                    |
 //+------------------------------------------------------------------+
 void ManageActivePositions()
 {
    if(!Inp_EnableTrailingStop) return;
-
-   // Copy standard ATR value
-   double atr_values[];
-   ArraySetAsSeries(atr_values, true);
-   if(CopyBuffer(m_atr_handle, 0, 0, 1, atr_values) < 1) return;
-   double current_atr = atr_values[0];
-
-   double trail_trigger = Inp_TrailingTriggerATRMult * current_atr;
-   double trail_distance = Inp_TrailingStopATRMult * current_atr;
 
    int total_positions = PositionsTotal();
    for(int i = total_positions - 1; i >= 0; i--)
@@ -467,11 +461,10 @@ void ManageActivePositions()
             if(m_position.PositionType() == POSITION_TYPE_BUY)
             {
                double bid = m_symbol.Bid();
-               // Only trigger trailing if price has moved at least trailing trigger distance in our favor
-               if(bid - entry_price > trail_trigger)
+               // Check if price moved enough points in profit to start trailing
+               if(bid - entry_price > Inp_TrailingStartPoints * m_points_scale)
                {
-                  double new_sl = NormalizeDouble(bid - trail_distance, m_symbol.Digits());
-                  // Only modify if new SL is higher than current SL (or if current SL is 0)
+                  double new_sl = NormalizeDouble(bid - (Inp_TrailingStepPoints * m_points_scale), m_symbol.Digits());
                   if(new_sl > current_sl || current_sl == 0)
                   {
                      m_trade.PositionModify(m_position.Ticket(), new_sl, m_position.TakeProfit());
@@ -481,11 +474,10 @@ void ManageActivePositions()
             else if(m_position.PositionType() == POSITION_TYPE_SELL)
             {
                double ask = m_symbol.Ask();
-               // Only trigger trailing if price has moved at least trailing trigger distance in our favor
-               if(entry_price - ask > trail_trigger)
+               // Check if price moved enough points in profit to start trailing
+               if(entry_price - ask > Inp_TrailingStartPoints * m_points_scale)
                {
-                  double new_sl = NormalizeDouble(ask + trail_distance, m_symbol.Digits());
-                  // Only modify if new SL is lower than current SL (or if current SL is 0)
+                  double new_sl = NormalizeDouble(ask + (Inp_TrailingStepPoints * m_points_scale), m_symbol.Digits());
                   if(new_sl < current_sl || current_sl == 0)
                   {
                      m_trade.PositionModify(m_position.Ticket(), new_sl, m_position.TakeProfit());
