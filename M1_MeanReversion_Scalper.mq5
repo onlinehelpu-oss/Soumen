@@ -42,7 +42,7 @@ input int               InpSessionEndHour     = 20;
 input int               InpMaxTradesPerDay    = 8;
 
 input group "=== Position Sizing ==="
-input double            InpLotSize            = 0.10;
+input double            InpLotSize            = 0.01;
 input double            InpRiskPercent        = 1.0;
 input double            InpMaxMarginUtilizationPct = 50.0;
 
