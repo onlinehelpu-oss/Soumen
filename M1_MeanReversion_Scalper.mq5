@@ -252,13 +252,11 @@ void OnTick()
 
    if(g_trades_today >= InpMaxTradesPerDay)
    {
-      if(InpLogSignals) Print("[SIGNAL] Daily trade cap reached, skipping.");
       return;
    }
 
    if(!InSession())
    {
-      if(InpLogSignals) Print("[SIGNAL] Outside session window, skipping.");
       return;
    }
 
