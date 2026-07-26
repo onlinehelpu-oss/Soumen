@@ -14,14 +14,14 @@
 //====================================================================
 input group "=== Bollinger Band Fade Entry ==="
 input int               InpBBPeriod           = 20;           // Bollinger Band period
-input double            InpBBDeviation        = 2.0;          // Bollinger Band deviation
+input double            InpBBDeviation        = 1.5;          // Bollinger Band deviation (relaxed from 2.0 to increase signals)
 input int               InpRSIPeriod          = 14;
-input double            InpRSIOversold        = 25.0;         // RSI below this + price below lower band = BUY
-input double            InpRSIOverbought      = 75.0;         // RSI above this + price above upper band = SELL
+input double            InpRSIOversold        = 30.0;         // RSI below this + price below lower band = BUY (relaxed from 25.0 to increase signals)
+input double            InpRSIOverbought      = 70.0;         // RSI above this + price above upper band = SELL (relaxed from 75.0 to increase signals)
 
 input group "=== Range Filter (mean-reversion fails in strong trends) ==="
 input int               InpADXPeriod          = 14;
-input double            InpMaxADXForReversion = 25.0;         // Only trade when ADX is BELOW this (range-bound, not trending)
+input double            InpMaxADXForReversion = 35.0;         // Only trade when ADX is BELOW this (relaxed from 25.0 to allow trading in mild trends)
 
 input group "=== Exit: ATR-Scaled SL/TP ==="
 input int               InpATRPeriod          = 14;
@@ -36,10 +36,10 @@ input bool              InpExtendAfterBreakeven = true;
 
 input group "=== Trade Filters ==="
 input double            InpMaxSpreadPoints    = 30.0;
-input bool              InpUseSessionFilter   = true;
+input bool              InpUseSessionFilter   = false;        // OFF by default to maximize signals across all hours
 input int               InpSessionStartHour   = 7;
 input int               InpSessionEndHour     = 20;
-input int               InpMaxTradesPerDay    = 8;
+input int               InpMaxTradesPerDay    = 24;           // Increased daily trade limit to accommodate more signals
 
 input group "=== Position Sizing ==="
 input double            InpLotSize            = 0.01;
