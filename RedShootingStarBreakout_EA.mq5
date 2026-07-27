@@ -17,12 +17,13 @@
 input group "--- Strategy Settings ---"
 input ENUM_TIMEFRAMES InpTimeframe         = PERIOD_CURRENT; // Timeframe to scan (PERIOD_CURRENT to match chart)
 input double          InpRiskRewardRatio   = 1.5;            // Risk:Reward multiplier
-input double          InpFixedLotSize      = 0.1;            // Lot size (if not using dynamic lot)
+input double          InpFixedLotSize      = 0.01;           // Lot size (if not using dynamic lot)
 input double          InpMinLotSizeOverride = 0.01;          // Minimum Lot Size Override (0.01 standard minimum for Gold on XM)
 input bool            InpUseDynamicLot     = false;          // Use risk-based dynamic lot sizing?
 input double          InpRiskPercentage    = 1.0;            // % Risk per trade (if dynamic lot)
 input double          InpMaxMarginUtilPct  = 70.0;           // Max Margin Utilization Percentage (prevent Code 10019)
 input bool            InpOnePositionAtATime = true;          // Limit to one open position at a time?
+input int             InpMinCandleRangePoints = 50;          // Min candle range in points to ignore tiny candles (0 to disable)
 
 input group "--- EMA Trend Filter Settings ---"
 input bool            InpUseEMAFilter      = true;           // Use EMA Trend Filter? (Signal Close < EMA)
@@ -100,7 +101,6 @@ input double          InpBodyMin           = 0.0;            // Body min percent
 input double          InpBodyMax           = 50.0;           // Body max percentage (relaxed from 40.0)
 input double          InpLowerWickMax      = 40.0;           // Lower wick max percentage (relaxed from 30.0)
 input double          InpMinRangePct       = 0.0;            // Min candle range pct (H-L)/Close (0.0 to disable)
-input int             InpMinRangePoints    = 0;              // Min candle range in points (0 to disable)
 
 input group "--- Breakout & Execution Settings ---"
 input bool            InpUseTimeFilters    = false;          // Enable entry cutoff time filters?
@@ -357,10 +357,10 @@ void CheckSignal()
         return;
     }
 
-    // Range points check
+    // Range points check to ignore tiny candle
     int range_points = (int)MathRound(total_range / m_symbol.Point());
-    if (InpMinRangePoints > 0 && range_points < InpMinRangePoints) {
-        PrintFormat("🔍 Candle rejected: Range points (%d) < Min Required (%d)", range_points, InpMinRangePoints);
+    if (InpMinCandleRangePoints > 0 && range_points < InpMinCandleRangePoints) {
+        PrintFormat("🔍 Candle rejected: Range points (%d) < Min Required (%d)", range_points, InpMinCandleRangePoints);
         return;
     }
 
@@ -470,6 +470,12 @@ void Check1MinSignal()
     double h1 = m1_rates[0].high;
     double l1 = m1_rates[0].low;
     double c1 = m1_rates[0].close;
+
+    // Range points check to ignore tiny candle
+    int range_points1 = (int)MathRound((h1 - l1) / m_symbol.Point());
+    if (InpMinCandleRangePoints > 0 && range_points1 < InpMinCandleRangePoints) {
+        return;
+    }
 
     // Candle 2 (previous completed candle at index 1 in rates array, which corresponds to index 2 on chart):
     // - Must be Green: Close > Open
