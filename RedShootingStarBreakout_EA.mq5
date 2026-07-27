@@ -247,7 +247,7 @@ void CheckSignal()
     if (InpRequirePrevGreen && prev_c <= prev_o) return; // Previous candle must be GREEN if filter enabled
     if (c == 0 || h <= l) return;
 
-    // EMA Filter validation: Signal candle close must be strictly below EMA
+    // EMA Filter validation: Signal candle close must be below EMA, and signal candle high must be above EMA (touch & rejection)
     if (InpUseEMAFilter && m_ema_handle != INVALID_HANDLE) {
         double ema_val[1];
         if (CopyBuffer(m_ema_handle, 0, 1, 1, ema_val) < 1) {
@@ -256,6 +256,10 @@ void CheckSignal()
         }
         if (c >= ema_val[0]) {
             PrintFormat("🔍 Candle rejected: Close price (%.2f) >= EMA (%.2f)", c, ema_val[0]);
+            return;
+        }
+        if (h <= ema_val[0]) {
+            PrintFormat("🔍 Candle rejected: High price (%.2f) <= EMA (%.2f) (No touch/rejection)", h, ema_val[0]);
             return;
         }
     }
