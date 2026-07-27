@@ -32,75 +32,9 @@ input ENUM_MA_METHOD  InpEMAMethod         = MODE_EMA;       // EMA Smoothing Me
 input ENUM_APPLIED_PRICE InpEMAAppliedPrice = PRICE_CLOSE;   // EMA Applied Price
 
 input group "--- Candle Pattern Controls ---"
-input bool            InpRedCandleOnly     = true;           // Require signal candle to be Red? (always true by default as requested)
+input bool            InpRedCandleOnly     = true;           // Require signal candle to be Red?
 input bool            InpRequirePrevGreen  = false;          // Require the previous candle to be Green?
-
-input group "--- Rejection Pattern Activation ---"
-input bool            InpEnableC2          = true;           // Enable Pattern C2 (Classic Shooting Star)
-input bool            InpEnableC3          = true;           // Enable Pattern C3 (Bearish Trend Bar)
-input bool            InpEnableC4          = true;           // Enable Pattern C4 (Bearish Pinbar with tail)
-input bool            InpEnableC5          = true;           // Enable Pattern C5 (Bearish Strong Rejection)
-input bool            InpEnableC6          = true;           // Enable Pattern C6 (Rejection, minimal lower wick)
-input bool            InpEnableC7          = true;           // Enable Pattern C7 (Extreme Gravestone Pinbar)
-input bool            InpEnableSwingSS     = true;           // Enable Swing Shooting Star Pattern
-input bool            InpEnable1MinPattern = true;           // Enable 1-Minute Custom Shooting Star Pattern (from image)
-input bool            InpEnableB1B2        = true;           // Enable Pattern B1/B2 (Extreme Upper Wick Pinbars)
-input bool            InpEnableCustom      = true;           // Enable Custom Fallback Rejection Pattern
-
-input group "--- Pattern Swing Shooting Star Parameters ---"
-input int             InpSwingLength       = 5;              // Swing High Lookback Length
-
-input group "--- Pattern C2 (Classic Shooting Star) Parameters ---"
-input double          InpC2_MinUpperWickPct = 40.0;          // C2 Min Upper Wick % (relaxed from 55.0)
-input double          InpC2_MaxBodyPct      = 45.0;          // C2 Max Body % (relaxed from 35.0)
-input double          InpC2_MaxLowerWickPct = 15.0;          // C2 Max Lower Wick % (relaxed from 5.0)
-
-input group "--- Pattern C3 (Bearish Trend Bar) Parameters ---"
-input double          InpC3_MinUpperWickPct = 5.0;           // C3 Min Upper Wick % (relaxed from 10.0)
-input double          InpC3_MaxUpperWickPct = 45.0;          // C3 Max Upper Wick % (relaxed from 35.0)
-input double          InpC3_MinBodyPct      = 45.0;          // C3 Min Body % (relaxed from 55.0)
-input double          InpC3_MaxLowerWickPct = 25.0;          // C3 Max Lower Wick % (relaxed from 15.0)
-
-input group "--- Pattern C4 (Bearish Pinbar) Parameters ---"
-input double          InpC4_MinUpperWickPct = 25.0;          // C4 Min Upper Wick % (relaxed from 35.0)
-input double          InpC4_MaxUpperWickPct = 65.0;          // C4 Max Upper Wick % (relaxed from 55.0)
-input double          InpC4_MinBodyPct      = 20.0;          // C4 Min Body % (relaxed from 30.0)
-input double          InpC4_MaxBodyPct      = 60.0;          // C4 Max Body % (relaxed from 50.0)
-input double          InpC4_MinLowerWickPct = 5.0;           // C4 Min Lower Wick % (relaxed from 10.0)
-input double          InpC4_MaxLowerWickPct = 35.0;          // C4 Max Lower Wick % (relaxed from 25.0)
-
-input group "--- Pattern C5 (Strong Rejection) Parameters ---"
-input double          InpC5_MinUpperWickPct = 25.0;          // C5 Min Upper Wick % (relaxed from 35.0)
-input double          InpC5_MaxUpperWickPct = 65.0;          // C5 Max Upper Wick % (relaxed from 50.0)
-input double          InpC5_MinBodyPct      = 35.0;          // C5 Min Body % (relaxed from 45.0)
-input double          InpC5_MaxBodyPct      = 70.0;          // C5 Max Body % (relaxed from 60.0)
-input double          InpC5_MaxLowerWickPct = 25.0;          // C5 Max Lower Wick % (relaxed from 15.0)
-
-input group "--- Pattern C6 (Minimal Lower Wick Rejection) Parameters ---"
-input double          InpC6_MinUpperWickPct = 30.0;          // C6 Min Upper Wick % (relaxed from 40.0)
-input double          InpC6_MaxUpperWickPct = 70.0;          // C6 Max Upper Wick % (relaxed from 60.0)
-input double          InpC6_MinBodyPct      = 25.0;          // C6 Min Body % (relaxed from 35.0)
-input double          InpC6_MaxBodyPct      = 65.0;          // C6 Max Body % (relaxed from 55.0)
-input double          InpC6_MaxLowerWickPct = 15.0;          // C6 Max Lower Wick % (relaxed from 5.0)
-
-input group "--- Pattern C7 (Extreme Gravestone Pinbar) Parameters ---"
-input double          InpC7_MinUpperWickPct = 45.0;          // C7 Min Upper Wick % (relaxed from 60.0)
-input double          InpC7_MaxBodyPct      = 35.0;          // C7 Max Body % (relaxed from 25.0)
-input double          InpC7_MinLowerWickPct = 0.0;           // C7 Min Lower Wick % (relaxed from 5.0)
-input double          InpC7_MaxLowerWickPct = 30.0;          // C7 Max Lower Wick % (relaxed from 20.0)
-
-input group "--- Pattern B1/B2 (Extreme Pinbars) Parameters ---"
-input double          InpB1B2_MinUpperWickPct = 70.0;        // B1/B2 Min Upper Wick % (extreme rejection)
-input double          InpB1B2_MaxBodyPct      = 25.0;        // B1/B2 Max Body %
-input double          InpB1B2_MaxLowerWickPct = 10.0;        // B1/B2 Max Lower Wick % (minimal tail)
-
-input group "--- Custom Fallback Rejection Settings ---"
-input double          InpUpperWickMin      = 30.0;           // Upper wick min percentage (relaxed from 50.0)
-input double          InpUpperWickMax      = 100.0;          // Upper wick max percentage (up to 100% for full pinbars)
-input double          InpBodyMin           = 0.0;            // Body min percentage (0% allows dojis)
-input double          InpBodyMax           = 50.0;           // Body max percentage (relaxed from 40.0)
-input double          InpLowerWickMax      = 40.0;           // Lower wick max percentage (relaxed from 30.0)
-input double          InpMinRangePct       = 0.0;            // Min candle range pct (H-L)/Close (0.0 to disable)
+input double          InpMinUpperWickPct   = 50.0;           // Min Upper Wick % (e.g. 50.0%)
 
 input group "--- Breakout & Execution Settings ---"
 input bool            InpUseTimeFilters    = false;          // Enable entry cutoff time filters?
@@ -117,7 +51,6 @@ CSymbolInfo    m_symbol;
 CPositionInfo  m_position;
 
 datetime       m_last_checked_bar_time = 0;
-datetime       m_last_checked_m1_bar_time = 0;
 bool           m_trigger_active = false;
 bool           m_had_position_open = false;
 datetime       m_last_trade_closed_time = 0;
@@ -130,7 +63,6 @@ string         m_matched_pattern_name = "";
 
 //--- Indicator Handles
 int            m_ema_handle = INVALID_HANDLE;
-int            m_ema_m1_handle = INVALID_HANDLE;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -149,22 +81,14 @@ int OnInit()
     ConfigureFillingMode();
 
     m_last_checked_bar_time = iTime(_Symbol, InpTimeframe, 0);
-    m_last_checked_m1_bar_time = iTime(_Symbol, PERIOD_M1, 0);
     m_last_bid = 0;
 
-    // Create EMA indicator handles if filter is enabled
+    // Create EMA indicator handle if filter is enabled
     if (InpUseEMAFilter) {
         m_ema_handle = iMA(_Symbol, InpTimeframe, InpEMAPeriod, 0, InpEMAMethod, InpEMAAppliedPrice);
         if (m_ema_handle == INVALID_HANDLE) {
             Print("❌ Failed to create EMA handle for main timeframe.");
             return INIT_FAILED;
-        }
-        if (InpEnable1MinPattern && InpTimeframe != PERIOD_M1) {
-            m_ema_m1_handle = iMA(_Symbol, PERIOD_M1, InpEMAPeriod, 0, InpEMAMethod, InpEMAAppliedPrice);
-            if (m_ema_m1_handle == INVALID_HANDLE) {
-                Print("❌ Failed to create EMA handle for M1 timeframe.");
-                return INIT_FAILED;
-            }
         }
     }
 
@@ -180,14 +104,10 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-    // Release indicator handles
+    // Release indicator handle
     if (m_ema_handle != INVALID_HANDLE) {
         IndicatorRelease(m_ema_handle);
         m_ema_handle = INVALID_HANDLE;
-    }
-    if (m_ema_m1_handle != INVALID_HANDLE) {
-        IndicatorRelease(m_ema_m1_handle);
-        m_ema_m1_handle = INVALID_HANDLE;
     }
     Comment(""); // Clear chart comments
 }
@@ -222,15 +142,6 @@ void OnTick()
     if (current_bar_time != m_last_checked_bar_time) {
         m_last_checked_bar_time = current_bar_time;
         CheckSignal();
-    }
-
-    // Check for 1-minute custom pattern signal if enabled and main timeframe is not M1 (to prevent duplicate checking)
-    if (InpEnable1MinPattern) {
-        datetime current_m1_bar_time = iTime(_Symbol, PERIOD_M1, 0);
-        if (current_m1_bar_time != m_last_checked_m1_bar_time) {
-            m_last_checked_m1_bar_time = current_m1_bar_time;
-            Check1MinSignal();
-        }
     }
 
     // Track breakout if trigger is active
@@ -309,10 +220,10 @@ void CheckSignal()
         return;
     }
 
-    // We need at least 1 + InpSwingLength completed bars to check Swing Shooting Star.
+    // We need 2 completed bars.
     // Index 1 is the completed signal candidate.
-    // Preceding candles are at indexes 2, 3, etc.
-    int lookback = MathMax(2, 1 + InpSwingLength);
+    // Preceding candle is at index 2 (used to check if previous candle was green if filter is enabled).
+    int lookback = 2;
     MqlRates rates[];
     ArraySetAsSeries(rates, true);
     if (CopyRates(_Symbol, InpTimeframe, 1, lookback, rates) < lookback) {
@@ -321,7 +232,7 @@ void CheckSignal()
     }
 
     // rates[0] is the completed signal candidate (index 1)
-    // rates[1] is the previous candle (index 2, must be green if filter enabled)
+    // rates[1] is the previous candle (index 2)
     double o = rates[0].open;
     double h = rates[0].high;
     double l = rates[0].low;
@@ -350,13 +261,6 @@ void CheckSignal()
 
     double total_range = h - l;
 
-    // Range percentage check
-    double range_pct = total_range / MathMax(MathAbs(c), 1e-9);
-    if (InpMinRangePct > 0.0 && range_pct < InpMinRangePct) {
-        PrintFormat("🔍 Candle rejected: Range percentage (%.4f%%) < Min Required (%.4f%%)", range_pct * 100, InpMinRangePct * 100);
-        return;
-    }
-
     // Range points check to ignore tiny candle
     int range_points = (int)MathRound(total_range / m_symbol.Point());
     if (InpMinCandleRangePoints > 0 && range_points < InpMinCandleRangePoints) {
@@ -364,70 +268,28 @@ void CheckSignal()
         return;
     }
 
-    // Geometry Calculations (Universal for both RED and GREEN rejection candles)
+    // Geometry Calculations
     double body_high = MathMax(o, c);
     double body_low  = MathMin(o, c);
 
     double upper_wick_pct = ((h - body_high) / total_range) * 100.0;
-    double body_pct       = ((body_high - body_low) / total_range) * 100.0;
     double lower_wick_pct = ((body_low - l) / total_range) * 100.0;
 
-    // Absolute price variables for Swing Shooting Star Pattern
-    double abs_body       = MathAbs(c - o);
-    double abs_upper_wick = h - body_high;
-    double abs_lower_wick = body_low - l;
+    // simplified check: long upper wick above minimum 50% (customizable via InpMinUpperWickPct) and zero lower wick
+    bool upper_wick_ok = (upper_wick_pct >= InpMinUpperWickPct);
+    bool zero_lower_wick = (l >= body_low); // low is exactly equal to body low, i.e., no lower wick
 
-    // Check which enabled pattern matches:
     string matched_pattern = "";
-
-    if (InpEnableC2 && upper_wick_pct >= InpC2_MinUpperWickPct && body_pct <= InpC2_MaxBodyPct && lower_wick_pct <= InpC2_MaxLowerWickPct) {
-        matched_pattern = "C2";
-    }
-    else if (InpEnableC3 && upper_wick_pct >= InpC3_MinUpperWickPct && upper_wick_pct <= InpC3_MaxUpperWickPct && body_pct >= InpC3_MinBodyPct && lower_wick_pct <= InpC3_MaxLowerWickPct) {
-        matched_pattern = "C3";
-    }
-    else if (InpEnableC4 && upper_wick_pct >= InpC4_MinUpperWickPct && upper_wick_pct <= InpC4_MaxUpperWickPct && body_pct >= InpC4_MinBodyPct && body_pct <= InpC4_MaxBodyPct && lower_wick_pct >= InpC4_MinLowerWickPct && lower_wick_pct <= InpC4_MaxLowerWickPct) {
-        matched_pattern = "C4";
-    }
-    else if (InpEnableC5 && upper_wick_pct >= InpC5_MinUpperWickPct && upper_wick_pct <= InpC5_MaxUpperWickPct && body_pct >= InpC5_MinBodyPct && body_pct <= InpC5_MaxBodyPct && lower_wick_pct <= InpC5_MaxLowerWickPct) {
-        matched_pattern = "C5";
-    }
-    else if (InpEnableC6 && upper_wick_pct >= InpC6_MinUpperWickPct && upper_wick_pct <= InpC6_MaxUpperWickPct && body_pct >= InpC6_MinBodyPct && body_pct <= InpC6_MaxBodyPct && lower_wick_pct <= InpC6_MaxLowerWickPct) {
-        matched_pattern = "C6";
-    }
-    else if (InpEnableC7 && upper_wick_pct >= InpC7_MinUpperWickPct && body_pct <= InpC7_MaxBodyPct && lower_wick_pct >= InpC7_MinLowerWickPct && lower_wick_pct <= InpC7_MaxLowerWickPct) {
-        matched_pattern = "C7";
-    }
-    else if (InpEnableB1B2 && upper_wick_pct >= InpB1B2_MinUpperWickPct && body_pct <= InpB1B2_MaxBodyPct && lower_wick_pct <= InpB1B2_MaxLowerWickPct) {
-        matched_pattern = "B1B2_Extreme";
-    }
-    else if (InpEnableSwingSS) {
-        // Swing Shooting Star Conditions:
-        // 1. Swing High: h > high of preceding InpSwingLength candles (lookback from rates[1] to rates[InpSwingLength])
-        bool is_swing_high = true;
-        for (int idx = 1; idx <= InpSwingLength && idx < lookback; idx++) {
-            if (h <= rates[idx].high) {
-                is_swing_high = false;
-                break;
-            }
-        }
-        // 2. Upper Wick > Body: abs_upper_wick > abs_body
-        // 3. Lower Wick < Body: abs_lower_wick < abs_body
-        if (is_swing_high && abs_upper_wick > abs_body && abs_lower_wick < abs_body) {
-            matched_pattern = "SwingSS";
-        }
-    }
-
-    if (matched_pattern == "" && InpEnableCustom && upper_wick_pct >= InpUpperWickMin && upper_wick_pct <= InpUpperWickMax && body_pct >= InpBodyMin && body_pct <= InpBodyMax && lower_wick_pct >= 0.0 && lower_wick_pct <= InpLowerWickMax) {
-        matched_pattern = "Custom Fallback";
+    if (upper_wick_ok && zero_lower_wick) {
+        matched_pattern = "LongUpperWickZeroLowerWick";
     }
 
     // Detailed candidate logging
-    PrintFormat("📊 Candidate candle found. Color: %s | Upper Wick: %.1f%%, Body: %.1f%%, Lower Wick: %.1f%%, Range: %.2f | Matched Pattern: %s",
-                (c < o ? "RED" : "GREEN"), upper_wick_pct, body_pct, lower_wick_pct, total_range, (matched_pattern != "" ? matched_pattern : "None"));
+    PrintFormat("📊 Candidate candle found. Color: %s | Upper Wick: %.1f%%, Lower Wick: %.1f%%, Range: %.2f | Matched Pattern: %s",
+                (c < o ? "RED" : "GREEN"), upper_wick_pct, lower_wick_pct, total_range, (matched_pattern != "" ? matched_pattern : "None"));
 
     if (matched_pattern == "") {
-        return; // No enabled pattern matches this candle's geometry
+        return; // Pattern does not match
     }
 
     // We have a verified signal!
@@ -438,97 +300,12 @@ void CheckSignal()
     m_trigger_start_time = iTime(_Symbol, InpTimeframe, 0); // Trigger begins at start of current bar 0
     m_trigger_expiry_time = m_trigger_start_time + PeriodSeconds(InpTimeframe); // Expires at end of bar 0
 
-    PrintFormat("🎯 REJECTION SIGNAL GENERATED (%s): %s (%s). Wick=%.1f%%, Body=%.1f%%, Lower=%.1f%%.",
-                matched_pattern, _Symbol, (c < o ? "RED" : "GREEN"), upper_wick_pct, body_pct, lower_wick_pct);
+    PrintFormat("🎯 REJECTION SIGNAL GENERATED (%s): %s (%s). Upper Wick=%.1f%%, Lower Wick=%.1f%%.",
+                matched_pattern, _Symbol, (c < o ? "RED" : "GREEN"), upper_wick_pct, lower_wick_pct);
     PrintFormat("👉 Breakout watch low: %.2f | SL target: %.2f | Window: %s to %s",
                 l, h, TimeToString(m_trigger_start_time), TimeToString(m_trigger_expiry_time));
 }
 
-//+------------------------------------------------------------------+
-//| Check 1-minute custom pattern signal from image                  |
-//+------------------------------------------------------------------+
-void Check1MinSignal()
-{
-    // If we only allow one position and one is open, skip signal scanning
-    if (InpOnePositionAtATime && IsPositionOpen()) {
-        m_trigger_active = false;
-        return;
-    }
-
-    // Copy rates of completed bars (index 1 and index 2 on M1)
-    MqlRates m1_rates[];
-    ArraySetAsSeries(m1_rates, true);
-    if (CopyRates(_Symbol, PERIOD_M1, 1, 2, m1_rates) < 2) {
-        return;
-    }
-
-    // Candle 1 (completed candidate at index 0 in rates array, which corresponds to index 1 on chart):
-    // - Must be Red: Open > Close
-    // - Bracket( High - Open ) >= Bracket( 2 * Bracket( Open - Close ) )
-    // - Bracket( Bracket( Close - Low ) / Bracket( Open - Close ) ) < 1
-    double o1 = m1_rates[0].open;
-    double h1 = m1_rates[0].high;
-    double l1 = m1_rates[0].low;
-    double c1 = m1_rates[0].close;
-
-    // Range points check to ignore tiny candle
-    int range_points1 = (int)MathRound((h1 - l1) / m_symbol.Point());
-    if (InpMinCandleRangePoints > 0 && range_points1 < InpMinCandleRangePoints) {
-        return;
-    }
-
-    // Candle 2 (previous completed candle at index 1 in rates array, which corresponds to index 2 on chart):
-    // - Must be Green: Close > Open
-    double o2 = m1_rates[1].open;
-    double c2 = m1_rates[1].close;
-
-    bool is_red = o1 > c1;
-    bool is_prev_green = c2 > o2;
-
-    if (!is_red || !is_prev_green) {
-        return;
-    }
-
-    double body = o1 - c1;
-    if (body <= 0) return;
-
-    double upper_wick = h1 - o1;
-    double lower_wick = c1 - l1;
-
-    bool condition1 = (upper_wick >= 2.0 * body);
-    bool condition2 = ((lower_wick / body) < 1.0);
-
-    if (condition1 && condition2) {
-        // EMA Filter validation for M1 timeframe: Signal candle close must be strictly below EMA
-        if (InpUseEMAFilter) {
-            int active_ema_handle = (InpTimeframe == PERIOD_M1) ? m_ema_handle : m_ema_m1_handle;
-            if (active_ema_handle != INVALID_HANDLE) {
-                double ema_val[1];
-                if (CopyBuffer(active_ema_handle, 0, 1, 1, ema_val) < 1) {
-                    Print("⚠️ Error copying M1 EMA buffer.");
-                    return;
-                }
-                if (c1 >= ema_val[0]) {
-                    PrintFormat("🔍 M1 Candle rejected: Close price (%.2f) >= EMA (%.2f)", c1, ema_val[0]);
-                    return;
-                }
-            }
-        }
-
-        // M1 Shooting Star Pattern verified!
-        m_trigger_active = true;
-        m_trigger_low = l1;
-        m_trigger_high = h1;
-        m_matched_pattern_name = "M1_ShootingStar";
-        m_trigger_start_time = iTime(_Symbol, PERIOD_M1, 0); // Trigger begins at start of current bar 0 on M1
-        m_trigger_expiry_time = m_trigger_start_time + 60;   // Expires at end of 1-minute bar 0
-
-        PrintFormat("🎯 1-MINUTE REJECTION SIGNAL GENERATED (M1_ShootingStar): %s. High: %.2f, Low: %.2f, Open: %.2f, Close: %.2f. Prev Close: %.2f, Prev Open: %.2f",
-                    _Symbol, h1, l1, o1, c1, c2, o2);
-        PrintFormat("👉 Breakout watch low: %.2f | SL target: %.2f | Window: %s to %s",
-                    l1, h1, TimeToString(m_trigger_start_time), TimeToString(m_trigger_expiry_time));
-    }
-}
 
 //+------------------------------------------------------------------+
 //| Execute Short Entry (Market Sell)                                |
@@ -810,12 +587,8 @@ bool TestBearishShootingStarGeometry(double o, double h, double l, double c, dou
     double body_low  = MathMin(o, c);
 
     double upper_wick_pct = ((h - body_high) / total_range) * 100.0;
-    double body_pct       = ((body_high - body_low) / total_range) * 100.0;
-    double lower_wick_pct = ((body_low - l) / total_range) * 100.0;
 
-    bool is_valid_geometry = (upper_wick_pct >= InpUpperWickMin && upper_wick_pct <= InpUpperWickMax) &&
-                             (body_pct >= InpBodyMin && body_pct <= InpBodyMax) &&
-                             (lower_wick_pct >= 0.0 && lower_wick_pct <= InpLowerWickMax);
+    bool is_valid_geometry = (upper_wick_pct >= InpMinUpperWickPct) && (l >= body_low);
 
     return is_valid_geometry;
 }
@@ -827,22 +600,17 @@ void RunSelfTests()
 {
     Print("--- Running Core EA Self Tests ---");
 
-    // Test 1: Valid shooting star with updated geometry (RED CANDLE)
-    // Upper: ~54.5%, Body: ~20.5%, Lower: 25.0%
-    bool test1 = TestBearishShootingStarGeometry(100.0, 112.0, 90.0, 95.5, 95.0, 98.0);
-    PrintFormat("Test 1 (Valid Red Geometry): %s", test1 ? "PASSED ✅" : "FAILED ❌");
+    // Test 1: Valid: Upper wick = 60%, Low = Body Low (No lower wick)
+    bool test1 = TestBearishShootingStarGeometry(100.0, 115.0, 90.0, 90.0, 95.0, 98.0);
+    PrintFormat("Test 1 (Valid: Upper wick = 60%%, No lower wick): %s", test1 ? "PASSED ✅" : "FAILED ❌");
 
-    // Test 2: Upper wick too short (40%)
-    bool test2 = TestBearishShootingStarGeometry(105.0, 109.0, 95.0, 102.0, 100.0, 102.0);
+    // Test 2: Upper wick too short (23%)
+    bool test2 = TestBearishShootingStarGeometry(100.0, 103.0, 90.0, 90.0, 95.0, 98.0);
     PrintFormat("Test 2 (Upper wick too short): %s", !test2 ? "PASSED ✅" : "FAILED ❌");
 
-    // Test 3: Body too large (45%)
-    bool test3 = TestBearishShootingStarGeometry(108.0, 112.0, 98.0, 100.0, 100.0, 102.0);
-    PrintFormat("Test 3 (Body too large): %s", !test3 ? "PASSED ✅" : "FAILED ❌");
-
-    // Test 4: Lower wick too long (35%)
-    bool test4 = TestBearishShootingStarGeometry(108.0, 112.0, 98.0, 101.0, 100.0, 102.0);
-    PrintFormat("Test 4 (Lower wick too long): %s", !test4 ? "PASSED ✅" : "FAILED ❌");
+    // Test 3: Upper wick ok but has lower wick (l < body_low)
+    bool test3 = TestBearishShootingStarGeometry(100.0, 115.0, 85.0, 90.0, 95.0, 98.0);
+    PrintFormat("Test 3 (Upper wick ok but has lower wick): %s", !test3 ? "PASSED ✅" : "FAILED ❌");
 }
 
 //+------------------------------------------------------------------+
