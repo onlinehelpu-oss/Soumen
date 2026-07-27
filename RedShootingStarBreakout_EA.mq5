@@ -35,6 +35,7 @@ input group "--- Candle Pattern Controls ---"
 input bool            InpRedCandleOnly     = true;           // Require signal candle to be Red?
 input bool            InpRequirePrevGreen  = false;          // Require the previous candle to be Green?
 input double          InpMinUpperWickPct   = 50.0;           // Min Upper Wick % (e.g. 50.0%)
+input double          InpMaxLowerWickPoints = 0.0;           // Max allowed lower wick in points (0.0 for strict absolute flat bottom)
 
 input group "--- Breakout & Execution Settings ---"
 input bool            InpUseTimeFilters    = false;          // Enable entry cutoff time filters?
@@ -275,9 +276,13 @@ void CheckSignal()
     double upper_wick_pct = ((h - body_high) / total_range) * 100.0;
     double lower_wick_pct = ((body_low - l) / total_range) * 100.0;
 
+    // Fine-tuned lower wick points calculation
+    double point = (m_symbol.Point() > 0) ? m_symbol.Point() : 0.01;
+    double lower_wick_points = (body_low - l) / point;
+
     // simplified check: long upper wick above minimum 50% (customizable via InpMinUpperWickPct) and zero lower wick
     bool upper_wick_ok = (upper_wick_pct >= InpMinUpperWickPct);
-    bool zero_lower_wick = (l >= body_low); // low is exactly equal to body low, i.e., no lower wick
+    bool zero_lower_wick = (lower_wick_points <= InpMaxLowerWickPoints + 0.0001);
 
     string matched_pattern = "";
     if (upper_wick_ok && zero_lower_wick) {
@@ -588,7 +593,10 @@ bool TestBearishShootingStarGeometry(double o, double h, double l, double c, dou
 
     double upper_wick_pct = ((h - body_high) / total_range) * 100.0;
 
-    bool is_valid_geometry = (upper_wick_pct >= InpMinUpperWickPct) && (l >= body_low);
+    double point = (m_symbol.Point() > 0) ? m_symbol.Point() : 0.01;
+    double lower_wick_points = (body_low - l) / point;
+
+    bool is_valid_geometry = (upper_wick_pct >= InpMinUpperWickPct) && (lower_wick_points <= InpMaxLowerWickPoints + 0.0001);
 
     return is_valid_geometry;
 }
