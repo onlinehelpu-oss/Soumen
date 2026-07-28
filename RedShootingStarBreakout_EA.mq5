@@ -74,6 +74,7 @@ CPositionInfo  m_position;
 ENUM_TIMEFRAMES m_timeframe = PERIOD_CURRENT;
 datetime       m_last_checked_bar_time = 0;
 bool           m_trigger_active = false;
+bool           m_indicators_plotted = false;
 bool           m_had_position_open = false;
 datetime       m_last_trade_closed_time = 0;
 double         m_trigger_low = 0;
@@ -117,10 +118,6 @@ int OnInit()
             Print("❌ Failed to create EMA handle for main timeframe.");
             return INIT_FAILED;
         }
-        // Force the indicator to plot on the visual chart
-        if (!ChartIndicatorAdd(0, 0, m_ema_handle)) {
-            Print("⚠️ Failed to plot EMA on chart.");
-        }
     }
 
     // Create EMA 9 and EMA 15 indicator handles if filter is enabled
@@ -130,19 +127,11 @@ int OnInit()
             Print("❌ Failed to create EMA 9 handle.");
             return INIT_FAILED;
         }
-        // Force EMA 9 to plot on the visual chart
-        if (!ChartIndicatorAdd(0, 0, m_ema9_handle)) {
-            Print("⚠️ Failed to plot EMA 9 on chart.");
-        }
 
         m_ema15_handle = iMA(_Symbol, m_timeframe, InpEMA15Period, 0, InpEMACrossMethod, InpEMACrossAppliedPrice);
         if (m_ema15_handle == INVALID_HANDLE) {
             Print("❌ Failed to create EMA 15 handle.");
             return INIT_FAILED;
-        }
-        // Force EMA 15 to plot on the visual chart
-        if (!ChartIndicatorAdd(0, 0, m_ema15_handle)) {
-            Print("⚠️ Failed to plot EMA 15 on chart.");
         }
     }
 
@@ -179,6 +168,34 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
+    // Force plot indicators on first tick (guarantees chart attachment readiness in all tester & live environments)
+    if (!m_indicators_plotted) {
+        if (InpUseEMAFilter && m_ema_handle != INVALID_HANDLE) {
+            if (ChartIndicatorAdd(0, 0, m_ema_handle)) {
+                Print("✅ EMA indicator plotted successfully on chart.");
+            } else {
+                Print("⚠️ Failed to plot EMA indicator.");
+            }
+        }
+        if (InpUseEMACrossFilter) {
+            if (m_ema9_handle != INVALID_HANDLE) {
+                if (ChartIndicatorAdd(0, 0, m_ema9_handle)) {
+                    Print("✅ EMA 9 plotted successfully on chart.");
+                } else {
+                    Print("⚠️ Failed to plot EMA 9.");
+                }
+            }
+            if (m_ema15_handle != INVALID_HANDLE) {
+                if (ChartIndicatorAdd(0, 0, m_ema15_handle)) {
+                    Print("✅ EMA 15 plotted successfully on chart.");
+                } else {
+                    Print("⚠️ Failed to plot EMA 15.");
+                }
+            }
+        }
+        m_indicators_plotted = true;
+    }
+
     // Refresh symbol prices
     if (!m_symbol.RefreshRates()) {
         return;
