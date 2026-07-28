@@ -31,6 +31,13 @@ input int             InpEMAPeriod         = 34;             // EMA Period (9, 1
 input ENUM_MA_METHOD  InpEMAMethod         = MODE_EMA;       // EMA Smoothing Method
 input ENUM_APPLIED_PRICE InpEMAAppliedPrice = PRICE_CLOSE;   // EMA Applied Price
 
+input group "--- EMA 15/9 Cross Trend Filter Settings ---"
+input bool            InpUseEMACrossFilter = true;           // Use EMA 15/9 Cross & Touch Filter?
+input int             InpEMA9Period        = 9;              // EMA 9 Period
+input int             InpEMA15Period       = 15;             // EMA 15 Period
+input ENUM_MA_METHOD  InpEMACrossMethod    = MODE_EMA;       // EMA Cross Smoothing Method
+input ENUM_APPLIED_PRICE InpEMACrossAppliedPrice = PRICE_CLOSE; // EMA Cross Applied Price
+
 input group "--- Candle Pattern Controls ---"
 input bool            InpRedCandleOnly     = true;           // Require signal candle to be Red?
 input bool            InpRequirePrevGreen  = false;          // Require the previous candle to be Green?
@@ -64,6 +71,8 @@ string         m_matched_pattern_name = "";
 
 //--- Indicator Handles
 int            m_ema_handle = INVALID_HANDLE;
+int            m_ema9_handle = INVALID_HANDLE;
+int            m_ema15_handle = INVALID_HANDLE;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -93,6 +102,20 @@ int OnInit()
         }
     }
 
+    // Create EMA 9 and EMA 15 indicator handles if filter is enabled
+    if (InpUseEMACrossFilter) {
+        m_ema9_handle = iMA(_Symbol, InpTimeframe, InpEMA9Period, 0, InpEMACrossMethod, InpEMACrossAppliedPrice);
+        if (m_ema9_handle == INVALID_HANDLE) {
+            Print("❌ Failed to create EMA 9 handle.");
+            return INIT_FAILED;
+        }
+        m_ema15_handle = iMA(_Symbol, InpTimeframe, InpEMA15Period, 0, InpEMACrossMethod, InpEMACrossAppliedPrice);
+        if (m_ema15_handle == INVALID_HANDLE) {
+            Print("❌ Failed to create EMA 15 handle.");
+            return INIT_FAILED;
+        }
+    }
+
     // Run core tests to verify calculation logic matches expectations
     RunSelfTests();
 
@@ -109,6 +132,14 @@ void OnDeinit(const int reason)
     if (m_ema_handle != INVALID_HANDLE) {
         IndicatorRelease(m_ema_handle);
         m_ema_handle = INVALID_HANDLE;
+    }
+    if (m_ema9_handle != INVALID_HANDLE) {
+        IndicatorRelease(m_ema9_handle);
+        m_ema9_handle = INVALID_HANDLE;
+    }
+    if (m_ema15_handle != INVALID_HANDLE) {
+        IndicatorRelease(m_ema15_handle);
+        m_ema15_handle = INVALID_HANDLE;
     }
     Comment(""); // Clear chart comments
 }
@@ -247,19 +278,53 @@ void CheckSignal()
     if (InpRequirePrevGreen && prev_c <= prev_o) return; // Previous candle must be GREEN if filter enabled
     if (c == 0 || h <= l) return;
 
-    // EMA Filter validation: Signal candle close must be below EMA, and signal candle high must be above EMA (touch & rejection)
+    // EMA Filters evaluation
+    bool ema_34_valid = true;
     if (InpUseEMAFilter && m_ema_handle != INVALID_HANDLE) {
+        ema_34_valid = false;
         double ema_val[1];
-        if (CopyBuffer(m_ema_handle, 0, 1, 1, ema_val) < 1) {
-            Print("⚠️ Error copying EMA buffer for main timeframe.");
-            return;
+        if (CopyBuffer(m_ema_handle, 0, 1, 1, ema_val) >= 1) {
+            if (c < ema_val[0] && h > ema_val[0]) {
+                ema_34_valid = true;
+            }
         }
-        if (c >= ema_val[0]) {
-            PrintFormat("🔍 Candle rejected: Close price (%.2f) >= EMA (%.2f)", c, ema_val[0]);
-            return;
+    }
+
+    bool ema_cross_valid = true;
+    if (InpUseEMACrossFilter && m_ema9_handle != INVALID_HANDLE && m_ema15_handle != INVALID_HANDLE) {
+        ema_cross_valid = false;
+        double ema9_val[1];
+        double ema15_val[1];
+        if (CopyBuffer(m_ema9_handle, 0, 1, 1, ema9_val) >= 1 && CopyBuffer(m_ema15_handle, 0, 1, 1, ema15_val) >= 1) {
+            bool trend_ok = (ema15_val[0] > ema9_val[0]);
+            bool touch_ok = (h > ema9_val[0] || h > ema15_val[0]);
+            bool close_ok = (c < ema9_val[0] && c < ema15_val[0]);
+
+            if (trend_ok && touch_ok && close_ok) {
+                ema_cross_valid = true;
+            }
         }
-        if (h <= ema_val[0]) {
-            PrintFormat("🔍 Candle rejected: High price (%.2f) <= EMA (%.2f) (No touch/rejection)", h, ema_val[0]);
+    }
+
+    // If EMA filters are enabled, at least one of the active filters must be valid
+    if (InpUseEMAFilter || InpUseEMACrossFilter) {
+        bool signal_valid = false;
+        if (InpUseEMAFilter && ema_34_valid) {
+            signal_valid = true;
+        }
+        else if (InpUseEMACrossFilter && ema_cross_valid) {
+            signal_valid = true;
+        }
+
+        if (!signal_valid) {
+            double ema34 = 0, ema9 = 0, ema15 = 0;
+            double temp_ema[1];
+            if (m_ema_handle != INVALID_HANDLE && CopyBuffer(m_ema_handle, 0, 1, 1, temp_ema) >= 1) ema34 = temp_ema[0];
+            if (m_ema9_handle != INVALID_HANDLE && CopyBuffer(m_ema9_handle, 0, 1, 1, temp_ema) >= 1) ema9 = temp_ema[0];
+            if (m_ema15_handle != INVALID_HANDLE && CopyBuffer(m_ema15_handle, 0, 1, 1, temp_ema) >= 1) ema15 = temp_ema[0];
+
+            PrintFormat("🔍 Candle rejected by EMA filters. Close: %.2f, High: %.2f | EMA34: %.2f, EMA9: %.2f, EMA15: %.2f",
+                        c, h, ema34, ema9, ema15);
             return;
         }
     }
@@ -290,7 +355,15 @@ void CheckSignal()
 
     string matched_pattern = "";
     if (upper_wick_ok && zero_lower_wick) {
-        matched_pattern = "LongUpperWickZeroLowerWick";
+        if (InpUseEMAFilter && ema_34_valid) {
+            matched_pattern = "LongUpperWick_EMA34";
+        }
+        else if (InpUseEMACrossFilter && ema_cross_valid) {
+            matched_pattern = "LongUpperWick_EMACross";
+        }
+        else {
+            matched_pattern = "LongUpperWickZeroLowerWick";
+        }
     }
 
     // Detailed candidate logging
