@@ -63,6 +63,9 @@ input bool            InpRedCandleOnly     = true;           // Require signal c
 input bool            InpRequirePrevGreen  = false;          // Require the previous candle to be Green?
 input double          InpMinUpperWickPct   = 50.0;           // Min Upper Wick % (e.g. 50.0%)
 input double          InpMaxLowerWickPct   = 10.0;           // Max allowed lower wick % (0.0 for strict flat bottom, or 10.0% to allow tiny/small wicks)
+input double          InpMaxBodyPct        = 30.0;           // Max Body Size % of Total Range
+input double          InpMinClosePositionPct = 70.0;         // Min Close Position % from High (require close near low)
+input int             InpSwingLookback     = 20;             // Swing High Lookback Bars (resistance check)
 
 input group "--- Breakout & Execution Settings ---"
 input bool            InpUseTimeFilters    = false;          // Enable entry cutoff time filters?
@@ -435,15 +438,36 @@ void CheckSignal()
     double body_high = MathMax(o, c);
     double body_low  = MathMin(o, c);
 
-    double upper_wick_pct = ((h - body_high) / total_range) * 100.0;
-    double lower_wick_pct = ((body_low - l) / total_range) * 100.0;
+    double total_range_val = (total_range > 0) ? total_range : 1e-9;
+    double upper_wick_pct = ((h - body_high) / total_range_val) * 100.0;
+    double lower_wick_pct = ((body_low - l) / total_range_val) * 100.0;
+    double body_pct       = ((body_high - body_low) / total_range_val) * 100.0;
+    double close_position_pct = ((h - c) / total_range_val) * 100.0;
 
     // simplified check: long upper wick above minimum 50% (customizable via InpMinUpperWickPct) and zero/small lower wick %
     bool upper_wick_ok = (upper_wick_pct >= InpMinUpperWickPct);
     bool zero_lower_wick = (lower_wick_pct <= InpMaxLowerWickPct + 0.0001);
+    bool small_body = (body_pct <= InpMaxBodyPct);
+    bool close_near_low = (close_position_pct >= InpMinClosePositionPct);
+
+    // swing-high / resistance filter
+    bool swing_high_ok = true;
+    if (InpSwingLookback > 0) {
+        int highest_bar_idx = CustomHighest(_Symbol, m_timeframe, InpSwingLookback, 2);
+        if (highest_bar_idx >= 0) {
+            double highest_highs[];
+            if (CopyHigh(_Symbol, m_timeframe, highest_bar_idx, 1, highest_highs) >= 1) {
+                double highest_preceding_high = highest_highs[0];
+                swing_high_ok = (h >= highest_preceding_high * 0.999);
+                if (!swing_high_ok) {
+                    PrintFormat("🔍 Candle rejected by Swing-High filter: High (%.2f) not near/above highest high of last %d bars (%.2f)", h, InpSwingLookback, highest_preceding_high);
+                }
+            }
+        }
+    }
 
     string matched_pattern = "";
-    if (upper_wick_ok && zero_lower_wick) {
+    if (upper_wick_ok && zero_lower_wick && small_body && close_near_low && swing_high_ok) {
         if (InpUseEMAFilter && ema_34_valid) {
             matched_pattern = "LongUpperWick_EMA34";
         }
@@ -720,6 +744,28 @@ void CloseAllPositions()
 }
 
 //+------------------------------------------------------------------+
+//| Custom implementation of iHighest for MQL5                       |
+//+------------------------------------------------------------------+
+int CustomHighest(string symbol, ENUM_TIMEFRAMES tf, int count, int start_index)
+{
+    double high_values[];
+    ArraySetAsSeries(high_values, true);
+    if (CopyHigh(symbol, tf, start_index, count, high_values) < count) {
+        Print("⚠️ Error copying high values for CustomHighest.");
+        return -1;
+    }
+    double max_val = high_values[0];
+    int max_idx = 0;
+    for (int i = 1; i < count; i++) {
+        if (high_values[i] > max_val) {
+            max_val = high_values[i];
+            max_idx = i;
+        }
+    }
+    return start_index + max_idx;
+}
+
+//+------------------------------------------------------------------+
 //| Normalize price to symbol tick size                              |
 //+------------------------------------------------------------------+
 double NormalizePrice(double price)
@@ -759,8 +805,13 @@ bool TestBearishShootingStarGeometry(double o, double h, double l, double c, dou
 
     double upper_wick_pct = ((h - body_high) / total_range) * 100.0;
     double lower_wick_pct = ((body_low - l) / total_range) * 100.0;
+    double body_pct       = ((body_high - body_low) / total_range) * 100.0;
+    double close_position_pct = ((h - c) / total_range) * 100.0;
 
-    bool is_valid_geometry = (upper_wick_pct >= InpMinUpperWickPct) && (lower_wick_pct <= InpMaxLowerWickPct + 0.0001);
+    bool is_valid_geometry = (upper_wick_pct >= InpMinUpperWickPct) &&
+                             (lower_wick_pct <= InpMaxLowerWickPct + 0.0001) &&
+                             (body_pct <= InpMaxBodyPct) &&
+                             (close_position_pct >= InpMinClosePositionPct);
 
     return is_valid_geometry;
 }
@@ -772,9 +823,9 @@ void RunSelfTests()
 {
     Print("--- Running Core EA Self Tests ---");
 
-    // Test 1: Valid: Upper wick = 60%, Low = Body Low (No lower wick)
-    bool test1 = TestBearishShootingStarGeometry(100.0, 115.0, 90.0, 90.0, 95.0, 98.0);
-    PrintFormat("Test 1 (Valid: Upper wick = 60%%, No lower wick): %s", test1 ? "PASSED ✅" : "FAILED ❌");
+    // Test 1: Valid: Upper wick = 80%, No lower wick (0%), Body = 20%, Close pos = 100%
+    bool test1 = TestBearishShootingStarGeometry(95.0, 115.0, 90.0, 90.0, 95.0, 98.0);
+    PrintFormat("Test 1 (Valid: Classic Shooting Star): %s", test1 ? "PASSED ✅" : "FAILED ❌");
 
     // Test 2: Upper wick too short (23%)
     bool test2 = TestBearishShootingStarGeometry(100.0, 103.0, 90.0, 90.0, 95.0, 98.0);
