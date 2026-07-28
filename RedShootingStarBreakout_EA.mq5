@@ -13,9 +13,22 @@
 #include <Trade\SymbolInfo.mqh>
 #include <Trade\PositionInfo.mqh>
 
+//--- Custom Timeframe Enum
+enum ENUM_CUSTOM_TIMEFRAME
+{
+    TF_CURRENT = PERIOD_CURRENT, // Current Timeframe
+    TF_M1      = PERIOD_M1,      // 1 Minute
+    TF_M3      = PERIOD_M3,      // 3 Minutes
+    TF_M5      = PERIOD_M5,      // 5 Minutes
+    TF_M15     = PERIOD_M15,     // 15 Minutes
+    TF_M30     = PERIOD_M30,     // 30 Minutes
+    TF_H1      = PERIOD_H1,      // 1 Hour
+    TF_D1      = PERIOD_D1       // 1 Day
+};
+
 //--- Input parameters
 input group "--- Strategy Settings ---"
-input ENUM_TIMEFRAMES InpTimeframe         = PERIOD_CURRENT; // Timeframe to scan (PERIOD_CURRENT to match chart)
+input ENUM_CUSTOM_TIMEFRAME InpTimeframe   = TF_CURRENT;     // Timeframe to scan
 input double          InpRiskRewardRatio   = 1.5;            // Risk:Reward multiplier
 input double          InpFixedLotSize      = 0.01;           // Lot size (if not using dynamic lot)
 input double          InpMinLotSizeOverride = 0.01;          // Minimum Lot Size Override (0.01 standard minimum for Gold on XM)
@@ -58,6 +71,7 @@ CTrade         m_trade;
 CSymbolInfo    m_symbol;
 CPositionInfo  m_position;
 
+ENUM_TIMEFRAMES m_timeframe = PERIOD_CURRENT;
 datetime       m_last_checked_bar_time = 0;
 bool           m_trigger_active = false;
 bool           m_had_position_open = false;
@@ -79,6 +93,9 @@ int            m_ema15_handle = INVALID_HANDLE;
 //+------------------------------------------------------------------+
 int OnInit()
 {
+    // Map custom timeframe to standard MQL5 timeframe
+    m_timeframe = (ENUM_TIMEFRAMES)InpTimeframe;
+
     // Initialize symbol info
     if (!m_symbol.Name(_Symbol)) {
         Print("❌ Failed to initialize symbol info.");
@@ -90,12 +107,12 @@ int OnInit()
     m_trade.SetExpertMagicNumber(InpMagicNumber);
     ConfigureFillingMode();
 
-    m_last_checked_bar_time = iTime(_Symbol, InpTimeframe, 0);
+    m_last_checked_bar_time = iTime(_Symbol, m_timeframe, 0);
     m_last_bid = 0;
 
     // Create EMA indicator handle if filter is enabled
     if (InpUseEMAFilter) {
-        m_ema_handle = iMA(_Symbol, InpTimeframe, InpEMAPeriod, 0, InpEMAMethod, InpEMAAppliedPrice);
+        m_ema_handle = iMA(_Symbol, m_timeframe, InpEMAPeriod, 0, InpEMAMethod, InpEMAAppliedPrice);
         if (m_ema_handle == INVALID_HANDLE) {
             Print("❌ Failed to create EMA handle for main timeframe.");
             return INIT_FAILED;
@@ -104,12 +121,12 @@ int OnInit()
 
     // Create EMA 9 and EMA 15 indicator handles if filter is enabled
     if (InpUseEMACrossFilter) {
-        m_ema9_handle = iMA(_Symbol, InpTimeframe, InpEMA9Period, 0, InpEMACrossMethod, InpEMACrossAppliedPrice);
+        m_ema9_handle = iMA(_Symbol, m_timeframe, InpEMA9Period, 0, InpEMACrossMethod, InpEMACrossAppliedPrice);
         if (m_ema9_handle == INVALID_HANDLE) {
             Print("❌ Failed to create EMA 9 handle.");
             return INIT_FAILED;
         }
-        m_ema15_handle = iMA(_Symbol, InpTimeframe, InpEMA15Period, 0, InpEMACrossMethod, InpEMACrossAppliedPrice);
+        m_ema15_handle = iMA(_Symbol, m_timeframe, InpEMA15Period, 0, InpEMACrossMethod, InpEMACrossAppliedPrice);
         if (m_ema15_handle == INVALID_HANDLE) {
             Print("❌ Failed to create EMA 15 handle.");
             return INIT_FAILED;
@@ -170,7 +187,7 @@ void OnTick()
     }
 
     // Check for new bar completion to scan for main timeframe signal
-    datetime current_bar_time = iTime(_Symbol, InpTimeframe, 0);
+    datetime current_bar_time = iTime(_Symbol, m_timeframe, 0);
     if (current_bar_time != m_last_checked_bar_time) {
         m_last_checked_bar_time = current_bar_time;
         CheckSignal();
@@ -258,7 +275,7 @@ void CheckSignal()
     int lookback = 2;
     MqlRates rates[];
     ArraySetAsSeries(rates, true);
-    if (CopyRates(_Symbol, InpTimeframe, 1, lookback, rates) < lookback) {
+    if (CopyRates(_Symbol, m_timeframe, 1, lookback, rates) < lookback) {
         Print("⚠️ Error copying rates for signal candle check.");
         return;
     }
@@ -379,8 +396,8 @@ void CheckSignal()
     m_trigger_low = l;
     m_trigger_high = h;
     m_matched_pattern_name = matched_pattern;
-    m_trigger_start_time = iTime(_Symbol, InpTimeframe, 0); // Trigger begins at start of current bar 0
-    m_trigger_expiry_time = m_trigger_start_time + PeriodSeconds(InpTimeframe); // Expires at end of bar 0
+    m_trigger_start_time = iTime(_Symbol, m_timeframe, 0); // Trigger begins at start of current bar 0
+    m_trigger_expiry_time = m_trigger_start_time + PeriodSeconds(m_timeframe); // Expires at end of bar 0
 
     PrintFormat("🎯 REJECTION SIGNAL GENERATED (%s): %s (%s). Upper Wick=%.1f%%, Lower Wick=%.1f%%.",
                 matched_pattern, _Symbol, (c < o ? "RED" : "GREEN"), upper_wick_pct, lower_wick_pct);
