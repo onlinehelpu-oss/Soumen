@@ -117,6 +117,10 @@ int OnInit()
             Print("❌ Failed to create EMA handle for main timeframe.");
             return INIT_FAILED;
         }
+        // Force the indicator to plot on the visual chart
+        if (!ChartIndicatorAdd(0, 0, m_ema_handle)) {
+            Print("⚠️ Failed to plot EMA on chart.");
+        }
     }
 
     // Create EMA 9 and EMA 15 indicator handles if filter is enabled
@@ -126,10 +130,19 @@ int OnInit()
             Print("❌ Failed to create EMA 9 handle.");
             return INIT_FAILED;
         }
+        // Force EMA 9 to plot on the visual chart
+        if (!ChartIndicatorAdd(0, 0, m_ema9_handle)) {
+            Print("⚠️ Failed to plot EMA 9 on chart.");
+        }
+
         m_ema15_handle = iMA(_Symbol, m_timeframe, InpEMA15Period, 0, InpEMACrossMethod, InpEMACrossAppliedPrice);
         if (m_ema15_handle == INVALID_HANDLE) {
             Print("❌ Failed to create EMA 15 handle.");
             return INIT_FAILED;
+        }
+        // Force EMA 15 to plot on the visual chart
+        if (!ChartIndicatorAdd(0, 0, m_ema15_handle)) {
+            Print("⚠️ Failed to plot EMA 15 on chart.");
         }
     }
 
