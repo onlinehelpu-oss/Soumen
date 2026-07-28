@@ -51,6 +51,13 @@ input int             InpEMA15Period       = 15;             // EMA 15 Period
 input ENUM_MA_METHOD  InpEMACrossMethod    = MODE_EMA;       // EMA Cross Smoothing Method
 input ENUM_APPLIED_PRICE InpEMACrossAppliedPrice = PRICE_CLOSE; // EMA Cross Applied Price
 
+input group "--- Higher Timeframe (HTF) Trend Filter Settings ---"
+input bool            InpUseHTFFilter      = true;           // Use Higher Timeframe Trend Filter?
+input ENUM_CUSTOM_TIMEFRAME InpHTFTimeframe = TF_H1;         // HTF Timeframe (e.g. H1, M15, etc.)
+input int             InpHTFEMA16Period    = 16;             // HTF EMA Period
+input ENUM_MA_METHOD  InpHTFEMAMethod      = MODE_EMA;       // HTF EMA Smoothing Method
+input ENUM_APPLIED_PRICE InpHTFEMAAppliedPrice = PRICE_CLOSE; // HTF EMA Applied Price
+
 input group "--- Candle Pattern Controls ---"
 input bool            InpRedCandleOnly     = true;           // Require signal candle to be Red?
 input bool            InpRequirePrevGreen  = false;          // Require the previous candle to be Green?
@@ -88,14 +95,17 @@ string         m_matched_pattern_name = "";
 int            m_ema_handle = INVALID_HANDLE;
 int            m_ema9_handle = INVALID_HANDLE;
 int            m_ema15_handle = INVALID_HANDLE;
+int            m_htf_ema_handle = INVALID_HANDLE;
+ENUM_TIMEFRAMES m_htf_timeframe = PERIOD_H1;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
 int OnInit()
 {
-    // Map custom timeframe to standard MQL5 timeframe
+    // Map custom timeframes to standard MQL5 timeframes
     m_timeframe = (ENUM_TIMEFRAMES)InpTimeframe;
+    m_htf_timeframe = (ENUM_TIMEFRAMES)InpHTFTimeframe;
 
     // Initialize symbol info
     if (!m_symbol.Name(_Symbol)) {
@@ -135,6 +145,15 @@ int OnInit()
         }
     }
 
+    // Create HTF EMA indicator handle if filter is enabled
+    if (InpUseHTFFilter) {
+        m_htf_ema_handle = iMA(_Symbol, m_htf_timeframe, InpHTFEMA16Period, 0, InpHTFEMAMethod, InpHTFEMAAppliedPrice);
+        if (m_htf_ema_handle == INVALID_HANDLE) {
+            Print("❌ Failed to create HTF EMA handle.");
+            return INIT_FAILED;
+        }
+    }
+
     // Run core tests to verify calculation logic matches expectations
     RunSelfTests();
 
@@ -147,7 +166,7 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-    // Release indicator handle
+    // Release indicator handles
     if (m_ema_handle != INVALID_HANDLE) {
         IndicatorRelease(m_ema_handle);
         m_ema_handle = INVALID_HANDLE;
@@ -159,6 +178,10 @@ void OnDeinit(const int reason)
     if (m_ema15_handle != INVALID_HANDLE) {
         IndicatorRelease(m_ema15_handle);
         m_ema15_handle = INVALID_HANDLE;
+    }
+    if (m_htf_ema_handle != INVALID_HANDLE) {
+        IndicatorRelease(m_htf_ema_handle);
+        m_htf_ema_handle = INVALID_HANDLE;
     }
     Comment(""); // Clear chart comments
 }
@@ -324,6 +347,29 @@ void CheckSignal()
     if (InpRedCandleOnly && c >= o) return;        // Candidate must be RED if filter enabled
     if (InpRequirePrevGreen && prev_c <= prev_o) return; // Previous candle must be GREEN if filter enabled
     if (c == 0 || h <= l) return;
+
+    // Higher Timeframe (HTF) Trend Filter validation
+    if (InpUseHTFFilter && m_htf_ema_handle != INVALID_HANDLE) {
+        MqlRates htf_rates[];
+        ArraySetAsSeries(htf_rates, true);
+        if (CopyRates(_Symbol, m_htf_timeframe, 1, 1, htf_rates) < 1) {
+            Print("⚠️ Error copying HTF rates.");
+            return;
+        }
+        double htf_ema_val[1];
+        if (CopyBuffer(m_htf_ema_handle, 0, 1, 1, htf_ema_val) < 1) {
+            Print("⚠️ Error copying HTF EMA buffer.");
+            return;
+        }
+        double htf_close = htf_rates[0].close;
+        double htf_ema   = htf_ema_val[0];
+
+        if (htf_close >= htf_ema) {
+            PrintFormat("🔍 Candle rejected by HTF Trend Filter (%s): HTF Close (%.2f) >= HTF EMA (%.2f)",
+                        EnumToString(InpHTFTimeframe), htf_close, htf_ema);
+            return;
+        }
+    }
 
     // EMA Filters evaluation
     bool ema_34_valid = true;
