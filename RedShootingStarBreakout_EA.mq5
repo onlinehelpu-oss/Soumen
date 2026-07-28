@@ -55,7 +55,7 @@ input group "--- Candle Pattern Controls ---"
 input bool            InpRedCandleOnly     = true;           // Require signal candle to be Red?
 input bool            InpRequirePrevGreen  = false;          // Require the previous candle to be Green?
 input double          InpMinUpperWickPct   = 50.0;           // Min Upper Wick % (e.g. 50.0%)
-input double          InpMaxLowerWickPoints = 0.0;           // Max allowed lower wick in points (0.0 for strict absolute flat bottom)
+input double          InpMaxLowerWickPoints = 10.0;          // Max allowed lower wick in points (e.g. 10.0 to allow tiny/small lower wicks)
 
 input group "--- Breakout & Execution Settings ---"
 input bool            InpUseTimeFilters    = false;          // Enable entry cutoff time filters?
