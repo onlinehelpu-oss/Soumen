@@ -37,6 +37,8 @@ input double          InpRiskPercentage    = 1.0;            // % Risk per trade
 input double          InpMaxMarginUtilPct  = 70.0;           // Max Margin Utilization Percentage (prevent Code 10019)
 input bool            InpOnePositionAtATime = true;          // Limit to one open position at a time?
 input int             InpMinCandleRangePoints = 50;          // Min candle range in points to ignore tiny candles (0 to disable)
+input int             InpCooldownSeconds   = 300;            // Post-trade Cooldown in seconds (0 to disable)
+input bool            InpUseTickProtection = false;          // Use manual tick-by-tick SL/TP backup protection? (default false to let broker execute SL/TP)
 
 input group "--- EMA Trend Filter Settings ---"
 input bool            InpUseEMAFilter      = true;           // Use EMA Trend Filter? (Signal Close < EMA)
@@ -66,6 +68,7 @@ input double          InpMaxLowerWickPct   = 10.0;           // Max allowed lowe
 input double          InpMaxBodyPct        = 30.0;           // Max Body Size % of Total Range
 input double          InpMinClosePositionPct = 70.0;         // Min Close Position % from High (require close near low)
 input int             InpSwingLookback     = 20;             // Swing High Lookback Bars (resistance check)
+input double          InpSwingHighTolerancePct = 0.1;        // Swing High Tolerance % (e.g. 0.1 for 0.1% tolerance)
 
 input group "--- Breakout & Execution Settings ---"
 input bool            InpUseTimeFilters    = false;          // Enable entry cutoff time filters?
@@ -295,16 +298,19 @@ void OnTick()
         }
     }
 
-    // Perform tick backup check for standard risk SL/TP (safety net)
-    CheckActivePositionsRisk();
+    // Perform tick backup check for standard risk SL/TP (safety net) if enabled
+    if (InpUseTickProtection) {
+        CheckActivePositionsRisk();
+    }
 
     // Detect position close to track the exact close timestamp
     bool currently_open = IsPositionOpen();
     if (m_had_position_open && !currently_open) {
         m_last_trade_closed_time = TimeCurrent();
-        PrintFormat("ℹ️ EA Position closed at %s. 5-minute cooldown active until %s.",
+        PrintFormat("ℹ️ EA Position closed at %s. %d-second cooldown active until %s.",
                     TimeToString(m_last_trade_closed_time),
-                    TimeToString(m_last_trade_closed_time + 300));
+                    InpCooldownSeconds,
+                    TimeToString(m_last_trade_closed_time + InpCooldownSeconds));
     }
     m_had_position_open = currently_open;
 
@@ -458,7 +464,7 @@ void CheckSignal()
             double highest_highs[];
             if (CopyHigh(_Symbol, m_timeframe, highest_bar_idx, 1, highest_highs) >= 1) {
                 double highest_preceding_high = highest_highs[0];
-                swing_high_ok = (h >= highest_preceding_high * 0.999);
+                swing_high_ok = (h >= highest_preceding_high * (1.0 - InpSwingHighTolerancePct / 100.0));
                 if (!swing_high_ok) {
                     PrintFormat("🔍 Candle rejected by Swing-High filter: High (%.2f) not near/above highest high of last %d bars (%.2f)", h, InpSwingLookback, highest_preceding_high);
                 }
@@ -513,12 +519,12 @@ void ExecuteShortEntry(double trigger_price)
         return;
     }
 
-    // 5-Minute Cooldown Guard: Check if less than 5 minutes (300 seconds) has passed since the last trade was closed
-    if (m_last_trade_closed_time > 0) {
+    // Post-Trade Cooldown Guard: Check if less than InpCooldownSeconds has passed since the last trade was closed
+    if (InpCooldownSeconds > 0 && m_last_trade_closed_time > 0) {
         datetime current_time = TimeCurrent();
         long elapsed = current_time - m_last_trade_closed_time;
-        if (elapsed < 300) {
-            PrintFormat("⚠️ Trade execution skipped. Cooldown in effect. Only %d seconds elapsed of the required 300 since last position close.", elapsed);
+        if (elapsed < InpCooldownSeconds) {
+            PrintFormat("⚠️ Trade execution skipped. Cooldown in effect. Only %d seconds elapsed of the required %d since last position close.", elapsed, InpCooldownSeconds);
             return;
         }
     }
