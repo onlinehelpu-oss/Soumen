@@ -20,6 +20,7 @@ input ENUM_APPLIED_PRICE InpEMAPrice     = PRICE_CLOSE;      // EMA Applied Pric
 
 input group "=== Strategy Conditions ==="
 input double          InpMinCandlePoints = 100.0;            // Min Candle Range in Points (100 pts = $1.00 on XAUUSD)
+input double          InpMaxCandlePoints = 1000.0;           // Max Candle Range in Points (1000 pts = $10.00 on XAUUSD, 0 to disable)
 input double          InpEntryBufferPoints = 10.0;           // Entry Breakout Buffer in Points (10 pts = $0.10)
 input double          InpRiskRewardRatio = 2.0;              // Risk-to-Reward Ratio (e.g. 1:2)
 input bool            InpOnePositionAtATime = true;          // Limit to One Open Position at a time
@@ -195,8 +196,12 @@ void CheckNewBarSignal()
    double min_range_points = InpMinCandlePoints * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
    bool is_not_tiny = (range >= min_range_points);
 
+   // 5. Avoid big signal candle filter
+   double max_range_points = InpMaxCandlePoints * SymbolInfoDouble(Symbol(), SYMBOL_POINT);
+   bool is_not_too_big = (InpMaxCandlePoints <= 0.0 || range <= max_range_points);
+
    // Verify all conditions
-   if(is_green && closed_above && low_touched_or_below && is_not_tiny)
+   if(is_green && closed_above && low_touched_or_below && is_not_tiny && is_not_too_big)
    {
       m_signal_candle_time = rates[1].time;
       m_signal_high = rates[1].high;
