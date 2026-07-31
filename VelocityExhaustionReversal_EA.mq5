@@ -98,6 +98,15 @@ input double InpRiskPercent       = 1.0;        // Risk Percentage
 input double InpKellyWinRate      = 0.55;       // Estimated Strategy Win-Rate for Kelly
 input double InpKellyPayoffRatio  = 2.0;        // Estimated Payoff Ratio (Average Win / Average Loss)
 input double InpKellyFraction     = 0.25;       // Fractional Kelly Sizing Multiplier (e.g. 0.25 for Quarter Kelly)
+enum EStopLossMode
+{
+   SL_ATR,   // Stop Loss based on ATR
+   SL_SWING  // Stop Loss based on Swing Extremes
+};
+input EStopLossMode InpSLMode     = SL_SWING;   // Stop Loss Mode
+input double InpSLATRMultiplier   = 2.0;        // ATR Stop Loss Multiplier
+input double InpSLSwingPaddingPts = 20.0;       // Swing Stop Loss Padding (Points)
+input double InpTPATRMultiplier   = 3.0;        // Take Profit ATR Multiplier
 input double InpMaxDailyLossPct   = 5.0;        // Maximum Daily Loss Limit (%)
 input int    InpMaxTradesPerDay   = 10;         // Maximum Trades Per Day
 input int    InpMaxConsecLosses   = 5;          // Maximum Consecutive Losses Allowed
@@ -418,7 +427,7 @@ public:
       double median = GetMedian(speeds, m_period);
 
       double deviations[];
-      ArrayResize(discrepancies_array(deviations), m_period);
+      ArrayResize(deviations, m_period);
       for(int i = 0; i < m_period; i++)
       {
          deviations[i] = MathAbs(speeds[i] - median);
@@ -456,10 +465,6 @@ public:
 
       return true;
    }
-
-private:
-   // Utility to safely wrap arrays pass inside private methods
-   double discrepancies_array(double &arr[]) { return 0; }
 };
 
 //+------------------------------------------------------------------+
