@@ -45,20 +45,9 @@ input double               InpMinCandlePoints      = 100.0;             // Minim
 input int                  InpMaxSetupLifeBars     = 1;                 // Max Setup Lifetime in Bars (Default 1 bar)
 input bool                 InpInvalidateOnLowBreak = true;              // Invalidate setup if price drops below Red candle Low
 
-input group "=== SIGNAL FILTERS (OR RELATION) ==="
-input bool                 InpUseSwingLowFilter    = true;              // Require Red candle to be at a Swing Low
-input int                  InpSwingLookback        = 5;                 // Swing Low Lookback (Bars to the left)
-input bool                 InpUseSupportFilter     = true;              // Require Red candle to be at Support
+input group "=== SIGNAL FILTERS ==="
 input bool                 InpUseDayLowFilter      = true;              // Require Red candle to be at Day Low
 input int                  InpDayLowBufferPoints   = 50;                // Day Low Buffer in Points
-
-input group "=== SUPPORT FILTER PARAMETERS ==="
-input bool                 InpUseEMASupport        = true;              // Use EMA as Support
-input int                  InpEMAPeriod            = 50;                // EMA Period
-input int                  InpEMABufferPoints      = 50;                // EMA Distance Buffer (Points)
-input bool                 InpUseHorizontalSupport = true;              // Use Horizontal Support (Historical Low)
-input int                  InpHorizontalSupportLookback = 100;          // Horizontal Support Lookback (Bars)
-input int                  InpSupportBufferPoints  = 50;                // Support Buffer (Points)
 
 //--- Global Variables
 CTrade         m_trade;                      // Trade execution object
@@ -69,7 +58,6 @@ datetime       m_setup_bar_time        = 0;  // The time of the Red candle bar
 double         m_setup_high            = 0.0;// High of the Red candle
 double         m_setup_low             = 0.0; // Low of the Red candle
 int            m_setup_bars_passed     = 0;  // Counter for setup lifetime
-int            m_ema_handle            = INVALID_HANDLE; // Handle for EMA indicator
 
 //--- Helper Functions to Safe Copy Bar Data
 double GetOpen(int index) { double val[]; if(CopyOpen(_Symbol, _Period, index, 1, val) > 0) return val[0]; return 0.0; }
@@ -99,16 +87,6 @@ int OnInit()
       Print("Warning: This Expert Advisor is optimized and requested for XAUUSD/GOLD trading!");
    }
 
-   // Initialize EMA handle
-   if(InpUseEMASupport)
-   {
-      m_ema_handle = iMA(_Symbol, _Period, InpEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
-      if(m_ema_handle == INVALID_HANDLE)
-      {
-         Print("Error: Failed to create EMA indicator handle!");
-      }
-   }
-
    // Get initial bar time
    m_last_bar_time = GetTime(0);
 
@@ -120,13 +98,6 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   // Release indicator handle
-   if(m_ema_handle != INVALID_HANDLE)
-   {
-      IndicatorRelease(m_ema_handle);
-      m_ema_handle = INVALID_HANDLE;
-   }
-
    // Clear comments on chart
    Comment("");
    Print("EA Deinitialized. Reason code: ", reason);
@@ -195,32 +166,14 @@ void CheckForNewSetup()
       return;
    }
 
-   // Check Location Filters (Swing Low, Support, Day Low)
-   bool swing_low_ok = false;
-   bool support_ok = false;
-   bool day_low_ok = false;
-
-   if(InpUseSwingLowFilter)
-   {
-      swing_low_ok = CheckIsSwingLow(low1);
-   }
-
-   if(InpUseSupportFilter)
-   {
-      support_ok = CheckIsAtSupport(low1);
-   }
-
+   // Check Day Low Filter
+   bool day_low_ok = true;
    if(InpUseDayLowFilter)
    {
       day_low_ok = CheckIsAtDayLow(low1);
    }
 
-   // Determine if we meet the "OR" relation requested (at swing low OR at support OR at day low)
-   // If no filters are enabled, we treat it as valid.
-   bool filter_enabled = InpUseSwingLowFilter || InpUseSupportFilter || InpUseDayLowFilter;
-   bool filter_passed = !filter_enabled || swing_low_ok || support_ok || day_low_ok;
-
-   if(filter_passed)
+   if(day_low_ok)
    {
       m_setup_active = true;
       m_setup_bar_time = GetTime(1);
@@ -231,8 +184,6 @@ void CheckForNewSetup()
       PrintFormat("=== VALID SETUP DETECTED ===");
       PrintFormat("Red Candle at %s meets criteria! Setup High: %.2f, Setup Low: %.2f",
                   TimeToString(m_setup_bar_time), m_setup_high, m_setup_low);
-      PrintFormat("Checks status: Swing Low: %s, At Support: %s, Day Low: %s",
-                  swing_low_ok ? "YES" : "NO", support_ok ? "YES" : "NO", day_low_ok ? "YES" : "NO");
       PrintFormat("Trigger Buy Price: %.2f", m_setup_high + InpEntryBufferPoints * _Point);
    }
 }
@@ -455,89 +406,6 @@ ENUM_ORDER_TYPE_FILLING GetFillingMode()
 }
 
 //+------------------------------------------------------------------+
-//| Filter Check: Is Swing Low                                       |
-//+------------------------------------------------------------------+
-bool CheckIsSwingLow(double red_low)
-{
-   // Check if low is the lowest of the last N completed bars
-   for(int i = 2; i <= InpSwingLookback + 1; i++)
-   {
-      double historical_low = GetLow(i);
-      if(historical_low > 0 && historical_low < red_low)
-      {
-         return false;
-      }
-   }
-   return true;
-}
-
-//+------------------------------------------------------------------+
-//| Filter Check: Is At Support (Pivot Support, EMA, Horizontal)      |
-//+------------------------------------------------------------------+
-bool CheckIsAtSupport(double red_low)
-{
-   // 1. Pivot Point Support levels (S1, S2, S3)
-   MqlRates rates[];
-   ArraySetAsSeries(rates, true);
-   int copied = CopyRates(_Symbol, PERIOD_D1, 1, 1, rates);
-   if(copied > 0)
-   {
-      double high_d1 = rates[0].high;
-      double low_d1 = rates[0].low;
-      double close_d1 = rates[0].close;
-
-      double pivot = (high_d1 + low_d1 + close_d1) / 3.0;
-      double s1 = (2.0 * pivot) - high_d1;
-      double s2 = pivot - (high_d1 - low_d1);
-      double s3 = low_d1 - 2.0 * (high_d1 - pivot);
-
-      double buffer = InpSupportBufferPoints * _Point;
-      if(MathAbs(red_low - s1) <= buffer || MathAbs(red_low - s2) <= buffer ||
-         MathAbs(red_low - s3) <= buffer || MathAbs(red_low - pivot) <= buffer)
-      {
-         PrintFormat("Support Match (Pivot): Red low is near Pivot Support level. S1: %.2f, S2: %.2f, S3: %.2f, Pivot: %.2f", s1, s2, s3, pivot);
-         return true;
-      }
-   }
-
-   // 2. Exponential Moving Average Support
-   if(InpUseEMASupport && m_ema_handle != INVALID_HANDLE)
-   {
-      double ema_values[];
-      ArraySetAsSeries(ema_values, true);
-      if(CopyBuffer(m_ema_handle, 0, 1, 1, ema_values) > 0)
-      {
-         double ema_val = ema_values[0];
-         double ema_buffer = InpEMABufferPoints * _Point;
-         // Support check: low is touching, below, or close to the EMA line
-         if(red_low <= ema_val + ema_buffer)
-         {
-            PrintFormat("Support Match (EMA): Red Low (%.2f) is close to EMA-%d (%.2f)", red_low, InpEMAPeriod, ema_val);
-            return true;
-         }
-      }
-   }
-
-   // 3. Horizontal Support (Historical low of last N bars)
-   if(InpUseHorizontalSupport)
-   {
-      double lowest_low = GetLowestLow(_Symbol, _Period, InpHorizontalSupportLookback, 2); // start from index 2 to exclude Bar 1
-      if(lowest_low > 0 && lowest_low != DBL_MAX)
-      {
-         double support_buffer = InpSupportBufferPoints * _Point;
-         if(red_low <= lowest_low + support_buffer)
-         {
-            PrintFormat("Support Match (Horizontal): Red Low (%.2f) is near horizontal low (%.2f) of last %d bars",
-                        red_low, lowest_low, InpHorizontalSupportLookback);
-            return true;
-         }
-      }
-   }
-
-   return false;
-}
-
-//+------------------------------------------------------------------+
 //| Filter Check: Is At Day Low                                      |
 //+------------------------------------------------------------------+
 bool CheckIsAtDayLow(double red_low)
@@ -556,26 +424,6 @@ bool CheckIsAtDayLow(double red_low)
       }
    }
    return false;
-}
-
-//+------------------------------------------------------------------+
-//| Get lowest low dynamically using pure standard MQL5             |
-//+------------------------------------------------------------------+
-double GetLowestLow(string symbol, ENUM_TIMEFRAMES timeframe, int count, int start_index)
-{
-   double lowest_low = DBL_MAX;
-   double low_array[];
-   if(CopyLow(symbol, timeframe, start_index, count, low_array) > 0)
-   {
-      for(int i = 0; i < count; i++)
-      {
-         if(low_array[i] < lowest_low)
-         {
-            lowest_low = low_array[i];
-         }
-      }
-   }
-   return lowest_low;
 }
 
 //+------------------------------------------------------------------+
