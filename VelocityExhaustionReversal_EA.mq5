@@ -9,7 +9,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Quant Developer"
 #property link      "https://www.mql5.com"
-#property version   "1.10"
+#property version   "1.20"
 #property strict
 
 // Include standard trade libraries
@@ -39,23 +39,24 @@ input group "---- MODULE 2 & 3: TICK & VELOCITY ----"
 input int    InpTickCacheSize     = 100;        // Rolling Tick Cache Size
 input double InpDensityWindowSec  = 2.0;        // Density Window (Seconds)
 input int    InpVelocityMAPeriod  = 20;         // Velocity MA Lookback Period (Ticks)
-input double InpVelocityMultiplier= 1.5;        // Velocity Trigger Multiplier (Ratio)
+input double InpVelocityMultiplier= 1.2;        // Velocity Trigger Multiplier (Ratio)
 
 // --- MODULE 4: EXPANSION ENGINE ---
 input group "---- MODULE 4: EXPANSION ENGINE ----"
 input ENUM_TIMEFRAMES InpTimeframe= PERIOD_CURRENT; // Strategy Candle Timeframe
 input int    InpATRPeriod         = 14;         // Volatility Lookback Period (Candles)
-input double InpExpansionMultiplier=1.1;        // Volatility Expansion Multiplier
+input double InpExpansionMultiplier=0.9;        // Volatility Expansion Multiplier
 
 // --- MODULE 5: LIQUIDITY SWEEP ---
 input group "---- MODULE 5: LIQUIDITY SWEEP ----"
 input int    InpSwingLookback     = 10;         // Swing High/Low Lookback (Candles)
+input double InpSweepBufferPoints = 100.0;      // Sweep Rejection Zone Buffer (Points)
 
 // --- MODULE 6: EXHAUSTION ENGINE ---
 input group "---- MODULE 6: EXHAUSTION ENGINE ----"
 input double InpMinCandlePoints   = 10.0;       // Reject Tiny Candles (Min Points)
-input double InpMinWickPct        = 35.0;       // Minimum Rejection Wick %
-input double InpMaxBodyPct        = 40.0;       // Maximum Candle Body %
+input double InpMinWickPct        = 30.0;       // Minimum Rejection Wick %
+input double InpMaxBodyPct        = 45.0;       // Maximum Candle Body %
 
 // --- MODULE 7 & 8: SIGNAL & EXECUTION ---
 input group "---- MODULE 7 & 8: SIGNAL & EXECUTION ----"
@@ -1130,8 +1131,12 @@ void OnTick()
          double comp_high = completed_rates[0].high;
          double comp_close = completed_rates[0].close;
 
+         // Relax swing sweeps with custom point-based offset zone buffers (to increase trade triggers)
+         double sweep_low_threshold = swing_low + InpSweepBufferPoints * _Point;
+         double sweep_high_threshold = swing_high - InpSweepBufferPoints * _Point;
+
          // BUY Reversal Setup Requirements
-         if(bull_ex && comp_low < swing_low && comp_close > swing_low)
+         if(bull_ex && comp_low <= sweep_low_threshold && comp_close > swing_low)
          {
             g_active_setup.Type = SETUP_BUY;
             g_active_setup.State = STATE_PENDING_BREAKOUT;
@@ -1153,7 +1158,7 @@ void OnTick()
          }
 
          // SELL Reversal Setup Requirements
-         if(bear_ex && comp_high > swing_high && comp_close < swing_high)
+         if(bear_ex && comp_high >= sweep_high_threshold && comp_close < swing_high)
          {
             g_active_setup.Type = SETUP_SELL;
             g_active_setup.State = STATE_PENDING_BREAKOUT;
