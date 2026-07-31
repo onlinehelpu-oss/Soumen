@@ -9,7 +9,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Quant Developer"
 #property link      "https://www.mql5.com"
-#property version   "1.00"
+#property version   "1.10"
 #property strict
 
 // Include standard trade libraries
@@ -70,7 +70,7 @@ input int    InpSetupExpiryBars   = 1;          // Entry Setup Expiry Bars
 input uint   InpMagicNumber       = 748291;     // Expert Advisor Magic Number
 input double InpMaxSpreadPoints   = 50.0;       // Maximum Allowed Spread (Points)
 input ulong  InpSlippagePoints    = 10;         // Maximum Slippage (Points)
-input int    InpMaxRetries        = 3;          // Maximum Execution Retries
+input int    InpMaxRetries        = 5;          // Maximum Execution Retries
 input int    InpRetryDelayMS      = 200;        // Retry Delay (Milliseconds)
 
 // --- MODULE 9: RISK MANAGEMENT ---
@@ -78,7 +78,7 @@ input group "---- MODULE 9: RISK MANAGEMENT ----"
 enum ERiskMode
 {
    RISK_FIXED_LOT, // Use Fixed Lot Size
-   RISK_PERCENT    // Use Risk % of Margin
+   RISK_PERCENT    // Use Risk % of Account Equity
 };
 input ERiskMode InpRiskMode        = RISK_PERCENT; // Lot Sizing Mode
 input double InpFixedLotSize      = 0.1;        // Fixed Lot Size (if RISK_FIXED_LOT)
@@ -117,8 +117,9 @@ struct TickData
    double Price;
    long   TimeMsc;
    double Distance;
-   double Speed;
-   double Acceleration;
+   double Speed;        // Speed in raw points per second
+   double NormSpeed;    // Volatility-normalized speed (ATR units per second)
+   double Acceleration; // Acceleration in speed units per second
 };
 
 enum ESetupType
@@ -128,16 +129,24 @@ enum ESetupType
    SETUP_SELL
 };
 
+enum ESignalState
+{
+   STATE_IDLE,
+   STATE_PENDING_BREAKOUT,
+   STATE_BREAKOUT_DETECTED
+};
+
 struct SignalSetup
 {
-   ESetupType Type;
-   double     TriggerPrice;
-   double     StopLoss;
-   double     TakeProfit;
-   datetime   SetupTime;
-   int        SetupBarIndex;
-   double     SignalHigh;
-   double     SignalLow;
+   ESetupType   Type;
+   double       TriggerPrice;
+   double       StopLoss;
+   double       TakeProfit;
+   datetime     SetupTime;
+   int          SetupBarIndex;
+   double       SignalHigh;
+   double       SignalLow;
+   ESignalState State;
 };
 
 //+------------------------------------------------------------------+
@@ -148,7 +157,7 @@ class CUtils
 public:
    static bool IsInSession()
    {
-      if(!InpUseSessionFilter) return true;
+      if(InpUseSessionFilter == false) return true;
 
       MqlDateTime dt;
       TimeToStruct(TimeCurrent(), dt);
@@ -221,7 +230,7 @@ public:
       m_ticks_count = 0;
    }
 
-   void AddTick(const MqlTick &tick)
+   void AddTick(const MqlTick &tick, double live_atr)
    {
       TickData data = {0};
       data.Ask = tick.ask;
@@ -241,12 +250,19 @@ public:
          double seconds = (double)time_diff / 1000.0;
          data.Speed = dist_points / seconds;
 
+         // Volatility-normalized speed: raw speed in points divided by ATR in points
+         double atr_points = live_atr / _Point;
+         if(atr_points <= 0.0) atr_points = 100.0; // Fail-safe default
+
+         data.NormSpeed = data.Speed / atr_points;
+
          data.Acceleration = (data.Speed - m_cache[prev_index].Speed) / seconds;
       }
       else
       {
          data.Distance = 0.0;
          data.Speed = 0.0;
+         data.NormSpeed = 0.0;
          data.Acceleration = 0.0;
       }
 
@@ -310,25 +326,31 @@ public:
       double speed_sum = 0.0;
       double accel_sum = 0.0;
 
+      // Calculate more robust rolling average
+      int counted_ticks = 0;
       for(int i = 0; i < m_period; i++)
       {
          TickData t;
          if(m_tick_engine.GetTick(i, t))
          {
-            speed_sum += t.Speed;
+            // Use normalized speed to be volatility-adaptive
+            speed_sum += t.NormSpeed;
             accel_sum += MathAbs(t.Acceleration);
+            counted_ticks++;
          }
       }
 
-      avg_speed = speed_sum / m_period;
+      if(counted_ticks == 0) return false;
+
+      avg_speed = speed_sum / counted_ticks;
 
       TickData latest;
       if(!m_tick_engine.GetTick(0, latest)) return false;
 
-      cur_speed = latest.Speed;
+      cur_speed = latest.NormSpeed;
       velocity_ratio = (avg_speed > 0) ? (cur_speed / avg_speed) : 1.0;
 
-      double avg_accel = accel_sum / m_period;
+      double avg_accel = accel_sum / counted_ticks;
       accel_ratio = (avg_accel > 0) ? (MathAbs(latest.Acceleration) / avg_accel) : 1.0;
 
       return true;
@@ -340,31 +362,54 @@ public:
 //+------------------------------------------------------------------+
 class CExpansionEngine
 {
+private:
+   int m_atr_handle;
+
 public:
-   bool CalculateExpansion(const string symbol, ENUM_TIMEFRAMES timeframe, int period, double multiplier, double &current_range, double &atr, double &expansion_score)
+   CExpansionEngine() : m_atr_handle(INVALID_HANDLE) {}
+
+   void Init(const string symbol, ENUM_TIMEFRAMES timeframe, int period)
    {
-      MqlRates rates[];
-      int copied = CopyRates(symbol, timeframe, 1, period + 1, rates);
-      if(copied < period + 1) return false;
-
-      double tr_sum = 0.0;
-      for(int i = 1; i <= period; i++)
+      m_atr_handle = iATR(symbol, timeframe, period);
+      if(m_atr_handle == INVALID_HANDLE)
       {
-         double high = rates[i].high;
-         double low = rates[i].low;
-         double prev_close = rates[i-1].close;
-
-         double tr = MathMax(high - low, MathMax(MathAbs(high - prev_close), MathAbs(low - prev_close)));
-         tr_sum += tr;
+         PrintFormat("[CExpansionEngine] Failed to create iATR handle for %s on timeframe %s!", symbol, EnumToString(timeframe));
       }
+   }
 
-      atr = tr_sum / period;
+   void Deinit()
+   {
+      if(m_atr_handle != INVALID_HANDLE)
+      {
+         IndicatorRelease(m_atr_handle);
+         m_atr_handle = INVALID_HANDLE;
+      }
+   }
 
-      double high_1 = rates[copied-1].high;
-      double low_1 = rates[copied-1].low;
-      current_range = high_1 - low_1;
+   double GetLiveATR()
+   {
+      if(m_atr_handle == INVALID_HANDLE) return 0.0;
+      double atr_values[];
+      ArraySetAsSeries(atr_values, true);
+      if(CopyBuffer(m_atr_handle, 0, 0, 1, atr_values) < 1)
+      {
+         return 0.0;
+      }
+      return atr_values[0];
+   }
 
-      expansion_score = (atr > 0) ? (current_range / atr) : 1.0;
+   bool CalculateExpansion(const string symbol, ENUM_TIMEFRAMES timeframe, double multiplier, double &current_range, double &atr, double &expansion_score)
+   {
+      atr = GetLiveATR();
+      if(atr <= 0.0) return false;
+
+      MqlRates rates[];
+      ArraySetAsSeries(rates, true);
+      int copied = CopyRates(symbol, timeframe, 1, 1, rates);
+      if(copied < 1) return false;
+
+      current_range = rates[0].high - rates[0].low;
+      expansion_score = current_range / atr;
 
       return (current_range > multiplier * atr);
    }
@@ -379,6 +424,9 @@ public:
    bool GetRecentSwingPoints(const string symbol, ENUM_TIMEFRAMES timeframe, int lookback, double &swing_high, double &swing_low)
    {
       MqlRates rates[];
+      ArraySetAsSeries(rates, true);
+
+      // CopyRates verification: we request 'lookback' bars starting from index 2 (completed history)
       int copied = CopyRates(symbol, timeframe, 2, lookback, rates);
       if(copied < lookback) return false;
 
@@ -409,6 +457,7 @@ public:
                           double &body_pct, double &upper_wick_pct, double &lower_wick_pct, double &close_position_pct)
    {
       MqlRates rates[];
+      ArraySetAsSeries(rates, true);
       if(CopyRates(symbol, timeframe, 1, 1, rates) < 1) return false;
 
       double open = rates[0].open;
@@ -529,6 +578,7 @@ public:
       bool success = false;
       for(int attempt = 1; attempt <= m_max_retries; attempt++)
       {
+         // Refresh rates and context on every retry
          m_symbol_info.RefreshRates();
          double current_price = (order_type == ORDER_TYPE_BUY) ? m_symbol_info.Ask() : m_symbol_info.Bid();
 
@@ -545,10 +595,27 @@ public:
                PrintFormat("[CTradeEngine] Order completed successfully on attempt %d! Ticket: %I64u", attempt, m_trade.ResultOrder());
                return true;
             }
-         }
 
-         PrintFormat("[CTradeEngine] Attempt %d failed. Retcode: %u, Error: %s. Retrying...",
-                     attempt, m_trade.ResultRetcode(), m_trade.ResultComment());
+            // Check for temporary server/context busy states
+            if(ret_code == TRADE_RETCODE_REQUOTE ||
+               ret_code == TRADE_RETCODE_PRICE_OFF ||
+               ret_code == TRADE_RETCODE_CONNECTION ||
+               ret_code == TRADE_RETCODE_PRICE_CHANGED)
+            {
+               PrintFormat("[CTradeEngine] Temporary retryable error code: %u. Retrying in %d ms...", ret_code, m_retry_delay_ms);
+            }
+            else
+            {
+               // Unrecoverable errors
+               PrintFormat("[CTradeEngine] Unrecoverable error code: %u. Aborting.", ret_code);
+               break;
+            }
+         }
+         else
+         {
+            PrintFormat("[CTradeEngine] Attempt %d failed. Retcode: %u, Error: %s. Retrying...",
+                        attempt, m_trade.ResultRetcode(), m_trade.ResultComment());
+         }
 
          if(attempt < m_max_retries)
             Sleep(m_retry_delay_ms);
@@ -671,8 +738,9 @@ public:
       if(InpRiskMode == RISK_FIXED_LOT || sl_distance_pts <= 0.0)
          return m_fixed_lot;
 
-      double free_margin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
-      double risk_amount = (m_risk_pct / 100.0) * free_margin;
+      // Based on Account Equity as requested
+      double account_equity = AccountInfoDouble(ACCOUNT_EQUITY);
+      double risk_amount = (m_risk_pct / 100.0) * account_equity;
 
       double tick_value = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_VALUE);
       double tick_size = SymbolInfoDouble(_Symbol, SYMBOL_TRADE_TICK_SIZE);
@@ -694,6 +762,7 @@ public:
       double required_margin = 0.0;
       if(OrderCalcMargin(ORDER_TYPE_BUY, _Symbol, lots, SymbolInfoDouble(_Symbol, SYMBOL_ASK), required_margin))
       {
+         double free_margin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
          double max_usable_margin = free_margin * 0.70;
          if(required_margin > max_usable_margin)
          {
@@ -721,7 +790,38 @@ private:
    double       m_momentum_exit_ratio;
    int          m_max_hold_minutes;
 
+   // Keep track of ticket IDs that have already undergone a partial close
+   ulong        m_partially_closed_tickets[];
+
+   bool IsAlreadyPartiallyClosed(ulong ticket)
+   {
+      int size = ArraySize(m_partially_closed_tickets);
+      for(int i = 0; i < size; i++)
+      {
+         if(m_partially_closed_tickets[i] == ticket) return true;
+      }
+      return false;
+   }
+
+   void RegisterPartialClose(ulong ticket)
+   {
+      int size = ArraySize(m_partially_closed_tickets);
+      ArrayResize(m_partially_closed_tickets, size + 1);
+      m_partially_closed_tickets[size] = ticket;
+   }
+
 public:
+   CExitEngine() :
+      m_trade_engine(NULL),
+      m_atr_trail_mult(0),
+      m_be_trigger_pts(0),
+      m_be_buffer_pts(0),
+      m_partial_close_pct(0),
+      m_partial_close_rr(0),
+      m_momentum_exit_ratio(0),
+      m_max_hold_minutes(0)
+   {}
+
    void Init(CTradeEngine *trade_engine, double atr_trail_mult, double be_trigger_pts, double be_buffer_pts,
              double partial_close_pct, double partial_close_rr, double momentum_exit_ratio, int max_hold_minutes)
    {
@@ -733,6 +833,7 @@ public:
       m_partial_close_rr = partial_close_rr;
       m_momentum_exit_ratio = momentum_exit_ratio;
       m_max_hold_minutes = max_hold_minutes;
+      ArrayFree(m_partially_closed_tickets);
    }
 
    void ManageExits(double current_atr, double velocity_ratio)
@@ -795,9 +896,8 @@ public:
             }
          }
 
-         // 4. Partial Close
-         string comment = PositionGetString(POSITION_COMMENT);
-         if(m_partial_close_pct > 0.0 && m_partial_close_rr > 0.0 && StringFind(comment, "PC") < 0)
+         // 4. Robust Partial Close with Duplicate Prevention
+         if(m_partial_close_pct > 0.0 && m_partial_close_rr > 0.0 && !IsAlreadyPartiallyClosed(ticket))
          {
             double initial_sl_dist = MathAbs(open_price - current_sl) / _Point;
             if(initial_sl_dist > 0 && profit_pts >= initial_sl_dist * m_partial_close_rr)
@@ -807,16 +907,24 @@ public:
                if(close_vol >= min_vol && close_vol < volume)
                {
                   PrintFormat("[CExitEngine] Partial Close Triggered! RR hit. Closing %.2f of %.2f lots", close_vol, volume);
-                  m_trade_engine.ClosePosition(ticket, close_vol);
+                  if(m_trade_engine.ClosePosition(ticket, close_vol))
+                  {
+                     RegisterPartialClose(ticket);
+                  }
                   continue;
                }
             }
          }
 
-         // 5. ATR Trailing Stop
+         // 5. Adaptive Trailing Stop (Trail shrinks as profit grows)
          if(m_atr_trail_mult > 0.0 && current_atr > 0.0)
          {
-            double atr_dist = current_atr * m_atr_trail_mult;
+            // Compute adaptive trailing multiplier: shrinks from 100% down to 50% multiplier at 3x ATR profit
+            double profit_atr = (current_atr > 0.0) ? ((profit_pts * _Point) / current_atr) : 0.0;
+            double scale = 1.0 - MathMin(0.5, profit_atr * 0.15); // Shrinks trailing distance as profit climbs
+            double adaptive_trail_mult = m_atr_trail_mult * scale;
+
+            double atr_dist = current_atr * adaptive_trail_mult;
             double new_sl = (pos_type == POSITION_TYPE_BUY) ? (cur_price - atr_dist) : (cur_price + atr_dist);
             bool should_trail = false;
 
@@ -888,7 +996,11 @@ int OnInit()
    g_exit_engine.Init(&g_trade_engine, InpATRTrailMultiplier, InpBreakEvenTriggerPts, InpBreakEvenBufferPts,
                       InpPartialClosePct, InpPartialCloseRR, InpMomentumExitRatio, InpMaxHoldMinutes);
 
+   // Expansion handle lifecycle
+   g_expansion_engine.Init(_Symbol, InpTimeframe, InpATRPeriod);
+
    g_active_setup.Type = SETUP_NONE;
+   g_active_setup.State = STATE_IDLE;
 
    return(INIT_SUCCEEDED);
 }
@@ -898,6 +1010,7 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+   g_expansion_engine.Deinit();
    Print("[VER EA] Deinitialized. Reason code: ", reason);
 }
 
@@ -906,22 +1019,26 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   // 1. Refresh live ticks cache
+   // 1. Obtain current volatility ATR for normalized speed scaling
+   double current_atr = g_expansion_engine.GetLiveATR();
+   if(current_atr <= 0.0) current_atr = _Point * 100.0;
+
+   // 2. Refresh live ticks cache
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick)) return;
-   g_tick_engine.AddTick(tick);
+   g_tick_engine.AddTick(tick, current_atr);
 
-   // 2. Perform daily reset and checks inside risk engine
+   // 3. Perform daily reset and checks inside risk engine
    g_risk_engine.DailyResetCheck();
 
-   // 3. Close positions if risk limits are breached (Emergency Exit)
+   // 4. Close positions if risk limits are breached (Emergency Exit)
    if(!g_risk_engine.IsTradingAllowed())
    {
       g_exit_engine.CloseAllPositions("Daily Risk / Trade limits violated.");
       return;
    }
 
-   // 4. Track candle bar transitions
+   // 5. Track candle bar transitions
    datetime current_bar_time = 0;
    MqlRates rates[];
    if(CopyRates(_Symbol, InpTimeframe, 0, 1, rates) > 0)
@@ -936,13 +1053,12 @@ void OnTick()
       g_last_bar_time = current_bar_time;
    }
 
-   // 5. Exits management
-   double current_atr = 0.0;
+   // 6. Exits management
    double current_range = 0.0;
    double expansion_score = 0.0;
 
-   // Pre-calculate ATR for exiting trailing mechanics
-   g_expansion_engine.CalculateExpansion(_Symbol, InpTimeframe, InpATRPeriod, InpExpansionMultiplier, current_range, current_atr, expansion_score);
+   // Calculate live expansion metrics
+   g_expansion_engine.CalculateExpansion(_Symbol, InpTimeframe, InpExpansionMultiplier, current_range, current_atr, expansion_score);
 
    double avg_speed = 0.0;
    double cur_speed = 0.0;
@@ -952,7 +1068,7 @@ void OnTick()
 
    g_exit_engine.ManageExits(current_atr, velocity_ratio);
 
-   // 6. Check if we already have an open position (One Position At A Time rule)
+   // 7. Check if we already have an open position (One Position At A Time rule)
    int open_positions = 0;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
@@ -964,36 +1080,39 @@ void OnTick()
    }
    if(open_positions > 0)
    {
-      // Already holding, reset active setup to prevent stale executions
+      // Already holding, reset active setup to IDLE
       g_active_setup.Type = SETUP_NONE;
+      g_active_setup.State = STATE_IDLE;
       return;
    }
 
-   // 7. Session Filter Check
+   // 8. Session Filter Check
    if(!CUtils::IsInSession())
    {
       g_active_setup.Type = SETUP_NONE;
+      g_active_setup.State = STATE_IDLE;
       return;
    }
 
-   // 8. Strategy Signal & Entry Execution
+   // 9. State Machine Evaluation for Signals and Entry Execution
 
-   // If a new bar opens, check for Setup Expiry or Evaluate New Reversals
+   // Handle new bar setups registration
    if(is_new_bar)
    {
-      // If we had an active breakout setup from the previous bar, check if it expired
-      if(g_active_setup.Type != SETUP_NONE)
+      // Setup expiry verification
+      if(g_active_setup.Type != SETUP_NONE && g_active_setup.State == STATE_PENDING_BREAKOUT)
       {
          int current_bars_total = iBars(_Symbol, InpTimeframe);
          if(current_bars_total - g_active_setup.SetupBarIndex > InpSetupExpiryBars)
          {
             Print("[VER EA] Active setup expired without breakout confirmation.");
             g_active_setup.Type = SETUP_NONE;
+            g_active_setup.State = STATE_IDLE;
          }
       }
 
-      // Look for a new reversal setup on the completed bar (index 1)
-      bool expansion_valid = g_expansion_engine.CalculateExpansion(_Symbol, InpTimeframe, InpATRPeriod, InpExpansionMultiplier, current_range, current_atr, expansion_score);
+      // Look for new signals on completed bar (index 1)
+      bool expansion_valid = g_expansion_engine.CalculateExpansion(_Symbol, InpTimeframe, InpExpansionMultiplier, current_range, current_atr, expansion_score);
 
       double swing_high = 0.0;
       double swing_low = 0.0;
@@ -1004,7 +1123,6 @@ void OnTick()
       bool exhaustion_valid = g_exhaustion_engine.AnalyzeExhaustion(_Symbol, InpTimeframe, InpMinCandlePoints, InpMinWickPct, InpMaxBodyPct,
                                                                   bull_ex, bear_ex, body_p, u_wick_p, l_wick_p, close_pos_p);
 
-      // Check liquidity sweep conditions on the completed bar (index 1)
       MqlRates completed_rates[];
       if(CopyRates(_Symbol, InpTimeframe, 1, 1, completed_rates) > 0 && swing_valid && expansion_valid && exhaustion_valid)
       {
@@ -1016,73 +1134,91 @@ void OnTick()
          if(bull_ex && comp_low < swing_low && comp_close > swing_low)
          {
             g_active_setup.Type = SETUP_BUY;
+            g_active_setup.State = STATE_PENDING_BREAKOUT;
             g_active_setup.SignalHigh = comp_high;
             g_active_setup.SignalLow = comp_low;
             g_active_setup.SetupTime = TimeCurrent();
             g_active_setup.SetupBarIndex = iBars(_Symbol, InpTimeframe);
 
             // Define Stop Loss and Take Profit
-            double sl_dist_pts = 0.0;
             if(InpSLMode == SL_SWING)
                g_active_setup.StopLoss = swing_low - InpSLSwingPaddingPts * _Point;
             else
                g_active_setup.StopLoss = comp_close - current_atr * InpSLATRMultiplier;
 
-            sl_dist_pts = MathAbs(comp_close - g_active_setup.StopLoss) / _Point;
             g_active_setup.TakeProfit = comp_close + current_atr * InpTPATRMultiplier;
             g_active_setup.TriggerPrice = comp_high + InpEntryBufferPoints * _Point;
 
-            PrintFormat("[VER EA] BUY Setup Registered. Trigger Price: %f, SL: %f, TP: %f", g_active_setup.TriggerPrice, g_active_setup.StopLoss, g_active_setup.TakeProfit);
+            PrintFormat("[VER EA] BUY Setup Registered in STATE_PENDING_BREAKOUT. Trigger Price: %f, SL: %f, TP: %f", g_active_setup.TriggerPrice, g_active_setup.StopLoss, g_active_setup.TakeProfit);
          }
 
          // SELL Reversal Setup Requirements
          if(bear_ex && comp_high > swing_high && comp_close < swing_high)
          {
             g_active_setup.Type = SETUP_SELL;
+            g_active_setup.State = STATE_PENDING_BREAKOUT;
             g_active_setup.SignalHigh = comp_high;
             g_active_setup.SignalLow = comp_low;
             g_active_setup.SetupTime = TimeCurrent();
             g_active_setup.SetupBarIndex = iBars(_Symbol, InpTimeframe);
 
-            double sl_dist_pts = 0.0;
             if(InpSLMode == SL_SWING)
                g_active_setup.StopLoss = swing_high + InpSLSwingPaddingPts * _Point;
             else
                g_active_setup.StopLoss = comp_close + current_atr * InpSLATRMultiplier;
 
-            sl_dist_pts = MathAbs(g_active_setup.StopLoss - comp_close) / _Point;
             g_active_setup.TakeProfit = comp_close - current_atr * InpTPATRMultiplier;
             g_active_setup.TriggerPrice = comp_low - InpEntryBufferPoints * _Point;
 
-            PrintFormat("[VER EA] SELL Setup Registered. Trigger Price: %f, SL: %f, TP: %f", g_active_setup.TriggerPrice, g_active_setup.StopLoss, g_active_setup.TakeProfit);
+            PrintFormat("[VER EA] SELL Setup Registered in STATE_PENDING_BREAKOUT. Trigger Price: %f, SL: %f, TP: %f", g_active_setup.TriggerPrice, g_active_setup.StopLoss, g_active_setup.TakeProfit);
          }
       }
    }
 
-   // 9. Process Execution and Velocity Check
+   // State Machine Execution: Waiting for breakout confirmation and tick speed triggers across separate ticks
    if(g_active_setup.Type != SETUP_NONE)
    {
-      // Check velocity engine trigger
-      bool velocity_trigger = (velocity_ratio >= InpVelocityMultiplier);
+      double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+      double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
-      if(velocity_trigger)
+      // Step A: Evaluate breakout confirmation state independently of velocity trigger
+      if(g_active_setup.State == STATE_PENDING_BREAKOUT)
       {
-         // Validate spread filter
-         if(!g_trade_engine.CheckSpread()) return;
+         bool breakout_confirmed = false;
 
-         double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
-         double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-
-         // ENTRY EXECUTION
          if(g_active_setup.Type == SETUP_BUY)
          {
-            bool trigger_condition = false;
             if(InpEntryMode == ENTRY_IMMEDIATE)
-               trigger_condition = true;
+               breakout_confirmed = true;
             else if(InpEntryMode == ENTRY_BREAKOUT && ask >= g_active_setup.TriggerPrice)
-               trigger_condition = true;
+               breakout_confirmed = true;
+         }
+         else if(g_active_setup.Type == SETUP_SELL)
+         {
+            if(InpEntryMode == ENTRY_IMMEDIATE)
+               breakout_confirmed = true;
+            else if(InpEntryMode == ENTRY_BREAKOUT && bid <= g_active_setup.TriggerPrice)
+               breakout_confirmed = true;
+         }
 
-            if(trigger_condition)
+         if(breakout_confirmed)
+         {
+            g_active_setup.State = STATE_BREAKOUT_DETECTED;
+            PrintFormat("[VER EA] Breakout confirmed! State transitioned to STATE_BREAKOUT_DETECTED. Waiting for velocity burst.");
+         }
+      }
+
+      // Step B: Trigger trade when velocity burst meets requirements in breakout-detected state
+      if(g_active_setup.State == STATE_BREAKOUT_DETECTED)
+      {
+         bool velocity_trigger = (velocity_ratio >= InpVelocityMultiplier);
+
+         if(velocity_trigger)
+         {
+            // Validate spread filter
+            if(!g_trade_engine.CheckSpread()) return;
+
+            if(g_active_setup.Type == SETUP_BUY)
             {
                double sl_dist = MathAbs(ask - g_active_setup.StopLoss) / _Point;
                double volume = g_risk_engine.CalculateLotSize(sl_dist);
@@ -1090,18 +1226,10 @@ void OnTick()
                if(g_trade_engine.ExecuteMarketOrder(ORDER_TYPE_BUY, volume, ask, g_active_setup.StopLoss, g_active_setup.TakeProfit, "VER Buy Entry"))
                {
                   g_active_setup.Type = SETUP_NONE;
+                  g_active_setup.State = STATE_IDLE;
                }
             }
-         }
-         else if(g_active_setup.Type == SETUP_SELL)
-         {
-            bool trigger_condition = false;
-            if(InpEntryMode == ENTRY_IMMEDIATE)
-               trigger_condition = true;
-            else if(InpEntryMode == ENTRY_BREAKOUT && bid <= g_active_setup.TriggerPrice)
-               trigger_condition = true;
-
-            if(trigger_condition)
+            else if(g_active_setup.Type == SETUP_SELL)
             {
                double sl_dist = MathAbs(g_active_setup.StopLoss - bid) / _Point;
                double volume = g_risk_engine.CalculateLotSize(sl_dist);
@@ -1109,6 +1237,7 @@ void OnTick()
                if(g_trade_engine.ExecuteMarketOrder(ORDER_TYPE_SELL, volume, bid, g_active_setup.StopLoss, g_active_setup.TakeProfit, "VER Sell Entry"))
                {
                   g_active_setup.Type = SETUP_NONE;
+                  g_active_setup.State = STATE_IDLE;
                }
             }
          }
