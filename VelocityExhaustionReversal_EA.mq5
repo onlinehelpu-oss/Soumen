@@ -9,7 +9,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Quant Developer"
 #property link      "https://www.mql5.com"
-#property version   "2.00"
+#property version   "2.10"
 #property strict
 
 // Include standard trade libraries
@@ -62,7 +62,7 @@ input group "---- MODULE 6: EXHAUSTION & STRUCTURAL ----"
 input double InpMinCandlePoints   = 10.0;       // Reject Tiny Candles (Min Points)
 input double InpMinWickPct        = 30.0;       // Minimum Rejection Wick %
 input double InpMaxBodyPct        = 45.0;       // Maximum Candle Body %
-input bool   InpRequireDisplacement=true;       // Require Strong Displacement Candle
+input bool   InpRequireDisplacement=false;      // Require Strong Displacement Candle (false for more trades)
 input double InpMinDisplacementPct=55.0;        // Minimum Body % for Displacement
 
 // --- MODULE 7 & 8: SIGNAL ENGINE & PASSIVE TRADE EXECUTION ---
@@ -1160,6 +1160,7 @@ CExitEngine        g_exit_engine;
 
 SignalSetup        g_active_setup = {0};
 datetime           g_last_bar_time = 0;
+bool               g_velocity_burst_detected = false;
 
 //+------------------------------------------------------------------+
 //|                  EXPERT INITIALIZATION FUNCTION                  |
@@ -1182,6 +1183,7 @@ int OnInit()
 
    g_active_setup.Type = SETUP_NONE;
    g_active_setup.State = STATE_IDLE;
+   g_velocity_burst_detected = false;
 
    return(INIT_SUCCEEDED);
 }
@@ -1245,7 +1247,14 @@ void OnTick()
    double cur_speed = 0.0;
    double velocity_ratio = 1.0;
    double accel_ratio = 1.0;
-   g_velocity_engine.CalculateVelocity(avg_speed, cur_speed, velocity_ratio, accel_ratio);
+   if(g_velocity_engine.CalculateVelocity(avg_speed, cur_speed, velocity_ratio, accel_ratio))
+   {
+      // Track any speed burst spikes during the candle formation period
+      if(velocity_ratio >= InpVelocityMultiplier)
+      {
+         g_velocity_burst_detected = true;
+      }
+   }
 
    g_exit_engine.ManageExits(current_atr, velocity_ratio);
 
@@ -1303,7 +1312,7 @@ void OnTick()
                                                                   bull_ex, bear_ex, body_p, u_wick_p, l_wick_p, close_pos_p);
 
       MqlRates completed_rates[];
-      if(CopyRates(_Symbol, InpTimeframe, 1, 1, completed_rates) > 0 && swing_valid && expansion_valid && exhaustion_valid)
+      if(CopyRates(_Symbol, InpTimeframe, 1, 1, completed_rates) > 0 && swing_valid && expansion_valid && exhaustion_valid && g_velocity_burst_detected)
       {
          double comp_low = completed_rates[0].low;
          double comp_high = completed_rates[0].high;
@@ -1356,15 +1365,17 @@ void OnTick()
             PrintFormat("[VER EA] SELL Setup Registered in STATE_PENDING_BREAKOUT. Trigger Price: %f, SL: %f, TP: %f", g_active_setup.TriggerPrice, g_active_setup.StopLoss, g_active_setup.TakeProfit);
          }
       }
+
+      // Reset the velocity burst record for the new forming candle
+      g_velocity_burst_detected = false;
    }
 
-   // State Machine Execution: Waiting for breakout confirmation and tick speed triggers across separate ticks
+   // State Machine Execution: Waiting for breakout confirmation and executing instantly
    if(g_active_setup.Type != SETUP_NONE)
    {
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
       double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
 
-      // Step A: Evaluate breakout confirmation state independently of velocity trigger
       if(g_active_setup.State == STATE_PENDING_BREAKOUT)
       {
          bool breakout_confirmed = false;
@@ -1385,18 +1396,6 @@ void OnTick()
          }
 
          if(breakout_confirmed)
-         {
-            g_active_setup.State = STATE_BREAKOUT_DETECTED;
-            PrintFormat("[VER EA] Breakout confirmed! State transitioned to STATE_BREAKOUT_DETECTED. Waiting for velocity burst.");
-         }
-      }
-
-      // Step B: Trigger trade when velocity burst meets requirements in breakout-detected state
-      if(g_active_setup.State == STATE_BREAKOUT_DETECTED)
-      {
-         bool velocity_trigger = (velocity_ratio >= InpVelocityMultiplier);
-
-         if(velocity_trigger)
          {
             // Validate spread filter
             if(!g_trade_engine.CheckSpread()) return;
