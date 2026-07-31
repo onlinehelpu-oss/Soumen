@@ -23,7 +23,7 @@
 
 // --- MODULE 1: TRADING SESSIONS ---
 input group "---- MODULE 1: TRADING SESSIONS ----"
-input bool InpUseSessionFilter    = true;       // Enable Session Filter
+input bool InpUseSessionFilter    = false;      // Enable Session Filter
 input int  InpLondonStartHour     = 8;          // London Start Hour (Broker Time)
 input int  InpLondonEndHour       = 16;         // London End Hour (Broker Time)
 input bool InpLondonActive        = true;       // Trade London Session
@@ -39,23 +39,23 @@ input group "---- MODULE 2 & 3: TICK & VELOCITY ----"
 input int    InpTickCacheSize     = 100;        // Rolling Tick Cache Size
 input double InpDensityWindowSec  = 2.0;        // Density Window (Seconds)
 input int    InpVelocityMAPeriod  = 20;         // Velocity MA Lookback Period (Ticks)
-input double InpVelocityMultiplier= 2.5;        // Velocity Trigger Multiplier (Ratio)
+input double InpVelocityMultiplier= 1.5;        // Velocity Trigger Multiplier (Ratio)
 
 // --- MODULE 4: EXPANSION ENGINE ---
 input group "---- MODULE 4: EXPANSION ENGINE ----"
-input ENUM_TIMEFRAMES InpTimeframe= PERIOD_M5;     // Strategy Candle Timeframe
+input ENUM_TIMEFRAMES InpTimeframe= PERIOD_CURRENT; // Strategy Candle Timeframe
 input int    InpATRPeriod         = 14;         // Volatility Lookback Period (Candles)
-input double InpExpansionMultiplier=1.8;        // Volatility Expansion Multiplier
+input double InpExpansionMultiplier=1.1;        // Volatility Expansion Multiplier
 
 // --- MODULE 5: LIQUIDITY SWEEP ---
 input group "---- MODULE 5: LIQUIDITY SWEEP ----"
-input int    InpSwingLookback     = 20;         // Swing High/Low Lookback (Candles)
+input int    InpSwingLookback     = 10;         // Swing High/Low Lookback (Candles)
 
 // --- MODULE 6: EXHAUSTION ENGINE ---
 input group "---- MODULE 6: EXHAUSTION ENGINE ----"
-input double InpMinCandlePoints   = 100.0;      // Reject Tiny Candles (Min Points)
-input double InpMinWickPct        = 50.0;       // Minimum Rejection Wick %
-input double InpMaxBodyPct        = 25.0;       // Maximum Candle Body %
+input double InpMinCandlePoints   = 10.0;       // Reject Tiny Candles (Min Points)
+input double InpMinWickPct        = 35.0;       // Minimum Rejection Wick %
+input double InpMaxBodyPct        = 40.0;       // Maximum Candle Body %
 
 // --- MODULE 7 & 8: SIGNAL & EXECUTION ---
 input group "---- MODULE 7 & 8: SIGNAL & EXECUTION ----"
