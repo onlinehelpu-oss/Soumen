@@ -500,13 +500,13 @@ public:
    {
       ConfigureFilling();
 
-      if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) && !MQLInfoInteger(MQL_TESTER))
+      if(TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) == 0 && MQLInfoInteger(MQL_TESTER) == 0)
       {
          Print("[CTradeEngine] Terminal trade is not allowed!");
          return false;
       }
 
-      if(!MQLInfoInteger(MQL_TRADE_ALLOWED) && !MQLInfoInteger(MQL_TESTER))
+      if(MQLInfoInteger(MQL_TRADE_ALLOWED) == 0 && MQLInfoInteger(MQL_TESTER) == 0)
       {
          Print("[CTradeEngine] MQL trade is not allowed!");
          return false;
@@ -739,7 +739,7 @@ public:
    {
       for(int i = PositionsTotal() - 1; i >= 0; i--)
       {
-         if(!PositionGetSymbol(i)) continue;
+         if(PositionGetSymbol(i) == "") continue;
          if(PositionGetString(POSITION_SYMBOL) != _Symbol || PositionGetInteger(POSITION_MAGIC) != InpMagicNumber)
             continue;
 
@@ -845,7 +845,7 @@ public:
    {
       for(int i = PositionsTotal() - 1; i >= 0; i--)
       {
-         if(!PositionGetSymbol(i)) continue;
+         if(PositionGetSymbol(i) == "") continue;
          if(PositionGetString(POSITION_SYMBOL) != _Symbol || PositionGetInteger(POSITION_MAGIC) != InpMagicNumber)
             continue;
 
@@ -956,7 +956,7 @@ void OnTick()
    int open_positions = 0;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      if(!PositionGetSymbol(i)) continue;
+      if(PositionGetSymbol(i) == "") continue;
       if(PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
       {
          open_positions++;
