@@ -9,7 +9,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Quant Developer"
 #property link      "https://www.mql5.com"
-#property version   "3.00"
+#property version   "3.10"
 #property strict
 
 // Include standard trade libraries
@@ -61,7 +61,7 @@ input double InpMinCandlePoints   = 10.0;       // Reject Tiny Candles (Min Poin
 input double InpMinWickPct        = 30.0;       // Minimum Rejection Wick %
 input double InpMaxBodyPct        = 45.0;       // Maximum Candle Body %
 input double InpMinDisplacementPct=55.0;        // Minimum Body % for Displacement
-input double InpMinSignalScore    = 60.0;       // Minimum Confidence Score to Execute (0-100)
+input double InpMinSignalScore    = 50.0;       // Minimum Confidence Score to Execute (0-100)
 
 // --- EXECUTION ENGINE ---
 input group "---- EXECUTION ENGINE ----"
@@ -91,11 +91,11 @@ enum ERiskMode
    RISK_DRAWDOWN_KELLY   // Drawdown Streak-Adjusted Kelly
 };
 input ERiskMode InpRiskMode        = RISK_PERCENT; // Lot Sizing Mode
-input double InpFixedLotSize      = 0.1;        // Fixed Lot Size (if RISK_FIXED_LOT)
-input double InpRiskPercent       = 1.0;        // Risk Percentage
+input double InpFixedLotSize      = 0.01;       // Fixed Lot Size (if RISK_FIXED_LOT)
+input double InpRiskPercent       = 1.0;        // Risk Percentage (1% is standard safe retail/pro risk)
 input double InpKellyWinRate      = 0.55;       // Estimated Strategy Win-Rate for Kelly
 input double InpKellyPayoffRatio  = 2.0;        // Estimated Payoff Ratio (Average Win / Average Loss)
-input double InpKellyFraction     = 0.25;       // Fractional Kelly Sizing Multiplier
+input double InpKellyFraction     = 0.10;       // Fractional Kelly Sizing Multiplier (safe 10% fraction)
 enum EStopLossMode
 {
    SL_ATR,   // Stop Loss based on ATR
@@ -1209,7 +1209,7 @@ bool               g_velocity_burst_detected = false;
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   CLogger::Info("Initializing VER Pro v3.00...");
+   CLogger::Info("Initializing VER Pro v3.10...");
 
    g_tick_engine.Init(InpTickCacheSize, InpDensityWindowSec);
    g_velocity_engine.Init(&g_tick_engine, InpVelocityMAPeriod);
@@ -1227,7 +1227,7 @@ int OnInit()
    g_active_setup.State = STATE_IDLE;
    g_velocity_burst_detected = false;
 
-   CLogger::Info("VER Pro v3.00 Initialized Successfully.");
+   CLogger::Info("VER Pro v3.10 Initialized Successfully.");
    return(INIT_SUCCEEDED);
 }
 
@@ -1238,7 +1238,7 @@ void OnDeinit(const int reason)
 {
    g_expansion_engine.Deinit();
    CDashboard::Destroy();
-   CLogger::Info(StringFormat("VER Pro v3.00 Deinitialized. Reason code: %d", reason));
+   CLogger::Info(StringFormat("VER Pro v3.10 Deinitialized. Reason code: %d", reason));
 }
 
 //+------------------------------------------------------------------+
@@ -1246,21 +1246,26 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
+   // 1. Obtain current volatility ATR for normalized speed scaling
    double current_atr = g_expansion_engine.GetLiveATR();
    if(current_atr <= 0.0) current_atr = _Point * 100.0;
 
+   // 2. Refresh live ticks cache
    MqlTick tick;
    if(!SymbolInfoTick(_Symbol, tick)) return;
    g_tick_engine.AddTick(tick, current_atr);
 
+   // 3. Perform daily reset and checks inside risk engine
    g_risk_engine.DailyResetCheck();
 
+   // 4. Close positions if risk limits are breached (Emergency Exit)
    if(!g_risk_engine.IsTradingAllowed())
    {
       g_exit_engine.CloseAllPositions("Daily Risk / Trade limits violated.");
       return;
    }
 
+   // 5. Track candle bar transitions
    datetime current_bar_time = 0;
    MqlRates rates[];
    if(CopyRates(_Symbol, InpTimeframe, 0, 1, rates) > 0)
@@ -1275,9 +1280,11 @@ void OnTick()
       g_last_bar_time = current_bar_time;
    }
 
+   // 6. Exits management
    double current_range = 0.0;
    double expansion_score = 0.0;
 
+   // Calculate live expansion metrics
    g_expansion_engine.CalculateExpansion(_Symbol, InpTimeframe, InpExpansionMultiplier, current_range, current_atr, expansion_score);
 
    double avg_speed = 0.0;
@@ -1286,6 +1293,7 @@ void OnTick()
    double accel_ratio = 1.0;
    if(g_velocity_engine.CalculateVelocity(avg_speed, cur_speed, velocity_ratio, accel_ratio))
    {
+      // Track any speed burst spikes during the candle formation period
       if(velocity_ratio >= InpVelocityMultiplier)
       {
          g_velocity_burst_detected = true;
@@ -1297,6 +1305,7 @@ void OnTick()
    // Refresh visual stats Dashboard
    CDashboard::Draw(g_tick_engine.GetTicksCount(), cur_speed, avg_speed, velocity_ratio * 100.0);
 
+   // 7. Check if we already have an open position (One Position At A Time rule)
    int open_positions = 0;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
@@ -1313,6 +1322,7 @@ void OnTick()
       return;
    }
 
+   // 8. Session Filter Check
    if(!CSymbolTime::IsInSession())
    {
       g_active_setup.Type = SETUP_NONE;
@@ -1320,8 +1330,12 @@ void OnTick()
       return;
    }
 
+   // 9. State Machine Evaluation for Signals and Entry Execution
+
+   // Handle new bar setups registration
    if(is_new_bar)
    {
+      // Setup expiry verification
       if(g_active_setup.Type != SETUP_NONE && g_active_setup.State == STATE_PENDING_BREAKOUT)
       {
          int current_bars_total = iBars(_Symbol, InpTimeframe);
@@ -1332,6 +1346,7 @@ void OnTick()
          }
       }
 
+      // Look for new signals on completed bar (index 1)
       bool expansion_valid = g_expansion_engine.CalculateExpansion(_Symbol, InpTimeframe, InpExpansionMultiplier, current_range, current_atr, expansion_score);
 
       double swing_high = 0.0;
@@ -1350,6 +1365,7 @@ void OnTick()
          double comp_high = completed_rates[0].high;
          double comp_close = completed_rates[0].close;
 
+         // Sweep buffers with EQH / EQL identification filters
          double sweep_low_threshold = swing_low + InpSweepBufferPoints * _Point;
          double sweep_high_threshold = swing_high - InpSweepBufferPoints * _Point;
 
@@ -1373,15 +1389,19 @@ void OnTick()
                g_active_setup.SetupTime = TimeCurrent();
                g_active_setup.SetupBarIndex = iBars(_Symbol, InpTimeframe);
 
+               // BREAKOUT TARGET ENTRY price is actual breakout point
+               g_active_setup.TriggerPrice = comp_high + InpEntryBufferPoints * _Point;
+
+               // Define Stop Loss and Take Profit RELATIVE TO THE ACTUAL EXPECTED ENTRY PRICE
                if(InpSLMode == SL_SWING)
                   g_active_setup.StopLoss = swing_low - InpSLSwingPaddingPts * _Point;
                else
-                  g_active_setup.StopLoss = comp_close - current_atr * InpSLATRMultiplier;
+                  g_active_setup.StopLoss = g_active_setup.TriggerPrice - current_atr * InpSLATRMultiplier;
 
-               g_active_setup.TakeProfit = comp_close + current_atr * InpTPATRMultiplier;
-               g_active_setup.TriggerPrice = comp_high + InpEntryBufferPoints * _Point;
+               g_active_setup.TakeProfit = g_active_setup.TriggerPrice + current_atr * InpTPATRMultiplier;
 
-               CLogger::Info(StringFormat("BUY Setup Registered. Confidence Score: %.1f, Trigger Price: %f", confidence_score, g_active_setup.TriggerPrice));
+               CLogger::Info(StringFormat("BUY Setup Registered. Confidence Score: %.1f, Trigger Price: %f, SL: %f, TP: %f",
+                             confidence_score, g_active_setup.TriggerPrice, g_active_setup.StopLoss, g_active_setup.TakeProfit));
             }
 
             // SELL Reversal Setup Requirements
@@ -1394,22 +1414,28 @@ void OnTick()
                g_active_setup.SetupTime = TimeCurrent();
                g_active_setup.SetupBarIndex = iBars(_Symbol, InpTimeframe);
 
+               // BREAKOUT TARGET ENTRY price is actual breakout point
+               g_active_setup.TriggerPrice = comp_low - InpEntryBufferPoints * _Point;
+
+               // Define Stop Loss and Take Profit RELATIVE TO THE ACTUAL EXPECTED ENTRY PRICE
                if(InpSLMode == SL_SWING)
                   g_active_setup.StopLoss = swing_high + InpSLSwingPaddingPts * _Point;
                else
-                  g_active_setup.StopLoss = comp_close + current_atr * InpSLATRMultiplier;
+                  g_active_setup.StopLoss = g_active_setup.TriggerPrice + current_atr * InpSLATRMultiplier;
 
-               g_active_setup.TakeProfit = comp_close - current_atr * InpTPATRMultiplier;
-               g_active_setup.TriggerPrice = comp_low - InpEntryBufferPoints * _Point;
+               g_active_setup.TakeProfit = g_active_setup.TriggerPrice - current_atr * InpTPATRMultiplier;
 
-               CLogger::Info(StringFormat("SELL Setup Registered. Confidence Score: %.1f, Trigger Price: %f", confidence_score, g_active_setup.TriggerPrice));
+               CLogger::Info(StringFormat("SELL Setup Registered. Confidence Score: %.1f, Trigger Price: %f, SL: %f, TP: %f",
+                             confidence_score, g_active_setup.TriggerPrice, g_active_setup.StopLoss, g_active_setup.TakeProfit));
             }
          }
       }
 
+      // Reset the velocity burst record for the new forming candle
       g_velocity_burst_detected = false;
    }
 
+   // State Machine Execution: Waiting for breakout confirmation and executing instantly
    if(g_active_setup.Type != SETUP_NONE)
    {
       double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
@@ -1445,6 +1471,7 @@ void OnTick()
 
                if(InpEntryMode == ENTRY_PASSIVE_LIMIT)
                {
+                  // Passive execution limit placement at optimized bid price to minimize market impact
                   double entry_lim = SymbolInfoDouble(_Symbol, SYMBOL_BID);
                   if(g_trade_engine.ExecuteLimitOrder(ORDER_TYPE_BUY, volume, entry_lim, g_active_setup.StopLoss, g_active_setup.TakeProfit, "VER Passive Buy Limit"))
                   {
