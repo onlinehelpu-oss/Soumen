@@ -5,11 +5,12 @@
 //|                                                                  |
 //| An Expert Advisor implementing VWAP and Liquidity Swings         |
 //| strategy on MT5, utilizing high-performance iCustom indicator     |
-//| caching and robust next-candle breakout rules.                    |
+//| caching, robust next-candle breakout, and dynamic on-chart       |
+//| plotting of VWAP, EMA, and Liquidity Swings.                      |
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      "https://www.mql5.com"
-#property version   "1.02"
+#property version   "1.03"
 
 //--- tell strategy tester to bundle and load custom indicators
 #property tester_indicator "VWAP_Ind.ex5"
@@ -46,7 +47,7 @@ input double InpFallbackRR = 2.0;                            // Fallback Risk:Re
 input group "=== Risk & Trade Management ==="
 input double InpLotSize = 0.1;                               // Trade Lot Size
 input ulong InpMagicNumber = 887766;                         // Magic Number
-input bool InpPlotOnChart = true;                            // Plot VWAP & Swings on Chart
+input bool InpPlotOnChart = true;                            // Plot VWAP, EMA & Swings on Chart
 
 //--- global state
 CTrade m_trade;
@@ -113,13 +114,6 @@ int OnInit()
       return(INIT_FAILED);
    }
 
-   // Attach indicators directly to the chart window for standard non-lagging plotting
-   if(InpPlotOnChart && (!MQLInfoInteger(MQL_TESTER) || (MQLInfoInteger(MQL_TESTER) && MQLInfoInteger(MQL_VISUAL_MODE))))
-   {
-      ChartIndicatorAdd(0, 0, m_vwap_handle);
-      ChartIndicatorAdd(0, 0, m_swings_handle);
-   }
-
    Print("[+] Expert Advisor initialized successfully.");
    return(INIT_SUCCEEDED);
 }
@@ -134,8 +128,14 @@ void OnDeinit(const int reason)
    if(m_vwap_handle != INVALID_HANDLE) IndicatorRelease(m_vwap_handle);
    if(m_swings_handle != INVALID_HANDLE) IndicatorRelease(m_swings_handle);
 
-   // Remove drawn lines
-   ObjectsDeleteAll(0, "EA_ActiveSetup_");
+   // Clean up any drawn graphical objects
+   if(InpPlotOnChart)
+   {
+      ObjectsDeleteAll(0, "EA_VWAP_");
+      ObjectsDeleteAll(0, "EA_EMA_");
+      ObjectsDeleteAll(0, "EA_Swing_");
+      ObjectsDeleteAll(0, "EA_ActiveSetup_");
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -161,7 +161,6 @@ double FindPreviousSwingLowFromIndicator()
    if(copied <= 0) return 0.0;
 
    // MT5's CopyBuffer copies chronological values where swing_lows[copied - 1] is current bar.
-   // Search backwards from the newest confirmed bar.
    int start_idx = copied - 1 - InpPivotLookback;
    if(start_idx < 0) start_idx = copied - 1;
 
@@ -223,12 +222,109 @@ void AdjustSLTP(double entry, double &sl, double &tp)
 }
 
 //+------------------------------------------------------------------+
-//| Plot active setup line if any                                    |
+//| Dynamic on-chart plotting of indicators & Swings                 |
 //+------------------------------------------------------------------+
-void PlotActiveSetup()
+void PlotIndicatorsOnChart()
 {
+   // Check if plotting is enabled and skip in non-visual mode to prevent tester lag
    if(!InpPlotOnChart || (MQLInfoInteger(MQL_TESTER) && !MQLInfoInteger(MQL_VISUAL_MODE))) return;
 
+   MqlRates rates[];
+   int copied = CopyRates(_Symbol, InpStrategyTimeframe, 0, 150, rates);
+   if(copied < 2) return;
+
+   // 1. Plot Regime EMA (last 150 bars)
+   double ema_vals[];
+   int ema_copied = CopyBuffer(m_ema_handle, 0, 0, 150, ema_vals);
+   if(ema_copied >= copied)
+   {
+      ObjectsDeleteAll(0, "EA_EMA_");
+      for(int i = 1; i < copied; i++)
+      {
+         datetime t1 = rates[i-1].time;
+         datetime t2 = rates[i].time;
+         double y1 = ema_vals[i-1];
+         double y2 = ema_vals[i];
+
+         if(y1 > 0 && y2 > 0)
+         {
+            string name = "EA_EMA_" + (string)i;
+            if(ObjectCreate(0, name, OBJ_TREND, 0, t1, y1, t2, y2))
+            {
+               ObjectSetInteger(0, name, OBJPROP_COLOR, clrOrange);
+               ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+               ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+               ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+               ObjectSetInteger(0, name, OBJPROP_BACK, true);
+            }
+         }
+      }
+   }
+
+   // 2. Plot VWAP (last 150 bars, matched via closest vwap timeframe)
+   double vwap_vals[];
+   int vwap_copied = CopyBuffer(m_vwap_handle, 0, 0, 150, vwap_vals);
+   if(vwap_copied >= copied)
+   {
+      ObjectsDeleteAll(0, "EA_VWAP_");
+      for(int i = 1; i < copied; i++)
+      {
+         datetime t1 = rates[i-1].time;
+         datetime t2 = rates[i].time;
+         double y1 = vwap_vals[i-1];
+         double y2 = vwap_vals[i];
+
+         if(y1 > 0 && y2 > 0)
+         {
+            string name = "EA_VWAP_" + (string)i;
+            if(ObjectCreate(0, name, OBJ_TREND, 0, t1, y1, t2, y2))
+            {
+               ObjectSetInteger(0, name, OBJPROP_COLOR, clrBlue);
+               ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
+               ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+               ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+               ObjectSetInteger(0, name, OBJPROP_BACK, true);
+            }
+         }
+      }
+   }
+
+   // 3. Plot Liquidity Swings
+   double swing_highs[];
+   double swing_lows[];
+   int swings_copied_h = CopyBuffer(m_swings_handle, 0, 0, 150, swing_highs);
+   int swings_copied_l = CopyBuffer(m_swings_handle, 1, 0, 150, swing_lows);
+
+   if(swings_copied_h >= copied && swings_copied_l >= copied)
+   {
+      ObjectsDeleteAll(0, "EA_Swing_");
+      for(int i = 0; i < copied; i++)
+      {
+         datetime t = rates[i].time;
+         if(swing_highs[i] > 0)
+         {
+            string name = "EA_Swing_High_" + (string)t;
+            if(ObjectCreate(0, name, OBJ_ARROW_DOWN, 0, t, rates[i].high))
+            {
+               ObjectSetInteger(0, name, OBJPROP_COLOR, clrRed);
+               ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);
+               ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+            }
+         }
+         if(swing_lows[i] > 0)
+         {
+            string name = "EA_Swing_Low_" + (string)t;
+            if(ObjectCreate(0, name, OBJ_ARROW_UP, 0, t, rates[i].low))
+            {
+               ObjectSetInteger(0, name, OBJPROP_COLOR, clrTeal);
+               ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);
+               ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+            }
+         }
+      }
+   }
+
+   // 4. Plot Active Setup low and high lines
    ObjectsDeleteAll(0, "EA_ActiveSetup_");
    if(m_setup_active)
    {
@@ -242,6 +338,7 @@ void PlotActiveSetup()
       ObjectSetInteger(0, "EA_ActiveSetup_High", OBJPROP_STYLE, STYLE_DASH);
       ObjectSetInteger(0, "EA_ActiveSetup_High", OBJPROP_SELECTABLE, false);
    }
+
    ChartRedraw(0);
 }
 
@@ -266,7 +363,6 @@ void OnTick()
          {
             Print("[*] Setup expired: Next candle did not break the signal candle low. Discarding setup.");
             m_setup_active = false;
-            PlotActiveSetup();
          }
       }
 
@@ -314,11 +410,12 @@ void OnTick()
                Print("[+] Signal Candle detected at time: ", TimeToString(rates[1].time),
                      " | High: ", high_1, " Low: ", low_1, " EMA: ", ema_1,
                      " | Target previous swing low: ", m_target_price);
-
-               PlotActiveSetup();
             }
          }
       }
+
+      // Update chart drawings on new bar open
+      PlotIndicatorsOnChart();
    }
 
    // Monitor Breakout Entry tick-by-tick
@@ -361,7 +458,7 @@ void OnTick()
                {
                   Print("[+] Trade executed successfully.");
                   m_setup_active = false; // consume setup
-                  PlotActiveSetup();
+                  PlotIndicatorsOnChart();
                }
                else
                {
