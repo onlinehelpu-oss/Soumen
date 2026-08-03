@@ -4,11 +4,16 @@
 //|                                             https://www.mql5.com |
 //|                                                                  |
 //| An Expert Advisor implementing VWAP and Liquidity Swings         |
-//| strategy on MT5, with beautiful high-performance chart plotting. |
+//| strategy on MT5, utilizing high-performance iCustom indicator     |
+//| caching and robust next-candle breakout rules.                    |
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      "https://www.mql5.com"
-#property version   "1.01"
+#property version   "1.02"
+
+//--- tell strategy tester to bundle and load custom indicators
+#property tester_indicator "VWAP_Ind.ex5"
+#property tester_indicator "Liquidity_Swings_Ind.ex5"
 
 #include <Trade\Trade.mqh>
 #include <Trade\SymbolInfo.mqh>
@@ -46,7 +51,12 @@ input bool InpPlotOnChart = true;                            // Plot VWAP & Swin
 //--- global state
 CTrade m_trade;
 CSymbolInfo m_symbol;
+
+// Indicator handles
 int m_ema_handle = INVALID_HANDLE;
+int m_vwap_handle = INVALID_HANDLE;
+int m_swings_handle = INVALID_HANDLE;
+
 datetime m_last_bar_time = 0;
 
 // Setup tracking
@@ -55,10 +65,6 @@ datetime m_setup_time = 0; // open time of the immediate next candle
 double m_signal_low = 0.0;
 double m_signal_high = 0.0;
 double m_target_price = 0.0;
-
-// Cache for optimized VWAP calculations
-datetime m_last_vwap_calc_bar = 0;
-double m_cached_vwap = 0.0;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -91,6 +97,29 @@ int OnInit()
       return(INIT_FAILED);
    }
 
+   // Load VWAP Indicator via iCustom
+   m_vwap_handle = iCustom(_Symbol, InpVWAPTimeframe, "VWAP_Ind", InpAnchorPeriod, PRICE_TYPICAL);
+   if(m_vwap_handle == INVALID_HANDLE)
+   {
+      Print("[-] Failed to load VWAP_Ind custom indicator.");
+      return(INIT_FAILED);
+   }
+
+   // Load Liquidity Swings Indicator via iCustom
+   m_swings_handle = iCustom(_Symbol, InpStrategyTimeframe, "Liquidity_Swings_Ind", InpPivotLookback);
+   if(m_swings_handle == INVALID_HANDLE)
+   {
+      Print("[-] Failed to load Liquidity_Swings_Ind custom indicator.");
+      return(INIT_FAILED);
+   }
+
+   // Attach indicators directly to the chart window for standard non-lagging plotting
+   if(InpPlotOnChart && (!MQLInfoInteger(MQL_TESTER) || (MQLInfoInteger(MQL_TESTER) && MQLInfoInteger(MQL_VISUAL_MODE))))
+   {
+      ChartIndicatorAdd(0, 0, m_vwap_handle);
+      ChartIndicatorAdd(0, 0, m_swings_handle);
+   }
+
    Print("[+] Expert Advisor initialized successfully.");
    return(INIT_SUCCEEDED);
 }
@@ -100,113 +129,47 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   // Clean up any drawn graphical objects
-   if(InpPlotOnChart)
-   {
-      ObjectsDeleteAll(0, "EA_VWAP_");
-      ObjectsDeleteAll(0, "EA_Swing_");
-      ObjectsDeleteAll(0, "EA_ActiveSetup_");
-   }
-   if(m_ema_handle != INVALID_HANDLE)
-   {
-      IndicatorRelease(m_ema_handle);
-   }
+   // Clean up indicator handles
+   if(m_ema_handle != INVALID_HANDLE) IndicatorRelease(m_ema_handle);
+   if(m_vwap_handle != INVALID_HANDLE) IndicatorRelease(m_vwap_handle);
+   if(m_swings_handle != INVALID_HANDLE) IndicatorRelease(m_swings_handle);
+
+   // Remove drawn lines
+   ObjectsDeleteAll(0, "EA_ActiveSetup_");
 }
 
 //+------------------------------------------------------------------+
-//| Helper to detect start of anchor period                          |
+//| Get the current VWAP value from indicator buffer                 |
 //+------------------------------------------------------------------+
-datetime GetAnchorStartTime(datetime current_time, ENUM_ANCHOR_PERIOD anchor)
+double GetCurrentVWAP()
 {
-   MqlDateTime dt;
-   TimeToStruct(current_time, dt);
-
-   if(anchor == ANCHOR_SESSION)
+   double val[];
+   if(CopyBuffer(m_vwap_handle, 0, 0, 1, val) > 0)
    {
-      dt.hour = 0; dt.min = 0; dt.sec = 0;
-      return StructToTime(dt);
+      return val[0];
    }
-   else if(anchor == ANCHOR_WEEK)
-   {
-      dt.hour = 0; dt.min = 0; dt.sec = 0;
-      datetime day_start = StructToTime(dt);
-      int day_offset = (dt.day_of_week == 0) ? 6 : (dt.day_of_week - 1);
-      return day_start - day_offset * 86400;
-   }
-   else if(anchor == ANCHOR_MONTH)
-   {
-      dt.day = 1; dt.hour = 0; dt.min = 0; dt.sec = 0;
-      return StructToTime(dt);
-   }
-   else if(anchor == ANCHOR_YEAR)
-   {
-      dt.mon = 1; dt.day = 1; dt.hour = 0; dt.min = 0; dt.sec = 0;
-      return StructToTime(dt);
-   }
-   return 0;
+   return 0.0;
 }
 
 //+------------------------------------------------------------------+
-//| Calculate VWAP at a specific time internally with caching        |
+//| Find the previous confirmed swing low from indicator buffer      |
 //+------------------------------------------------------------------+
-double CalculateVWAPAtTime(datetime target_time)
+double FindPreviousSwingLowFromIndicator()
 {
-   datetime current_vwap_bar = iTime(_Symbol, InpVWAPTimeframe, 0);
-   if(current_vwap_bar == m_last_vwap_calc_bar && m_cached_vwap > 0)
-   {
-      return m_cached_vwap;
-   }
-
-   datetime start_time = GetAnchorStartTime(target_time, InpAnchorPeriod);
-   MqlRates rates[];
-   int copied = CopyRates(_Symbol, InpVWAPTimeframe, start_time, target_time, rates);
+   double swing_lows[];
+   int copied = CopyBuffer(m_swings_handle, 1, 0, 500, swing_lows);
    if(copied <= 0) return 0.0;
 
-   double sum_pv = 0;
-   double sum_v = 0;
-   for(int i = 0; i < copied; i++)
+   // MT5's CopyBuffer copies chronological values where swing_lows[copied - 1] is current bar.
+   // Search backwards from the newest confirmed bar.
+   int start_idx = copied - 1 - InpPivotLookback;
+   if(start_idx < 0) start_idx = copied - 1;
+
+   for(int i = start_idx; i >= 0; i--)
    {
-      double price = (rates[i].high + rates[i].low + rates[i].close) / 3.0;
-      double vol = (rates[i].real_volume > 0) ? (double)rates[i].real_volume : (double)rates[i].tick_volume;
-      if(vol <= 0) vol = 1.0;
-      sum_pv += price * vol;
-      sum_v += vol;
-   }
-
-   m_cached_vwap = (sum_v > 0) ? (sum_pv / sum_v) : 0.0;
-   m_last_vwap_calc_bar = current_vwap_bar;
-   return m_cached_vwap;
-}
-
-//+------------------------------------------------------------------+
-//| Find the previous confirmed swing low                            |
-//+------------------------------------------------------------------+
-double FindPreviousSwingLow(int lookback)
-{
-   MqlRates rates[];
-   int copied = CopyRates(_Symbol, InpStrategyTimeframe, 0, 500, rates);
-   if(copied < 2 * lookback + 1) return 0.0;
-
-   // Chronological: rates[copied-1] is current bar, rates[0] is oldest.
-   // MT5 index i maps to rates[copied - 1 - i].
-   for(int i = lookback; i < copied - lookback; i++)
-   {
-      int rates_idx = copied - 1 - i;
-      double current_low = rates[rates_idx].low;
-      bool is_pivot = true;
-
-      for(int j = 1; j <= lookback; j++)
+      if(swing_lows[i] > 0.0)
       {
-         if(rates[rates_idx - j].low < current_low || rates[rates_idx + j].low < current_low)
-         {
-            is_pivot = false;
-            break;
-         }
-      }
-
-      if(is_pivot)
-      {
-         return current_low;
+         return swing_lows[i];
       }
    }
    return 0.0;
@@ -260,136 +223,12 @@ void AdjustSLTP(double entry, double &sl, double &tp)
 }
 
 //+------------------------------------------------------------------+
-//| Plot indicator lines and swing markers on chart (High Perf)      |
+//| Plot active setup line if any                                    |
 //+------------------------------------------------------------------+
-void PlotIndicators()
+void PlotActiveSetup()
 {
    if(!InpPlotOnChart || (MQLInfoInteger(MQL_TESTER) && !MQLInfoInteger(MQL_VISUAL_MODE))) return;
 
-   // Optimized single-pass VWAP calculation for plotting
-   MqlRates chart_rates[];
-   int copied = CopyRates(_Symbol, InpStrategyTimeframe, 0, 100, chart_rates);
-   if(copied >= 2)
-   {
-      datetime oldest_time = chart_rates[0].time;
-      datetime start_time = GetAnchorStartTime(oldest_time, InpAnchorPeriod);
-
-      MqlRates vwap_rates[];
-      int vwap_copied = CopyRates(_Symbol, InpVWAPTimeframe, start_time, TimeCurrent(), vwap_rates);
-      if(vwap_copied > 0)
-      {
-         double vwap_values[];
-         ArrayResize(vwap_values, vwap_copied);
-
-         double sum_pv = 0;
-         double sum_v = 0;
-         datetime current_anchor_start = start_time;
-
-         for(int i = 0; i < vwap_copied; i++)
-         {
-            datetime t = vwap_rates[i].time;
-            datetime bar_anchor_start = GetAnchorStartTime(t, InpAnchorPeriod);
-            if(bar_anchor_start != current_anchor_start)
-            {
-               sum_pv = 0;
-               sum_v = 0;
-               current_anchor_start = bar_anchor_start;
-            }
-
-            double price = (vwap_rates[i].high + vwap_rates[i].low + vwap_rates[i].close) / 3.0;
-            double vol = (vwap_rates[i].real_volume > 0) ? (double)vwap_rates[i].real_volume : (double)vwap_rates[i].tick_volume;
-            if(vol <= 0) vol = 1.0;
-
-            sum_pv += price * vol;
-            sum_v += vol;
-            vwap_values[i] = (sum_v > 0) ? (sum_pv / sum_v) : price;
-         }
-
-         double chart_vwap[];
-         ArrayResize(chart_vwap, copied);
-
-         int vwap_idx = 0;
-         for(int i = 0; i < copied; i++)
-         {
-            datetime t = chart_rates[i].time;
-            while(vwap_idx < vwap_copied - 1 && vwap_rates[vwap_idx + 1].time <= t)
-            {
-               vwap_idx++;
-            }
-            chart_vwap[i] = vwap_values[vwap_idx];
-         }
-
-         ObjectsDeleteAll(0, "EA_VWAP_");
-         for(int i = 1; i < copied; i++)
-         {
-            datetime t1 = chart_rates[i-1].time;
-            datetime t2 = chart_rates[i].time;
-            double vwap1 = chart_vwap[i-1];
-            double vwap2 = chart_vwap[i];
-
-            string name = "EA_VWAP_" + (string)i;
-            if(ObjectCreate(0, name, OBJ_TREND, 0, t1, vwap1, t2, vwap2))
-            {
-               ObjectSetInteger(0, name, OBJPROP_COLOR, clrBlue);
-               ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
-               ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
-               ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-               ObjectSetInteger(0, name, OBJPROP_BACK, true);
-            }
-         }
-      }
-   }
-
-   // Plot Swing Highs/Lows markers
-   MqlRates swing_rates[];
-   int swing_copied = CopyRates(_Symbol, InpStrategyTimeframe, 0, 300, swing_rates);
-   if(swing_copied >= 2 * InpPivotLookback + 1)
-   {
-      ObjectsDeleteAll(0, "EA_Swing_");
-      int count_highs = 0;
-      int count_lows = 0;
-
-      for(int i = InpPivotLookback; i < swing_copied - InpPivotLookback; i++)
-      {
-         double current_high = swing_rates[i].high;
-         double current_low  = swing_rates[i].low;
-         bool is_pivot_high  = true;
-         bool is_pivot_low   = true;
-
-         for(int j = 1; j <= InpPivotLookback; j++)
-         {
-            if(swing_rates[i - j].high > current_high || swing_rates[i + j].high > current_high)
-               is_pivot_high = false;
-            if(swing_rates[i - j].low < current_low || swing_rates[i + j].low < current_low)
-               is_pivot_low = false;
-         }
-
-         if(is_pivot_high && count_highs < 15)
-         {
-            string name = "EA_Swing_High_" + (string)swing_rates[i].time;
-            if(ObjectCreate(0, name, OBJ_ARROW_DOWN, 0, swing_rates[i].time, current_high))
-            {
-               ObjectSetInteger(0, name, OBJPROP_COLOR, clrRed);
-               ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);
-               ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-            }
-            count_highs++;
-         }
-         if(is_pivot_low && count_lows < 15)
-         {
-            string name = "EA_Swing_Low_" + (string)swing_rates[i].time;
-            if(ObjectCreate(0, name, OBJ_ARROW_UP, 0, swing_rates[i].time, current_low))
-            {
-               ObjectSetInteger(0, name, OBJPROP_COLOR, clrTeal);
-               ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);
-               ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-            }
-            count_lows++;
-         }
-      }
-   }
-
-   // Plot active setup line if any
    ObjectsDeleteAll(0, "EA_ActiveSetup_");
    if(m_setup_active)
    {
@@ -403,7 +242,6 @@ void PlotIndicators()
       ObjectSetInteger(0, "EA_ActiveSetup_High", OBJPROP_STYLE, STYLE_DASH);
       ObjectSetInteger(0, "EA_ActiveSetup_High", OBJPROP_SELECTABLE, false);
    }
-
    ChartRedraw(0);
 }
 
@@ -416,28 +254,26 @@ void OnTick()
    datetime current_bar_time = iTime(_Symbol, InpStrategyTimeframe, 0);
    if(current_bar_time == 0) return;
 
-   // Refresh dynamic plots and check setups on new bar
+   // New bar processing
    if(current_bar_time != m_last_bar_time)
    {
       m_last_bar_time = current_bar_time;
-      PlotIndicators();
 
       // Manage breakout setup expiration
       if(m_setup_active)
       {
-         // If a new bar opens that is beyond the immediate next candle of our signal candle, we must discard it
          if(current_bar_time > m_setup_time)
          {
-            Print("[*] Setup expired: Next candle did not break the signal candle low. Discarding signal from setup time ", TimeToString(m_setup_time));
+            Print("[*] Setup expired: Next candle did not break the signal candle low. Discarding setup.");
             m_setup_active = false;
+            PlotActiveSetup();
          }
       }
 
       // Check for a new signal candle (this runs once per bar when a new bar has just opened)
-      // For CopyRates of count 3:
-      // rates[2] is the current active bar (index 0)
-      // rates[1] is the last completed bar (index 1 / signal candle)
-      // rates[0] is the bar before that (index 2 / previous candle)
+      // rates[2] is current active bar (Bar 0)
+      // rates[1] is the last completed bar (Bar 1 / Potential Signal Candle)
+      // rates[0] is the bar before that (Bar 2 / Previous Candle)
       MqlRates rates[];
       if(CopyRates(_Symbol, InpStrategyTimeframe, 0, 3, rates) == 3)
       {
@@ -468,18 +304,18 @@ void OnTick()
             {
                // We have a valid signal candle!
                m_setup_active = true;
-               m_setup_time = current_bar_time; // current bar (index 0) is the immediate next candle
+               m_setup_time = current_bar_time; // current bar is the immediate next candle
                m_signal_low = low_1;
                m_signal_high = high_1;
 
-               // Find previous swing low
-               m_target_price = FindPreviousSwingLow(InpPivotLookback);
+               // Find previous swing low from Liquidity Swings indicator buffer
+               m_target_price = FindPreviousSwingLowFromIndicator();
 
                Print("[+] Signal Candle detected at time: ", TimeToString(rates[1].time),
                      " | High: ", high_1, " Low: ", low_1, " EMA: ", ema_1,
                      " | Target previous swing low: ", m_target_price);
 
-               PlotIndicators();
+               PlotActiveSetup();
             }
          }
       }
@@ -496,7 +332,7 @@ void OnTick()
       if(current_bid < entry_level)
       {
          // Double check VWAP filter on configured VWAP Timeframe
-         double vwap_val = CalculateVWAPAtTime(TimeCurrent());
+         double vwap_val = GetCurrentVWAP();
          if(vwap_val > 0)
          {
             if(current_bid < vwap_val)
@@ -525,7 +361,7 @@ void OnTick()
                {
                   Print("[+] Trade executed successfully.");
                   m_setup_active = false; // consume setup
-                  PlotIndicators();
+                  PlotActiveSetup();
                }
                else
                {
@@ -544,7 +380,7 @@ void OnTick()
          }
          else
          {
-            Print("[-] VWAP calculation returned 0. Waiting for data...");
+            // VWAP has not loaded yet, wait for data
          }
       }
    }
