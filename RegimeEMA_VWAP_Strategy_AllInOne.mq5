@@ -549,6 +549,15 @@ bool StopsAreValid(double entryPrice, double slPrice, double tpPrice)
 //+------------------------------------------------------------------+
 int OnInit()
   {
+   //--- Restrict EA exclusively to XAUUSD / GOLD symbols
+   string symbolUpper = _Symbol;
+   StringToUpper(symbolUpper);
+   if(StringFind(symbolUpper, "XAU") < 0 && StringFind(symbolUpper, "GOLD") < 0)
+     {
+      Print("Initialization Failed: This Expert Advisor is optimized and restricted exclusively for XAUUSD (Gold) symbols. Selected symbol: ", _Symbol);
+      return(INIT_FAILED);
+     }
+
    g_emaHandle = iMA(_Symbol, InpTradeTimeframe, InpEMAPeriod, 0, InpEMAMethod, InpEMAPrice);
    if(g_emaHandle == INVALID_HANDLE)
      {
