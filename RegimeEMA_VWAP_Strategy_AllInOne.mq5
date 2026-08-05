@@ -10,13 +10,13 @@
 //|       AND candle closes back BELOW the EMA                        |
 //|     - the signal candle must be RED  (close < open)                |
 //|     - the candle immediately BEFORE it must be GREEN               |
+//|     - the signal candle Close must be BELOW the VWAP computed     |
+//|       on a user-selectable timeframe                              |
 //|   Entry:                                                           |
 //|     - Sell as soon as the very NEXT candle breaks below the        |
 //|       signal candle's Low (checked tick by tick, not on close)     |
 //|     - if that next candle closes without breaking the low, the     |
 //|       signal is discarded                                          |
-//|     - additionally requires price to be BELOW the VWAP computed    |
-//|       on a user-selectable timeframe                               |
 //|   Stop Loss  : the signal candle's High                            |
 //|   Take Profit: the most recent confirmed Swing Low prior to the    |
 //|                signal candle                                       |
@@ -624,7 +624,10 @@ void OnNewBar()
    bool isRedCandle              = (close1 < open1);
    bool prevIsGreenCandle        = (close2 > open2);
 
-   if(touchedOrCrossedAboveEma && closedBelowEma && isRedCandle && prevIsGreenCandle)
+   double vwapVal = GetLiveVWAPValue();
+   bool isBelowVwap              = (close1 < vwapVal);
+
+   if(touchedOrCrossedAboveEma && closedBelowEma && isRedCandle && prevIsGreenCandle && isBelowVwap)
      {
       g_signalBarTime           = time1;
       g_signalHigh               = high1;
@@ -662,14 +665,7 @@ void CheckIntrabarBreak()
    if(bid > g_signalLow)
       return; // low not broken yet - keep waiting within this same candle
 
-   //--- low IS broken. Now also require price to be below VWAP at the SAME moment.
-   //    If VWAP isn't satisfied yet, keep waiting tick-by-tick (still within this
-   //    same candle) instead of throwing the signal away on one snapshot.
-   double vwapVal = GetLiveVWAPValue();
-   if(bid >= vwapVal)
-      return; // break happened, but not below VWAP yet - keep monitoring
-
-   //--- both conditions are true together now: entry is valid. From here on this
+   //--- low IS broken and VWAP filter was already satisfied on the signal candle.
    //    signal gets exactly ONE order attempt so a rejection can't spam OrderSend.
    double tp = GetPreviousSwingLow(g_signalBarTime);
    if(InpRequireSwingTarget && tp <= 0.0)
