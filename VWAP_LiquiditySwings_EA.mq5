@@ -4,13 +4,12 @@
 //|                                             https://www.mql5.com |
 //|                                                                  |
 //| An Expert Advisor implementing VWAP and Liquidity Swings         |
-//| strategy on MT5, utilizing high-performance iCustom indicator     |
-//| caching, robust next-candle breakout, and dynamic on-chart       |
-//| plotting of VWAP, EMA, and Liquidity Swings.                      |
+//| strategy on MT5, with robust breakout entry, dynamic plotting,   |
+//| and cost-to-cost (breakeven) stop loss trailing at 1:1 profit.    |
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      "https://www.mql5.com"
-#property version   "1.03"
+#property version   "1.04"
 
 //--- tell strategy tester to bundle and load custom indicators
 #property tester_indicator "VWAP_Ind.ex5"
@@ -48,6 +47,8 @@ input group "=== Risk & Trade Management ==="
 input double InpLotSize = 0.1;                               // Trade Lot Size
 input ulong InpMagicNumber = 887766;                         // Magic Number
 input bool InpPlotOnChart = true;                            // Plot VWAP, EMA & Swings on Chart
+input bool InpUseBreakEven = true;                           // Move SL to Cost-to-Cost at 1:1
+input double InpBreakEvenRatio = 1.0;                        // Breakeven Risk:Reward Ratio
 
 //--- global state
 CTrade m_trade;
@@ -191,6 +192,52 @@ bool HasOpenPosition()
       }
    }
    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Manage Breakeven (trail stop loss to cost-to-cost at 1:1 profit) |
+//+------------------------------------------------------------------+
+void ManageBreakEven()
+{
+   if(!InpUseBreakEven) return;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0)
+      {
+         if(PositionGetString(POSITION_SYMBOL) == _Symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+         {
+            double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+            double sl = PositionGetDouble(POSITION_SL);
+            double tp = PositionGetDouble(POSITION_TP);
+
+            // This is a Short position
+            if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
+            {
+               // Determine initial risk distance.
+               // For trailing breakeven to work, sl must be greater than open price (un-trailed).
+               if(sl > entry)
+               {
+                  double risk_distance = sl - entry;
+                  double target_trigger = entry - risk_distance * InpBreakEvenRatio;
+                  double current_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+                  // If price goes in favor of trade (below trigger)
+                  if(current_ask <= target_trigger)
+                  {
+                     // Trail stop loss to entry price (cost-to-cost)
+                     Print("[*] 1:1 profit achieved! Trailing Stop Loss to Cost-to-Cost: ", entry);
+                     if(!m_trade.PositionModify(ticket, entry, tp))
+                     {
+                        Print("[-] Failed to trail Stop Loss to cost-to-cost: Error ", m_trade.ResultRetcode());
+                     }
+                  }
+               }
+            }
+         }
+      }
+   }
 }
 
 //+------------------------------------------------------------------+
@@ -350,6 +397,9 @@ void OnTick()
    // Check current bar time on strategy timeframe
    datetime current_bar_time = iTime(_Symbol, InpStrategyTimeframe, 0);
    if(current_bar_time == 0) return;
+
+   // Check and trail active positions to Cost-to-Cost
+   ManageBreakEven();
 
    // New bar processing
    if(current_bar_time != m_last_bar_time)
