@@ -3,17 +3,14 @@
 //|                                                            Jules |
 //|                                             https://www.mql5.com |
 //|                                                                  |
-//| An Expert Advisor implementing VWAP and Liquidity Swings         |
-//| strategy on MT5, with robust breakout entry, dynamic plotting,   |
-//| and cost-to-cost (breakeven) stop loss trailing at 1:1 profit.    |
+//| A completely self-contained Expert Advisor implementing VWAP and |
+//| Liquidity Swings strategy on MT5. No external custom indicator    |
+//| files are required, ensuring instant out-of-the-box execution     |
+//| and plotting in any Strategy Tester or live environment.          |
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      "https://www.mql5.com"
-#property version   "1.04"
-
-//--- tell strategy tester to bundle and load custom indicators
-#property tester_indicator "VWAP_Ind.ex5"
-#property tester_indicator "Liquidity_Swings_Ind.ex5"
+#property version   "1.05"
 
 #include <Trade\Trade.mqh>
 #include <Trade\SymbolInfo.mqh>
@@ -54,11 +51,8 @@ input double InpBreakEvenRatio = 1.0;                        // Breakeven Risk:R
 CTrade m_trade;
 CSymbolInfo m_symbol;
 
-// Indicator handles
+// EMA Handle
 int m_ema_handle = INVALID_HANDLE;
-int m_vwap_handle = INVALID_HANDLE;
-int m_swings_handle = INVALID_HANDLE;
-
 datetime m_last_bar_time = 0;
 
 // Setup tracking
@@ -99,23 +93,7 @@ int OnInit()
       return(INIT_FAILED);
    }
 
-   // Load VWAP Indicator via iCustom
-   m_vwap_handle = iCustom(_Symbol, InpVWAPTimeframe, "VWAP_Ind", InpAnchorPeriod, PRICE_TYPICAL);
-   if(m_vwap_handle == INVALID_HANDLE)
-   {
-      Print("[-] Failed to load VWAP_Ind custom indicator.");
-      return(INIT_FAILED);
-   }
-
-   // Load Liquidity Swings Indicator via iCustom
-   m_swings_handle = iCustom(_Symbol, InpStrategyTimeframe, "Liquidity_Swings_Ind", InpPivotLookback);
-   if(m_swings_handle == INVALID_HANDLE)
-   {
-      Print("[-] Failed to load Liquidity_Swings_Ind custom indicator.");
-      return(INIT_FAILED);
-   }
-
-   Print("[+] Expert Advisor initialized successfully.");
+   Print("[+] Self-Contained Expert Advisor initialized successfully.");
    return(INIT_SUCCEEDED);
 }
 
@@ -124,12 +102,9 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   // Clean up indicator handles
    if(m_ema_handle != INVALID_HANDLE) IndicatorRelease(m_ema_handle);
-   if(m_vwap_handle != INVALID_HANDLE) IndicatorRelease(m_vwap_handle);
-   if(m_swings_handle != INVALID_HANDLE) IndicatorRelease(m_swings_handle);
 
-   // Clean up any drawn graphical objects
+   // Clean up chart drawings
    if(InpPlotOnChart)
    {
       ObjectsDeleteAll(0, "EA_VWAP_");
@@ -140,36 +115,89 @@ void OnDeinit(const int reason)
 }
 
 //+------------------------------------------------------------------+
-//| Get the current VWAP value from indicator buffer                 |
+//| Helper to detect start of anchor period                          |
 //+------------------------------------------------------------------+
-double GetCurrentVWAP()
+datetime GetAnchorStartTime(datetime current_time, ENUM_ANCHOR_PERIOD anchor)
 {
-   double val[];
-   if(CopyBuffer(m_vwap_handle, 0, 0, 1, val) > 0)
+   MqlDateTime dt;
+   TimeToStruct(current_time, dt);
+
+   if(anchor == ANCHOR_SESSION)
    {
-      return val[0];
+      dt.hour = 0; dt.min = 0; dt.sec = 0;
+      return StructToTime(dt);
    }
-   return 0.0;
+   else if(anchor == ANCHOR_WEEK)
+   {
+      dt.hour = 0; dt.min = 0; dt.sec = 0;
+      datetime day_start = StructToTime(dt);
+      int day_offset = (dt.day_of_week == 0) ? 6 : (dt.day_of_week - 1);
+      return day_start - day_offset * 86400;
+   }
+   else if(anchor == ANCHOR_MONTH)
+   {
+      dt.day = 1; dt.hour = 0; dt.min = 0; dt.sec = 0;
+      return StructToTime(dt);
+   }
+   else if(anchor == ANCHOR_YEAR)
+   {
+      dt.mon = 1; dt.day = 1; dt.hour = 0; dt.min = 0; dt.sec = 0;
+      return StructToTime(dt);
+   }
+   return 0;
 }
 
 //+------------------------------------------------------------------+
-//| Find the previous confirmed swing low from indicator buffer      |
+//| Self-Contained VWAP Calculation                                  |
 //+------------------------------------------------------------------+
-double FindPreviousSwingLowFromIndicator()
+double CalculateVWAP(datetime target_time)
 {
-   double swing_lows[];
-   int copied = CopyBuffer(m_swings_handle, 1, 0, 500, swing_lows);
+   datetime start_time = GetAnchorStartTime(target_time, InpAnchorPeriod);
+   MqlRates vwap_rates[];
+   int copied = CopyRates(_Symbol, InpVWAPTimeframe, start_time, target_time, vwap_rates);
    if(copied <= 0) return 0.0;
 
-   // MT5's CopyBuffer copies chronological values where swing_lows[copied - 1] is current bar.
-   int start_idx = copied - 1 - InpPivotLookback;
-   if(start_idx < 0) start_idx = copied - 1;
-
-   for(int i = start_idx; i >= 0; i--)
+   double sum_pv = 0;
+   double sum_v = 0;
+   for(int i = 0; i < copied; i++)
    {
-      if(swing_lows[i] > 0.0)
+      double price = (vwap_rates[i].high + vwap_rates[i].low + vwap_rates[i].close) / 3.0;
+      double vol = (vwap_rates[i].real_volume > 0) ? (double)vwap_rates[i].real_volume : (double)vwap_rates[i].tick_volume;
+      if(vol <= 0) vol = 1.0;
+      sum_pv += price * vol;
+      sum_v += vol;
+   }
+   return (sum_v > 0) ? (sum_pv / sum_v) : 0.0;
+}
+
+//+------------------------------------------------------------------+
+//| Find previous confirmed swing low natively                       |
+//+------------------------------------------------------------------+
+double FindPreviousSwingLow(int lookback)
+{
+   MqlRates swing_rates[];
+   int copied = CopyRates(_Symbol, InpStrategyTimeframe, 0, 300, swing_rates);
+   if(copied < 2 * lookback + 1) return 0.0;
+
+   // Chronological ordering: swing_rates[0] is oldest, swing_rates[copied-1] is current bar.
+   // We search backwards from the latest confirmed pivot candle (copied - 1 - lookback)
+   for(int i = copied - 1 - lookback; i >= lookback; i--)
+   {
+      double current_low = swing_rates[i].low;
+      bool is_pivot = true;
+
+      for(int j = 1; j <= lookback; j++)
       {
-         return swing_lows[i];
+         if(swing_rates[i - j].low < current_low || swing_rates[i + j].low < current_low)
+         {
+            is_pivot = false;
+            break;
+         }
+      }
+
+      if(is_pivot)
+      {
+         return current_low;
       }
    }
    return 0.0;
@@ -215,18 +243,14 @@ void ManageBreakEven()
             // This is a Short position
             if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
             {
-               // Determine initial risk distance.
-               // For trailing breakeven to work, sl must be greater than open price (un-trailed).
                if(sl > entry)
                {
                   double risk_distance = sl - entry;
                   double target_trigger = entry - risk_distance * InpBreakEvenRatio;
                   double current_ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
-                  // If price goes in favor of trade (below trigger)
                   if(current_ask <= target_trigger)
                   {
-                     // Trail stop loss to entry price (cost-to-cost)
                      Print("[*] 1:1 profit achieved! Trailing Stop Loss to Cost-to-Cost: ", entry);
                      if(!m_trade.PositionModify(ticket, entry, tp))
                      {
@@ -269,18 +293,17 @@ void AdjustSLTP(double entry, double &sl, double &tp)
 }
 
 //+------------------------------------------------------------------+
-//| Dynamic on-chart plotting of indicators & Swings                 |
+//| Self-Contained High-Performance On-Chart Plotting                 |
 //+------------------------------------------------------------------+
 void PlotIndicatorsOnChart()
 {
-   // Check if plotting is enabled and skip in non-visual mode to prevent tester lag
    if(!InpPlotOnChart || (MQLInfoInteger(MQL_TESTER) && !MQLInfoInteger(MQL_VISUAL_MODE))) return;
 
    MqlRates rates[];
    int copied = CopyRates(_Symbol, InpStrategyTimeframe, 0, 150, rates);
    if(copied < 2) return;
 
-   // 1. Plot Regime EMA (last 150 bars)
+   // 1. Plot Regime EMA
    double ema_vals[];
    int ema_copied = CopyBuffer(m_ema_handle, 0, 0, 150, ema_vals);
    if(ema_copied >= copied)
@@ -308,65 +331,64 @@ void PlotIndicatorsOnChart()
       }
    }
 
-   // 2. Plot VWAP (last 150 bars, matched via closest vwap timeframe)
-   double vwap_vals[];
-   int vwap_copied = CopyBuffer(m_vwap_handle, 0, 0, 150, vwap_vals);
-   if(vwap_copied >= copied)
+   // 2. Plot self-contained VWAP
+   ObjectsDeleteAll(0, "EA_VWAP_");
+   for(int i = 1; i < copied; i++)
    {
-      ObjectsDeleteAll(0, "EA_VWAP_");
-      for(int i = 1; i < copied; i++)
-      {
-         datetime t1 = rates[i-1].time;
-         datetime t2 = rates[i].time;
-         double y1 = vwap_vals[i-1];
-         double y2 = vwap_vals[i];
+      datetime t1 = rates[i-1].time;
+      datetime t2 = rates[i].time;
+      double y1 = CalculateVWAP(t1);
+      double y2 = CalculateVWAP(t2);
 
-         if(y1 > 0 && y2 > 0)
+      if(y1 > 0 && y2 > 0)
+      {
+         string name = "EA_VWAP_" + (string)i;
+         if(ObjectCreate(0, name, OBJ_TREND, 0, t1, y1, t2, y2))
          {
-            string name = "EA_VWAP_" + (string)i;
-            if(ObjectCreate(0, name, OBJ_TREND, 0, t1, y1, t2, y2))
-            {
-               ObjectSetInteger(0, name, OBJPROP_COLOR, clrBlue);
-               ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
-               ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
-               ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-               ObjectSetInteger(0, name, OBJPROP_BACK, true);
-            }
+            ObjectSetInteger(0, name, OBJPROP_COLOR, clrBlue);
+            ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
+            ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+            ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+            ObjectSetInteger(0, name, OBJPROP_BACK, true);
          }
       }
    }
 
-   // 3. Plot Liquidity Swings
-   double swing_highs[];
-   double swing_lows[];
-   int swings_copied_h = CopyBuffer(m_swings_handle, 0, 0, 150, swing_highs);
-   int swings_copied_l = CopyBuffer(m_swings_handle, 1, 0, 150, swing_lows);
-
-   if(swings_copied_h >= copied && swings_copied_l >= copied)
+   // 3. Plot Liquidity Swings High and Low markers
+   ObjectsDeleteAll(0, "EA_Swing_");
+   for(int i = InpPivotLookback; i < copied - InpPivotLookback; i++)
    {
-      ObjectsDeleteAll(0, "EA_Swing_");
-      for(int i = 0; i < copied; i++)
+      double current_high = rates[i].high;
+      double current_low  = rates[i].low;
+      bool is_pivot_high  = true;
+      bool is_pivot_low   = true;
+
+      for(int j = 1; j <= InpPivotLookback; j++)
       {
-         datetime t = rates[i].time;
-         if(swing_highs[i] > 0)
+         if(rates[i - j].high > current_high || rates[i + j].high > current_high)
+            is_pivot_high = false;
+         if(rates[i - j].low < current_low || rates[i + j].low < current_low)
+            is_pivot_low = false;
+      }
+
+      if(is_pivot_high)
+      {
+         string name = "EA_Swing_High_" + (string)rates[i].time;
+         if(ObjectCreate(0, name, OBJ_ARROW_DOWN, 0, rates[i].time, current_high))
          {
-            string name = "EA_Swing_High_" + (string)t;
-            if(ObjectCreate(0, name, OBJ_ARROW_DOWN, 0, t, rates[i].high))
-            {
-               ObjectSetInteger(0, name, OBJPROP_COLOR, clrRed);
-               ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);
-               ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-            }
+            ObjectSetInteger(0, name, OBJPROP_COLOR, clrRed);
+            ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);
+            ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
          }
-         if(swing_lows[i] > 0)
+      }
+      if(is_pivot_low)
+      {
+         string name = "EA_Swing_Low_" + (string)rates[i].time;
+         if(ObjectCreate(0, name, OBJ_ARROW_UP, 0, rates[i].time, current_low))
          {
-            string name = "EA_Swing_Low_" + (string)t;
-            if(ObjectCreate(0, name, OBJ_ARROW_UP, 0, t, rates[i].low))
-            {
-               ObjectSetInteger(0, name, OBJPROP_COLOR, clrTeal);
-               ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);
-               ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
-            }
+            ObjectSetInteger(0, name, OBJPROP_COLOR, clrTeal);
+            ObjectSetInteger(0, name, OBJPROP_ARROWCODE, 159);
+            ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
          }
       }
    }
@@ -416,10 +438,11 @@ void OnTick()
          }
       }
 
-      // Check for a new signal candle (this runs once per bar when a new bar has just opened)
-      // rates[2] is current active bar (Bar 0)
-      // rates[1] is the last completed bar (Bar 1 / Potential Signal Candle)
-      // rates[0] is the bar before that (Bar 2 / Previous Candle)
+      // Check for a new signal candle (runs once per bar)
+      // CopyRates with count 3:
+      // rates[2] is current incomplete bar (index 0)
+      // rates[1] is the last completed bar (index 1 / signal candle)
+      // rates[0] is the bar before that (index 2 / previous candle)
       MqlRates rates[];
       if(CopyRates(_Symbol, InpStrategyTimeframe, 0, 3, rates) == 3)
       {
@@ -448,14 +471,14 @@ void OnTick()
 
             if(prev_is_green && sig_is_red && touched_or_crossed && closed_below)
             {
-               // We have a valid signal candle!
+               // Valid signal candle!
                m_setup_active = true;
-               m_setup_time = current_bar_time; // current bar is the immediate next candle
+               m_setup_time = current_bar_time; // Bar 0 is the immediate next candle
                m_signal_low = low_1;
                m_signal_high = high_1;
 
-               // Find previous swing low from Liquidity Swings indicator buffer
-               m_target_price = FindPreviousSwingLowFromIndicator();
+               // Find previous swing low
+               m_target_price = FindPreviousSwingLow(InpPivotLookback);
 
                Print("[+] Signal Candle detected at time: ", TimeToString(rates[1].time),
                      " | High: ", high_1, " Low: ", low_1, " EMA: ", ema_1,
@@ -478,8 +501,8 @@ void OnTick()
       double entry_level = m_signal_low - InpEntryBufferPoints * _Point;
       if(current_bid < entry_level)
       {
-         // Double check VWAP filter on configured VWAP Timeframe
-         double vwap_val = GetCurrentVWAP();
+         // Calculate self-contained VWAP
+         double vwap_val = CalculateVWAP(TimeCurrent());
          if(vwap_val > 0)
          {
             if(current_bid < vwap_val)
