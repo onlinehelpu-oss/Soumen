@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Jules"
 #property link      "https://www.mql5.com"
-#property version   "1.04"
+#property version   "1.05"
 #property strict
 
 // Include Trade library
@@ -14,11 +14,11 @@
 //--- Input Parameters ---
 input group "=== STRATEGY SETTINGS ==="
 input ENUM_TIMEFRAMES InpTimeframe            = PERIOD_M5;        // Trade Timeframe
-input bool            InpUseSwingHighFilter   = true;             // Use Swing High Filter (ON/OFF)
-input int             InpSwingLookback        = 14;               // Swing High Lookback (Left Side Pivot)
+input bool            InpUseSwingLowFilter    = true;             // Use Swing Low Filter (ON/OFF)
+input int             InpSwingLookback        = 14;               // Swing Low Lookback (Left Side Pivot)
 input double          InpRiskRewardRatio      = 2.0;              // Risk to Reward Ratio (e.g. 2.0 for 1:2)
-input double          InpEntryBufferPoints    = 0.0;              // Entry Buffer in Points (Points below Green Low)
-input double          InpSLBufferPoints       = 0.0;              // Stop Loss Buffer in Points (Points above Green High)
+input double          InpEntryBufferPoints    = 0.0;              // Entry Buffer in Points (Points above Red High)
+input double          InpSLBufferPoints       = 0.0;              // Stop Loss Buffer in Points (Points below Red Low)
 input bool            InpUseSpreadSLBuffer    = true;             // Add Live Bid/Ask Spread Gap to SL Buffer (ON/OFF)
 
 input group "=== RISK & TRADE MANAGEMENT ==="
@@ -42,7 +42,7 @@ double   m_sl_level              = 0.0;
 //--- Functions Forward Declarations ---
 bool     IsValidSymbol(string symbol);
 void     SetTradeFillingMode(CTrade &trade, string symbol);
-bool     IsSwingHigh(string symbol, ENUM_TIMEFRAMES tf, int index, int lookback);
+bool     IsSwingLow(string symbol, ENUM_TIMEFRAMES tf, int index, int lookback);
 double   GetOpen(string symbol, ENUM_TIMEFRAMES tf, int index);
 double   GetHigh(string symbol, ENUM_TIMEFRAMES tf, int index);
 double   GetLow(string symbol, ENUM_TIMEFRAMES tf, int index);
@@ -51,7 +51,7 @@ datetime GetTime(string symbol, ENUM_TIMEFRAMES tf, int index);
 string   StringTimeframe(ENUM_TIMEFRAMES tf);
 void     UpdateDashboard();
 int      GetActivePositionsCount();
-void     ExecuteShortEntry(double entryPrice);
+void     ExecuteLongEntry(double entryPrice);
 double   CalculateLotSize(double entryPrice, double slPrice);
 
 //+------------------------------------------------------------------+
@@ -125,12 +125,12 @@ void OnTick()
 
          m_last_checked_bar_time = current_bar_time;
 
-         if(close1 > open1) // Completed candle is Green
+         if(close1 < open1) // Completed candle is Red (Signal Candle)
          {
             bool swing_ok = true;
-            if(InpUseSwingHighFilter)
+            if(InpUseSwingLowFilter)
             {
-               swing_ok = IsSwingHigh(_Symbol, InpTimeframe, 1, InpSwingLookback);
+               swing_ok = IsSwingLow(_Symbol, InpTimeframe, 1, InpSwingLookback);
             }
 
             if(swing_ok)
@@ -138,17 +138,17 @@ void OnTick()
                double symbol_point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
                m_setup_active = true;
                m_setup_time = GetTime(_Symbol, InpTimeframe, 1);
-               m_breakout_level = GetLow(_Symbol, InpTimeframe, 1) - InpEntryBufferPoints * symbol_point;
-               m_sl_level = GetHigh(_Symbol, InpTimeframe, 1) + InpSLBufferPoints * symbol_point;
+               m_breakout_level = GetHigh(_Symbol, InpTimeframe, 1) + InpEntryBufferPoints * symbol_point;
+               m_sl_level = GetLow(_Symbol, InpTimeframe, 1) - InpSLBufferPoints * symbol_point;
 
                Print("New Valid Setup Spotted!");
                Print("  Signal Time: ", m_setup_time);
-               Print("  Green Low: ", GetLow(_Symbol, InpTimeframe, 1));
-               Print("  Green High (SL): ", GetHigh(_Symbol, InpTimeframe, 1));
+               Print("  Red High: ", GetHigh(_Symbol, InpTimeframe, 1));
+               Print("  Red Low (SL): ", GetLow(_Symbol, InpTimeframe, 1));
                Print("  Breakout Level: ", m_breakout_level);
-               if(InpUseSwingHighFilter)
+               if(InpUseSwingLowFilter)
                {
-                  Print("  Swing High Check: PASSED (Lookback: ", InpSwingLookback, ")");
+                  Print("  Swing Low Check: PASSED (Lookback: ", InpSwingLookback, ")");
                }
             }
          }
@@ -160,12 +160,12 @@ void OnTick()
    {
       if(GetActivePositionsCount() == 0)
       {
-         double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
-         if(bid > 0 && bid <= m_breakout_level)
+         double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         if(ask > 0 && ask >= m_breakout_level)
          {
             // Execute entry and deactivate the setup immediately to prevent duplicate entries
             m_setup_active = false;
-            ExecuteShortEntry(bid);
+            ExecuteLongEntry(ask);
          }
       }
    }
@@ -182,9 +182,9 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
-//| Execute Short Breakout Entry                                     |
+//| Execute Long Breakout Entry                                      |
 //+------------------------------------------------------------------+
-void ExecuteShortEntry(double entryPrice)
+void ExecuteLongEntry(double entryPrice)
 {
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
@@ -197,9 +197,9 @@ void ExecuteShortEntry(double entryPrice)
    }
 
    // Stop Loss level including optional spread gap buffer to prevent premature stops
-   double sl = m_sl_level + spread_buffer;
+   double sl = m_sl_level - spread_buffer;
 
-   double risk = sl - entryPrice;
+   double risk = entryPrice - sl;
    if(risk <= 0)
    {
       Print("Error: Calculated risk is <= 0. SL: ", sl, " | Entry: ", entryPrice);
@@ -207,7 +207,7 @@ void ExecuteShortEntry(double entryPrice)
    }
 
    // Calculate TP based on Risk-to-Reward Ratio
-   double tp = entryPrice - (risk * InpRiskRewardRatio);
+   double tp = entryPrice + (risk * InpRiskRewardRatio);
 
    int symbol_digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    double symbol_point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
@@ -220,15 +220,15 @@ void ExecuteShortEntry(double entryPrice)
    double stopLevelPoints = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
    double minStopDistance = stopLevelPoints * symbol_point;
 
-   if(MathAbs(final_sl - ask) < minStopDistance)
+   if(MathAbs(bid - final_sl) < minStopDistance)
    {
-      final_sl = ask + minStopDistance;
+      final_sl = bid - minStopDistance;
       final_sl = NormalizeDouble(final_sl, symbol_digits);
       Print("Adjusted SL to satisfy stop level constraint: ", final_sl);
    }
-   if(MathAbs(ask - final_tp) < minStopDistance)
+   if(MathAbs(final_tp - bid) < minStopDistance)
    {
-      final_tp = ask - minStopDistance;
+      final_tp = bid + minStopDistance;
       final_tp = NormalizeDouble(final_tp, symbol_digits);
       Print("Adjusted TP to satisfy stop level constraint: ", final_tp);
    }
@@ -244,18 +244,18 @@ void ExecuteShortEntry(double entryPrice)
    // Update Trade filling mode
    SetTradeFillingMode(m_trade, _Symbol);
 
-   Print("Sending Sell Breakout Order...");
+   Print("Sending Buy Breakout Order...");
    Print("  Volume: ", lots);
    Print("  Stop Loss (with Spread Buffer): ", final_sl);
    Print("  Take Profit: ", final_tp);
    Print("  Live Spread Gap Buffer added: ", spread_buffer);
 
    // Using price = 0.0 for market execution is the gold standard for live trading in MQL5 to avoid requotes
-   if(m_trade.Sell(lots, _Symbol, 0.0, final_sl, final_tp, InpTradeComment))
+   if(m_trade.Buy(lots, _Symbol, 0.0, final_sl, final_tp, InpTradeComment))
    {
       if(m_trade.ResultRetcode() == 10009 || m_trade.ResultRetcode() == 10008)
       {
-         Print("Sell Order Successfully Filled! Deal Ticket: ", m_trade.ResultDeal());
+         Print("Buy Order Successfully Filled! Deal Ticket: ", m_trade.ResultDeal());
       }
       else
       {
@@ -264,7 +264,7 @@ void ExecuteShortEntry(double entryPrice)
    }
    else
    {
-      Print("Sell Order Failed! Code: ", m_trade.ResultRetcode(), " | Description: ", m_trade.ResultRetcodeDescription());
+      Print("Buy Order Failed! Code: ", m_trade.ResultRetcode(), " | Description: ", m_trade.ResultRetcodeDescription());
    }
 }
 
@@ -314,7 +314,7 @@ double CalculateLotSize(double entryPrice, double slPrice)
 
    // Margin Validation to avoid Code 10019 (Not enough money)
    double marginRequired = 0;
-   if(OrderCalcMargin(ORDER_TYPE_SELL, _Symbol, lot, entryPrice, marginRequired))
+   if(OrderCalcMargin(ORDER_TYPE_BUY, _Symbol, lot, entryPrice, marginRequired))
    {
       double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
       double maxAllowedMargin = freeMargin * (InpMaxMarginUtilizationPct / 100.0);
@@ -380,21 +380,21 @@ void SetTradeFillingMode(CTrade &trade, string symbol)
 }
 
 //+------------------------------------------------------------------+
-//| Check if signal candle is a Swing High (Left-Side Pivot Lookback) |
+//| Check if signal candle is a Swing Low (Left-Side Pivot Lookback)  |
 //+------------------------------------------------------------------+
-bool IsSwingHigh(string symbol, ENUM_TIMEFRAMES tf, int index, int lookback)
+bool IsSwingLow(string symbol, ENUM_TIMEFRAMES tf, int index, int lookback)
 {
-   double highVal = GetHigh(symbol, tf, index);
-   if(highVal <= 0) return false;
+   double lowVal = GetLow(symbol, tf, index);
+   if(lowVal <= 0) return false;
 
-   double highs[];
-   ArraySetAsSeries(highs, true);
-   int copied = CopyHigh(symbol, tf, index + 1, lookback, highs);
+   double lows[];
+   ArraySetAsSeries(lows, true);
+   int copied = CopyLow(symbol, tf, index + 1, lookback, lows);
    if(copied < lookback) return false; // Not enough history synchronized yet
 
    for(int i = 0; i < lookback; i++)
    {
-      if(highs[i] > highVal)
+      if(lows[i] < lowVal)
          return false;
    }
    return true;
@@ -491,7 +491,7 @@ void UpdateDashboard()
    text += " Symbol: " + _Symbol + " | Timeframe: " + StringTimeframe(InpTimeframe) + "\n";
    text += " Magic Number: " + IntegerToString(InpMagicNumber) + "\n";
    text += "--------------------------------------------------\n";
-   text += " Swing High Filter: " + (InpUseSwingHighFilter ? "ON (Lookback: " + IntegerToString(InpSwingLookback) + ")" : "OFF") + "\n";
+   text += " Swing Low Filter: " + (InpUseSwingLowFilter ? "ON (Lookback: " + IntegerToString(InpSwingLookback) + ")" : "OFF") + "\n";
    text += " Risk-to-Reward Ratio: 1:" + DoubleToString(InpRiskRewardRatio, 1) + "\n";
    text += " Fixed Volume: " + DoubleToString(InpLotSize, 2) + "\n";
    text += " Dynamic Lot Sizing: " + (InpUseDynamicLot ? "ON (" + DoubleToString(InpRiskPercent, 1) + "%)" : "OFF") + "\n";
