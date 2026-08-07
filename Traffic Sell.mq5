@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Jules"
 #property link      "https://www.mql5.com"
-#property version   "1.03"
+#property version   "1.04"
 #property strict
 
 // Include Trade library
@@ -19,6 +19,7 @@ input int             InpSwingLookback        = 14;               // Swing High 
 input double          InpRiskRewardRatio      = 2.0;              // Risk to Reward Ratio (e.g. 2.0 for 1:2)
 input double          InpEntryBufferPoints    = 0.0;              // Entry Buffer in Points (Points below Green Low)
 input double          InpSLBufferPoints       = 0.0;              // Stop Loss Buffer in Points (Points above Green High)
+input bool            InpUseSpreadSLBuffer    = true;             // Add Live Bid/Ask Spread Gap to SL Buffer (ON/OFF)
 
 input group "=== RISK & TRADE MANAGEMENT ==="
 input double          InpLotSize              = 0.01;             // Fixed Lot Size (if Dynamic Lot is OFF)
@@ -185,10 +186,23 @@ void OnTick()
 //+------------------------------------------------------------------+
 void ExecuteShortEntry(double entryPrice)
 {
-   double risk = m_sl_level - entryPrice;
+   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   double spread_buffer = 0.0;
+
+   if(InpUseSpreadSLBuffer)
+   {
+      spread_buffer = ask - bid;
+      if(spread_buffer < 0) spread_buffer = 0;
+   }
+
+   // Stop Loss level including optional spread gap buffer to prevent premature stops
+   double sl = m_sl_level + spread_buffer;
+
+   double risk = sl - entryPrice;
    if(risk <= 0)
    {
-      Print("Error: Calculated risk is <= 0. SL: ", m_sl_level, " | Entry: ", entryPrice);
+      Print("Error: Calculated risk is <= 0. SL: ", sl, " | Entry: ", entryPrice);
       return;
    }
 
@@ -199,13 +213,12 @@ void ExecuteShortEntry(double entryPrice)
    double symbol_point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
 
    // Normalize levels to comply with broker digits
-   double final_sl = NormalizeDouble(m_sl_level, symbol_digits);
+   double final_sl = NormalizeDouble(sl, symbol_digits);
    double final_tp = NormalizeDouble(tp, symbol_digits);
 
    // Validate against Broker Stop Levels to avoid Code 10015 (Invalid stops)
    double stopLevelPoints = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
    double minStopDistance = stopLevelPoints * symbol_point;
-   double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
    if(MathAbs(final_sl - ask) < minStopDistance)
    {
@@ -233,8 +246,9 @@ void ExecuteShortEntry(double entryPrice)
 
    Print("Sending Sell Breakout Order...");
    Print("  Volume: ", lots);
-   Print("  Stop Loss: ", final_sl);
+   Print("  Stop Loss (with Spread Buffer): ", final_sl);
    Print("  Take Profit: ", final_tp);
+   Print("  Live Spread Gap Buffer added: ", spread_buffer);
 
    // Using price = 0.0 for market execution is the gold standard for live trading in MQL5 to avoid requotes
    if(m_trade.Sell(lots, _Symbol, 0.0, final_sl, final_tp, InpTradeComment))
