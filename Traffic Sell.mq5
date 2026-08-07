@@ -25,7 +25,7 @@ input double          InpLotSize              = 0.1;              // Fixed Lot S
 input bool            InpUseDynamicLot        = false;            // Use Dynamic Lot Sizing (Risk-Based)
 input double          InpRiskPercent          = 1.0;              // Account Risk Percent per trade (1.0%)
 input double          InpMaxMarginUtilizationPct = 70.0;          // Max Margin Utilization % (safety cap)
-input double          InpMinLotSizeOverride   = 0.01;             // Minimum Lot Size Override (0.01 for Gold on XM)
+input double          InpMinLotSizeOverride   = 0.01;             // Minimum Lot Size Override (0.01 for BTC/Gold on XM)
 input ulong           InpMagicNumber          = 20241015;         // Magic Number
 input int             InpSlippage             = 30;               // Slippage in Points
 input string          InpTradeComment         = "Traffic Sell";   // Trade Comment
@@ -39,7 +39,7 @@ double   m_breakout_level  = 0.0;
 double   m_sl_level        = 0.0;
 
 //--- Functions Forward Declarations ---
-bool     IsGoldSymbol(string symbol);
+bool     IsValidSymbol(string symbol);
 void     SetTradeFillingMode(CTrade &trade, string symbol);
 bool     IsSwingHigh(string symbol, ENUM_TIMEFRAMES tf, int index, int lookback);
 double   GetOpen(string symbol, ENUM_TIMEFRAMES tf, int index);
@@ -58,10 +58,10 @@ double   CalculateLotSize(double entryPrice, double slPrice);
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   // Verify symbol is Gold
-   if(!IsGoldSymbol(_Symbol))
+   // Verify symbol is valid
+   if(!IsValidSymbol(_Symbol))
    {
-      Print("WARNING: This Expert Advisor is optimized and designed specifically for Gold (XAUUSD). Active symbol: ", _Symbol);
+      Print("WARNING: This Expert Advisor is optimized and designed specifically for Gold (XAUUSD) and BTCUSD. Active symbol: ", _Symbol);
    }
 
    // Initialize Trade Class
@@ -275,7 +275,7 @@ double CalculateLotSize(double entryPrice, double slPrice)
    double minLot = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
    if(minLot <= 0) minLot = 0.01;
 
-   // Apply minimum override if specified (crucial for Gold on XM brokers)
+   // Apply minimum override if specified (crucial for Gold/BTC on XM brokers)
    if(InpMinLotSizeOverride > 0 && minLot < InpMinLotSizeOverride)
    {
       minLot = InpMinLotSizeOverride;
@@ -333,13 +333,13 @@ int GetActivePositionsCount()
 }
 
 //+------------------------------------------------------------------+
-//| Check if symbol is Gold (XAUUSD / GOLD variants)                 |
+//| Check if symbol is Valid (XAUUSD / GOLD variants, or BTCUSD)      |
 //+------------------------------------------------------------------+
-bool IsGoldSymbol(string symbol)
+bool IsValidSymbol(string symbol)
 {
    string sym = symbol;
    StringToUpper(sym);
-   if(StringFind(sym, "XAU") >= 0 || StringFind(sym, "GOLD") >= 0)
+   if(StringFind(sym, "XAU") >= 0 || StringFind(sym, "GOLD") >= 0 || StringFind(sym, "BTC") >= 0)
       return true;
    return false;
 }
