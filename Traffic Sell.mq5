@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Jules"
 #property link      "https://www.mql5.com"
-#property version   "1.00"
+#property version   "1.02"
 #property strict
 
 // Include Trade library
@@ -32,11 +32,11 @@ input string          InpTradeComment         = "Traffic Sell";   // Trade Comme
 
 //--- Global Variables ---
 CTrade   m_trade;
-datetime m_last_bar_time   = 0;
-bool     m_setup_active    = false;
-datetime m_setup_time      = 0;
-double   m_breakout_level  = 0.0;
-double   m_sl_level        = 0.0;
+datetime m_last_checked_bar_time = 0;
+bool     m_setup_active          = false;
+datetime m_setup_time            = 0;
+double   m_breakout_level        = 0.0;
+double   m_sl_level              = 0.0;
 
 //--- Functions Forward Declarations ---
 bool     IsValidSymbol(string symbol);
@@ -69,7 +69,7 @@ int OnInit()
    SetTradeFillingMode(m_trade, _Symbol);
 
    // Reset variables
-   m_last_bar_time = 0;
+   m_last_checked_bar_time = 0;
    m_setup_active = false;
    m_setup_time = 0;
    m_breakout_level = 0.0;
@@ -100,56 +100,61 @@ void OnTick()
          return;
    }
 
-   // Check for New Bar
+   // Check for New Bar / Synchronized History data
    datetime current_bar_time = GetTime(_Symbol, InpTimeframe, 0);
    if(current_bar_time <= 0) return; // CopyRates / History not synchronized yet
 
-   bool is_new_bar = (current_bar_time != m_last_bar_time);
-   if(is_new_bar)
+   // Robust multi-tick synchronization check:
+   // Try to check for a signal candle if we enter a new bar timeframe or if the previous check failed due to synchronization lag.
+   if(current_bar_time != m_last_checked_bar_time)
    {
-      // If we had an active setup from the previous bar, it has now expired!
-      // This strictly enforces that the breakout must happen on the IMMEDIATE NEXT bar.
-      if(m_setup_active)
-      {
-         Print("Immediate next candle closed without breakout. Setup at ", m_setup_time, " has expired and is ignored.");
-         m_setup_active = false;
-      }
-
-      m_last_bar_time = current_bar_time;
-
-      // Look for a completed signal candle at index 1
       double open1  = GetOpen(_Symbol, InpTimeframe, 1);
       double close1 = GetClose(_Symbol, InpTimeframe, 1);
 
-      if(open1 > 0 && close1 > open1) // Completed candle is Green
+      // Only mark as checked if we successfully retrieved non-zero prices (data is synchronized)
+      if(open1 > 0 && close1 > 0)
       {
-         bool swing_ok = true;
-         if(InpUseSwingHighFilter)
+         // Expire any existing setup from the previous bar.
+         // This strictly enforces that the breakout must happen on the IMMEDIATE NEXT bar.
+         if(m_setup_active)
          {
-            swing_ok = IsSwingHigh(_Symbol, InpTimeframe, 1, InpSwingLookback);
+            Print("Immediate next candle closed without breakout. Setup at ", m_setup_time, " has expired.");
+            m_setup_active = false;
          }
 
-         if(swing_ok)
-         {
-            m_setup_active = true;
-            m_setup_time = GetTime(_Symbol, InpTimeframe, 1);
-            m_breakout_level = GetLow(_Symbol, InpTimeframe, 1) - InpEntryBufferPoints * _Point;
-            m_sl_level = GetHigh(_Symbol, InpTimeframe, 1) + InpSLBufferPoints * _Point;
+         m_last_checked_bar_time = current_bar_time;
 
-            Print("New Valid Setup Spotted!");
-            Print("  Signal Time: ", m_setup_time);
-            Print("  Green Low: ", GetLow(_Symbol, InpTimeframe, 1));
-            Print("  Green High (SL): ", GetHigh(_Symbol, InpTimeframe, 1));
-            Print("  Breakout Level: ", m_breakout_level);
+         if(close1 > open1) // Completed candle is Green
+         {
+            bool swing_ok = true;
             if(InpUseSwingHighFilter)
             {
-               Print("  Swing High Check: PASSED (Lookback: ", InpSwingLookback, ")");
+               swing_ok = IsSwingHigh(_Symbol, InpTimeframe, 1, InpSwingLookback);
+            }
+
+            if(swing_ok)
+            {
+               double symbol_point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+               m_setup_active = true;
+               m_setup_time = GetTime(_Symbol, InpTimeframe, 1);
+               m_breakout_level = GetLow(_Symbol, InpTimeframe, 1) - InpEntryBufferPoints * symbol_point;
+               m_sl_level = GetHigh(_Symbol, InpTimeframe, 1) + InpSLBufferPoints * symbol_point;
+
+               Print("New Valid Setup Spotted!");
+               Print("  Signal Time: ", m_setup_time);
+               Print("  Green Low: ", GetLow(_Symbol, InpTimeframe, 1));
+               Print("  Green High (SL): ", GetHigh(_Symbol, InpTimeframe, 1));
+               Print("  Breakout Level: ", m_breakout_level);
+               if(InpUseSwingHighFilter)
+               {
+                  Print("  Swing High Check: PASSED (Lookback: ", InpSwingLookback, ")");
+               }
             }
          }
       }
    }
 
-   // Breakout Monitoring & Execution
+   // Breakout Monitoring & Execution (runs tick-by-tick)
    if(m_setup_active)
    {
       if(GetActivePositionsCount() == 0)
@@ -157,7 +162,7 @@ void OnTick()
          double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
          if(bid > 0 && bid <= m_breakout_level)
          {
-            // Execute entry and deactivate the setup to prevent duplicate entries
+            // Execute entry and deactivate the setup immediately to prevent duplicate entries
             m_setup_active = false;
             ExecuteShortEntry(bid);
          }
@@ -190,31 +195,33 @@ void ExecuteShortEntry(double entryPrice)
    // Calculate TP based on Risk-to-Reward Ratio
    double tp = entryPrice - (risk * InpRiskRewardRatio);
 
+   int symbol_digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
+   double symbol_point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+
    // Normalize levels to comply with broker digits
-   double final_sl = NormalizeDouble(m_sl_level, _Digits);
-   double final_tp = NormalizeDouble(tp, _Digits);
-   double final_entry = NormalizeDouble(entryPrice, _Digits);
+   double final_sl = NormalizeDouble(m_sl_level, symbol_digits);
+   double final_tp = NormalizeDouble(tp, symbol_digits);
 
    // Validate against Broker Stop Levels to avoid Code 10015 (Invalid stops)
    double stopLevelPoints = (double)SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL);
-   double minStopDistance = stopLevelPoints * _Point;
+   double minStopDistance = stopLevelPoints * symbol_point;
    double ask = SymbolInfoDouble(_Symbol, SYMBOL_ASK);
 
    if(MathAbs(final_sl - ask) < minStopDistance)
    {
       final_sl = ask + minStopDistance;
-      final_sl = NormalizeDouble(final_sl, _Digits);
+      final_sl = NormalizeDouble(final_sl, symbol_digits);
       Print("Adjusted SL to satisfy stop level constraint: ", final_sl);
    }
    if(MathAbs(ask - final_tp) < minStopDistance)
    {
       final_tp = ask - minStopDistance;
-      final_tp = NormalizeDouble(final_tp, _Digits);
+      final_tp = NormalizeDouble(final_tp, symbol_digits);
       Print("Adjusted TP to satisfy stop level constraint: ", final_tp);
    }
 
    // Calculate Lot size using Risk-based or Fixed methods
-   double lots = CalculateLotSize(final_entry, final_sl);
+   double lots = CalculateLotSize(entryPrice, final_sl);
    if(lots <= 0)
    {
       Print("Error: Calculated lot size is invalid: ", lots);
@@ -226,11 +233,11 @@ void ExecuteShortEntry(double entryPrice)
 
    Print("Sending Sell Breakout Order...");
    Print("  Volume: ", lots);
-   Print("  Entry Price: ", final_entry);
    Print("  Stop Loss: ", final_sl);
    Print("  Take Profit: ", final_tp);
 
-   if(m_trade.Sell(lots, _Symbol, final_entry, final_sl, final_tp, InpTradeComment))
+   // Using price = 0.0 for market execution is the gold standard for live trading in MQL5 to avoid requotes
+   if(m_trade.Sell(lots, _Symbol, 0.0, final_sl, final_tp, InpTradeComment))
    {
       if(m_trade.ResultRetcode() == 10009 || m_trade.ResultRetcode() == 10008)
       {
@@ -354,6 +361,8 @@ void SetTradeFillingMode(CTrade &trade, string symbol)
       trade.SetTypeFilling(ORDER_FILLING_FOK);
    else if((filling & SYMBOL_FILLING_IOC) != 0)
       trade.SetTypeFilling(ORDER_FILLING_IOC);
+   else
+      trade.SetTypeFilling(ORDER_FILLING_RETURN);
 }
 
 //+------------------------------------------------------------------+
@@ -364,10 +373,14 @@ bool IsSwingHigh(string symbol, ENUM_TIMEFRAMES tf, int index, int lookback)
    double highVal = GetHigh(symbol, tf, index);
    if(highVal <= 0) return false;
 
-   for(int i = 1; i <= lookback; i++)
+   double highs[];
+   ArraySetAsSeries(highs, true);
+   int copied = CopyHigh(symbol, tf, index + 1, lookback, highs);
+   if(copied < lookback) return false; // Not enough history synchronized yet
+
+   for(int i = 0; i < lookback; i++)
    {
-      double otherHigh = GetHigh(symbol, tf, index + i);
-      if(otherHigh > highVal)
+      if(highs[i] > highVal)
          return false;
    }
    return true;
