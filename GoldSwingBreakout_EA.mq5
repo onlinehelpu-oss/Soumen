@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2024, Jules"
 #property link      "https://www.mql5.com"
-#property version   "1.02"
+#property version   "1.03"
 #property strict
 
 // Include Trade library
@@ -21,7 +21,7 @@ input double          InpEntryBufferPoints    = 0.0;              // Entry Buffe
 input double          InpSLBufferPoints       = 0.0;              // Stop Loss Buffer in Points (Points above Green High)
 
 input group "=== RISK & TRADE MANAGEMENT ==="
-input double          InpLotSize              = 0.1;              // Fixed Lot Size (if Dynamic Lot is OFF)
+input double          InpLotSize              = 0.01;             // Fixed Lot Size (if Dynamic Lot is OFF)
 input bool            InpUseDynamicLot        = false;            // Use Dynamic Lot Sizing (Risk-Based)
 input double          InpRiskPercent          = 1.0;              // Account Risk Percent per trade (1.0%)
 input double          InpMaxMarginUtilizationPct = 70.0;          // Max Margin Utilization % (safety cap)
