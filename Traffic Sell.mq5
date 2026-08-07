@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                                     GoldSwingBreakout_EA.mq5    |
+//|                                                   Traffic Sell.mq5|
 //|                                  Copyright 2024, Jules           |
 //|                                             https://www.mql5.com |
 //+------------------------------------------------------------------+
@@ -28,7 +28,7 @@ input double          InpMaxMarginUtilizationPct = 70.0;          // Max Margin 
 input double          InpMinLotSizeOverride   = 0.01;             // Minimum Lot Size Override (0.01 for Gold on XM)
 input ulong           InpMagicNumber          = 20241015;         // Magic Number
 input int             InpSlippage             = 30;               // Slippage in Points
-input string          InpTradeComment         = "GoldSwingBreakout"; // Trade Comment
+input string          InpTradeComment         = "Traffic Sell";   // Trade Comment
 
 //--- Global Variables ---
 CTrade   m_trade;
@@ -75,7 +75,7 @@ int OnInit()
    m_breakout_level = 0.0;
    m_sl_level = 0.0;
 
-   Print("GoldSwingBreakout_EA Initialized successfully.");
+   Print("Traffic Sell EA Initialized successfully.");
    return(INIT_SUCCEEDED);
 }
 
@@ -459,7 +459,7 @@ string StringTimeframe(ENUM_TIMEFRAMES tf)
 void UpdateDashboard()
 {
    string text = "==================================================\n";
-   text += "         GOLD SWING BREAKOUT EXPERT ADVISOR       \n";
+   text += "                   TRAFFIC SELL EA                \n";
    text += "==================================================\n";
    text += " Symbol: " + _Symbol + " | Timeframe: " + StringTimeframe(InpTimeframe) + "\n";
    text += " Magic Number: " + IntegerToString(InpMagicNumber) + "\n";
