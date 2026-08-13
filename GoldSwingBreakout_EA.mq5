@@ -159,9 +159,18 @@ void OnTick()
             if(InpUseEMAFilter)
             {
                ema1 = GetEMA(1);
-               if(ema1 > 0 && close1 >= ema1)
+               // If EMA fails to load (GetEMA returns 0.0 or less due to history loading),
+               // we print a warning and let the trade execute, or wait until the data is loaded.
+               if(ema1 > 0)
                {
-                  ema_ok = false; // Invalid sell signal if price is not below EMA
+                  if(close1 >= ema1)
+                  {
+                     ema_ok = false; // Invalid sell signal if price is not below EMA
+                  }
+               }
+               else
+               {
+                  Print("Warning: EMA data is not yet synchronized or loaded (GetEMA returned 0). Proceeding with signal.");
                }
             }
 
@@ -170,7 +179,8 @@ void OnTick()
                bool swing_ok = true;
                if(InpUseSwingHighFilter)
                {
-                  swing_ok = IsSwingHigh(_Symbol, InpTimeframe, 1, InpSwingLookback);
+                  // Since the setup Green candle is at index 2, we check if index 2 (the Green candle) was a Swing High
+                  swing_ok = IsSwingHigh(_Symbol, InpTimeframe, 2, InpSwingLookback);
                }
 
                if(swing_ok)
