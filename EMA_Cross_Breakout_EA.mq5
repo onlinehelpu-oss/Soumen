@@ -19,6 +19,7 @@ enum ENUM_CUSTOM_TIMEFRAME
    TF_15_MIN = 15, // 15 Minutes
    TF_30_MIN = 30, // 30 Minutes
    TF_1_HOUR = 60, // 1 Hour
+   TF_4_HOUR = 240,// 4 Hours
    TF_1_DAY = 1440 // 1 Day
 };
 
@@ -32,6 +33,11 @@ input int                   InpFastEMAPeriod = 9;           // Fast EMA Period (
 input int                   InpSlowEMAPeriod = 15;          // Slow EMA Period (e.g. 15)
 input double                InpRiskReward = 2.0;            // Risk-to-Reward Ratio (e.g. 2.0)
 
+input group "=== Higher Timeframe Filter ==="
+input bool                  InpUseHTFFilter = true;         // Use Higher Timeframe Filter?
+input ENUM_CUSTOM_TIMEFRAME InpHigherTimeframe = TF_15_MIN; // Higher Timeframe
+input int                   InpHTFEMAPeriod = 9;            // Higher Timeframe EMA Period
+
 input group "=== Trade Execution Parameters ==="
 input double                InpLotSize = 0.01;              // Lot Size
 input ulong                 InpMagicNumber = 20260305;      // Magic Number
@@ -43,6 +49,7 @@ input ulong                 InpSlippage = 10;               // Slippage in point
 int      m_handle_main = INVALID_HANDLE;
 int      m_handle_fast = INVALID_HANDLE;
 int      m_handle_slow = INVALID_HANDLE;
+int      m_handle_htf  = INVALID_HANDLE;
 
 datetime m_last_bar_time = 0;
 
@@ -67,6 +74,7 @@ ENUM_TIMEFRAMES GetTimeframe(ENUM_CUSTOM_TIMEFRAME tf)
       case TF_15_MIN: return PERIOD_M15;
       case TF_30_MIN: return PERIOD_M30;
       case TF_1_HOUR: return PERIOD_H1;
+      case TF_4_HOUR: return PERIOD_H4;
       case TF_1_DAY:  return PERIOD_D1;
       default:        return PERIOD_CURRENT;
    }
@@ -231,6 +239,18 @@ int OnInit()
       return INIT_FAILED;
    }
 
+   // Initialize Higher Timeframe EMA handle if used
+   if(InpUseHTFFilter)
+   {
+      ENUM_TIMEFRAMES htf = GetTimeframe(InpHigherTimeframe);
+      m_handle_htf = iMA(_Symbol, htf, InpHTFEMAPeriod, 0, MODE_EMA, PRICE_CLOSE);
+      if(m_handle_htf == INVALID_HANDLE)
+      {
+         Print("EMA_Cross_Breakout_EA: Error initializing HTF indicator handle.");
+         return INIT_FAILED;
+      }
+   }
+
    // Set filling mode dynamically
    SetTradeFillingMode();
 
@@ -250,6 +270,8 @@ void OnDeinit(const int reason)
       IndicatorRelease(m_handle_fast);
    if(m_handle_slow != INVALID_HANDLE)
       IndicatorRelease(m_handle_slow);
+   if(m_handle_htf != INVALID_HANDLE)
+      IndicatorRelease(m_handle_htf);
 
    Print("EMA_Cross_Breakout_EA: Deinitialized.");
 }
@@ -300,7 +322,32 @@ void OnTick()
       }
 
       // Evaluate if the completed candle (index 1) is a valid Signal Candle
-      if(IsSignalCandle(rates, ema_main, ema_fast, ema_slow))
+      bool htf_filter_passed = true;
+      if(InpUseHTFFilter)
+      {
+         MqlRates htf_rates[];
+         double htf_ema[];
+         ArraySetAsSeries(htf_rates, true);
+         ArraySetAsSeries(htf_ema, true);
+
+         ENUM_TIMEFRAMES htf_tf = GetTimeframe(InpHigherTimeframe);
+         if(CopyRates(_Symbol, htf_tf, 0, 2, htf_rates) >= 2 &&
+            CopyBuffer(m_handle_htf, 0, 0, 2, htf_ema) >= 2)
+         {
+            double htf_close = htf_rates[1].close;
+            double htf_ema_val = htf_ema[1];
+            if(htf_close >= htf_ema_val)
+            {
+               htf_filter_passed = false;
+            }
+         }
+         else
+         {
+            htf_filter_passed = false; // Safe fallback: if we cannot read HTF data, do not trigger
+         }
+      }
+
+      if(htf_filter_passed && IsSignalCandle(rates, ema_main, ema_fast, ema_slow))
       {
          m_is_setup_active = true;
          m_signal_candle_low = rates[1].low;
