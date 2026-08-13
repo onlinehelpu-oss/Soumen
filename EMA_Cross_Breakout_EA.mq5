@@ -38,6 +38,9 @@ input bool                  InpUseHTFFilter = true;         // Use Higher Timefr
 input ENUM_CUSTOM_TIMEFRAME InpHigherTimeframe = TF_15_MIN; // Higher Timeframe
 input int                   InpHTFEMAPeriod = 9;            // Higher Timeframe EMA Period
 
+input group "=== Trailing Stop Loss ==="
+input bool                  InpUseTrailingSL = true;        // Enable Trailing SL (Breakeven at 1:1)?
+
 input group "=== Trade Execution Parameters ==="
 input double                InpLotSize = 0.01;              // Lot Size
 input ulong                 InpMagicNumber = 20260305;      // Magic Number
@@ -178,6 +181,62 @@ bool IsSignalCandle(MqlRates &rates[], double &ema_main[], double &ema_fast[], d
 }
 
 //+------------------------------------------------------------------+
+//| Helper: Manage Trailing Stop Loss (Breakeven at 1:1)             |
+//+------------------------------------------------------------------+
+void ManageTrailingSL()
+{
+   if(!InpUseTrailingSL) return;
+
+   int total = PositionsTotal();
+   for(int i = total - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket > 0)
+      {
+         if(PositionGetString(POSITION_SYMBOL) == _Symbol)
+         {
+            if(PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+            {
+               // We only have SELL positions from this EA
+               if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
+               {
+                  double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
+                  double current_sl = PositionGetDouble(POSITION_SL);
+
+                  // If current SL is already at or below open_price, it is already at breakeven
+                  if(current_sl > 0 && current_sl > open_price)
+                  {
+                     double risk = current_sl - open_price;
+                     double current_price = PositionGetDouble(POSITION_PRICE_CURRENT);
+
+                     // 1:1 target is (open_price - risk)
+                     double target_1_1 = open_price - risk;
+
+                     if(current_price <= target_1_1)
+                     {
+                        // Trail SL to open_price (cost-to-cost)
+                        double new_sl = NormalizePrice(open_price);
+                        double current_tp = PositionGetDouble(POSITION_TP);
+
+                        m_trade.SetExpertMagicNumber(InpMagicNumber);
+                        if(m_trade.PositionModify(ticket, new_sl, current_tp))
+                        {
+                           PrintFormat("EMA_Cross_Breakout_EA: Position %I64u Trailed to Breakeven (cost-to-cost). New SL: %f", ticket, new_sl);
+                        }
+                        else
+                        {
+                           PrintFormat("EMA_Cross_Breakout_EA: Failed to modify SL for Position %I64u. Return code: %d", ticket, m_trade.ResultRetcode());
+                        }
+                     }
+                  }
+               }
+            }
+         }
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
 //| Helper: Execute SELL Order                                       |
 //+------------------------------------------------------------------+
 void ExecuteSellEntry(double entry_price)
@@ -281,6 +340,9 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
+   // Manage Trailing Stop Loss / Breakeven tick-by-tick
+   ManageTrailingSL();
+
    // Convert timeframe
    ENUM_TIMEFRAMES tf = GetTimeframe(InpTimeframe);
 
