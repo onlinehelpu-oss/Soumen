@@ -115,6 +115,11 @@ void OnDeinit(const int reason)
       IndicatorRelease(m_ema_handle);
       m_ema_handle = INVALID_HANDLE;
    }
+
+   // Clean up visual objects on chart
+   ObjectDelete(0, "Fractal_Swing_Low");
+   ObjectDelete(0, "Final_TP_Line");
+   ChartRedraw();
 }
 
 //+------------------------------------------------------------------+
@@ -309,6 +314,17 @@ double CalculateBrokerTP(double entry_price, double sl)
       else
       {
          PrintFormat("Williams Fractal Target found: %.5f", fractal_tp);
+         // Visual Plotting: Create a horizontal line at the Williams Fractal Swing Low level on-chart
+         ObjectDelete(0, "Fractal_Swing_Low");
+         if(ObjectCreate(0, "Fractal_Swing_Low", OBJ_HLINE, 0, 0, fractal_tp))
+         {
+            ObjectSetInteger(0, "Fractal_Swing_Low", OBJPROP_COLOR, clrTeal);
+            ObjectSetInteger(0, "Fractal_Swing_Low", OBJPROP_STYLE, STYLE_DASH);
+            ObjectSetInteger(0, "Fractal_Swing_Low", OBJPROP_WIDTH, 2);
+            ObjectSetString(0, "Fractal_Swing_Low", OBJPROP_TEXT, "Williams Fractal TP Level");
+            ChartRedraw();
+            Print("Visual Plotting: Created 'Fractal_Swing_Low' line on-chart.");
+         }
       }
    }
 
@@ -342,7 +358,18 @@ double CalculateBrokerTP(double entry_price, double sl)
 
    if(final_tp > 0)
    {
-      return NormalizePrice(final_tp);
+      double norm_tp = NormalizePrice(final_tp);
+      // Visual Plotting: Create horizontal line for the Final TP on-chart
+      ObjectDelete(0, "Final_TP_Line");
+      if(ObjectCreate(0, "Final_TP_Line", OBJ_HLINE, 0, 0, norm_tp))
+      {
+         ObjectSetInteger(0, "Final_TP_Line", OBJPROP_COLOR, clrRed);
+         ObjectSetInteger(0, "Final_TP_Line", OBJPROP_STYLE, STYLE_SOLID);
+         ObjectSetInteger(0, "Final_TP_Line", OBJPROP_WIDTH, 1);
+         ObjectSetString(0, "Final_TP_Line", OBJPROP_TEXT, "Take Profit Target");
+         ChartRedraw();
+      }
+      return norm_tp;
    }
 
    return 0.0;
@@ -470,6 +497,17 @@ void OnTick()
 
    // Monitor and enforce Dollar target if applicable
    CheckDollarTarget();
+
+   // Cleanup visual objects if no positions are active
+   if(!IsPositionOpen())
+   {
+      if(ObjectFind(0, "Fractal_Swing_Low") >= 0 || ObjectFind(0, "Final_TP_Line") >= 0)
+      {
+         ObjectDelete(0, "Fractal_Swing_Low");
+         ObjectDelete(0, "Final_TP_Line");
+         ChartRedraw();
+      }
+   }
 
    // Check for next immediate candle breakout entry
    if(m_setup_active && !IsPositionOpen())
