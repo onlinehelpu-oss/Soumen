@@ -253,6 +253,9 @@ void OnNewCandle()
 //+------------------------------------------------------------------+
 void ExecuteSellEntry(double bid)
 {
+   // Turn off the setup immediately to prevent concurrent ticks triggering multiple trades
+   m_setup_active = false;
+
    double sl = m_signal_high;
    double tp = 0.0;
 
@@ -274,12 +277,17 @@ void ExecuteSellEntry(double bid)
 
    if(trade.Sell(lot, _Symbol, bid, sl, tp, "EMA Breakdown Sell"))
    {
-      m_setup_active = false; // Disable setup so we don't re-trigger
       Print("Sell order submitted successfully.");
    }
    else
    {
       Print("Error placing Sell order: ", trade.ResultRetcode(), " - ", trade.ResultComment());
+      // Re-enable setup if trade failed and there is no open position
+      if(!IsPositionOpen())
+      {
+         m_setup_active = true;
+         Print("Setup re-enabled due to execution failure with no open position.");
+      }
    }
 }
 
