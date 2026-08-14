@@ -3,11 +3,11 @@
 //|                                                            Jules |
 //|                                                                  |
 //| An MT5 Expert Advisor executing a Main EMA Breakdown Sell strategy |
-//| strictly following user specifications.                          |
+//| strictly following user specifications and Williams Fractals.    |
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      ""
-#property version   "1.00"
+#property version   "1.10"
 
 #include <Trade\Trade.mqh>
 
@@ -39,6 +39,10 @@ input double               InpRiskRewardRatio = 2.0;         // Risk-to-Reward R
 input group "---- Take Profit: Dollar Basis ----"
 input bool                 InpUseDollarTarget = false;       // Profit in Dollar basis: ON/OFF
 input double               InpDollarTarget = 2.0;            // Dollar basis profit target (e.g. 2.0, 5.0, etc.)
+
+input group "---- Take Profit: Williams Fractal ----"
+input bool                 InpUseFractalTarget = false;      // Williams Fractal basis: ON/OFF
+input int                  InpFractalPeriod = 2;             // Fractal Period (must be >= 2)
 
 //--- Global Variables
 #define EA_MAGIC 823471
@@ -85,6 +89,13 @@ int OnInit()
    {
       Print("Error: Failed to create EMA indicator handle.");
       return INIT_FAILED;
+   }
+
+   // Enforce minimum Fractal Period of 2
+   if(InpFractalPeriod < 2)
+   {
+      Print("Warning: Fractal Period must be at least 2. Overriding to 2.");
+      // Note: input variables are read-only constants in MQL5, so we cannot modify InpFractalPeriod directly.
    }
 
    m_last_candle_time = 0;
@@ -204,6 +215,140 @@ uint GetFillingMode()
 }
 
 //+------------------------------------------------------------------+
+//| Check if a candle at center is a completed down/bearish fractal  |
+//+------------------------------------------------------------------+
+bool IsDownFractal(int center, int n, const double &low[])
+{
+   bool downflagDownFrontier = true;
+   bool downflagUpFrontier0 = true;
+   bool downflagUpFrontier1 = true;
+   bool downflagUpFrontier2 = true;
+   bool downflagUpFrontier3 = true;
+   bool downflagUpFrontier4 = true;
+
+   for(int i = 1; i <= n; i++)
+   {
+      downflagDownFrontier = downflagDownFrontier && (low[center - i] > low[center]);
+      downflagUpFrontier0 = downflagUpFrontier0 && (low[center + i] > low[center]);
+      downflagUpFrontier1 = downflagUpFrontier1 && (low[center + 1] >= low[center] && low[center + i + 1] > low[center]);
+      downflagUpFrontier2 = downflagUpFrontier2 && (low[center + 1] >= low[center] && low[center + 2] >= low[center] && low[center + i + 2] > low[center]);
+      downflagUpFrontier3 = downflagUpFrontier3 && (low[center + 1] >= low[center] && low[center + 2] >= low[center] && low[center + 3] >= low[center] && low[center + i + 3] > low[center]);
+      downflagUpFrontier4 = downflagUpFrontier4 && (low[center + 1] >= low[center] && low[center + 2] >= low[center] && low[center + 3] >= low[center] && low[center + 4] >= low[center] && low[center + i + 4] > low[center]);
+   }
+
+   bool flagDownFrontier = downflagUpFrontier0 || downflagUpFrontier1 || downflagUpFrontier2 || downflagUpFrontier3 || downflagUpFrontier4;
+
+   return (downflagDownFrontier && flagDownFrontier);
+}
+
+//+------------------------------------------------------------------+
+//| Get most recent confirmed down Williams Fractal below entry      |
+//+------------------------------------------------------------------+
+double GetMostRecentDownFractalLow(int n, double entry_price)
+{
+   if(n < 2) n = 2;
+
+   double low_values[];
+   ArraySetAsSeries(low_values, true);
+
+   // Copy plenty of bars to search back
+   int request_bars = 1000;
+   int copied = CopyLow(_Symbol, GetTimeframe(InpTimeframe), 0, request_bars, low_values);
+   if(copied < n + 5)
+   {
+      Print("Warning: Not enough bars to compute Williams Fractals.");
+      return 0.0;
+   }
+
+   // The fractal must have been confirmed before the signal candle (index 1).
+   // A fractal is confirmed when its newer frontier bars are closed.
+   // The newest frontier bar for center index is (center - n).
+   // For it to be confirmed before the signal candle (index 1), the newest required bar
+   // must be older than the signal candle (i.e. >= 2).
+   // Therefore, center - n >= 2 => center >= n + 2.
+   int start_idx = n + 2;
+   int max_search_idx = copied - (n + 5);
+
+   for(int center = start_idx; center <= max_search_idx; center++)
+   {
+      if(IsDownFractal(center, n, low_values))
+      {
+         double fractal_low = low_values[center];
+         if(fractal_low < entry_price)
+         {
+            return fractal_low;
+         }
+      }
+   }
+
+   return 0.0;
+}
+
+//+------------------------------------------------------------------+
+//| Calculate final broker-side Take Profit price                    |
+//+------------------------------------------------------------------+
+double CalculateBrokerTP(double entry_price, double sl)
+{
+   double rr_tp = 0.0;
+   double fractal_tp = 0.0;
+
+   if(InpUseRRTarget)
+   {
+      double risk_distance = sl - entry_price;
+      if(risk_distance <= 0) risk_distance = _Point;
+      rr_tp = entry_price - risk_distance * InpRiskRewardRatio;
+   }
+
+   if(InpUseFractalTarget)
+   {
+      fractal_tp = GetMostRecentDownFractalLow(InpFractalPeriod, entry_price);
+      if(fractal_tp <= 0.0)
+      {
+         Print("Warning: No confirmed bearish Williams Fractal found below entry price.");
+      }
+      else
+      {
+         PrintFormat("Williams Fractal Target found: %.5f", fractal_tp);
+      }
+   }
+
+   double final_tp = 0.0;
+
+   if(InpUseRRTarget && InpUseFractalTarget)
+   {
+      if(rr_tp > 0 && fractal_tp > 0)
+      {
+         // For Sell, the higher TP price is closer to the entry, so it is reached earlier
+         final_tp = MathMax(rr_tp, fractal_tp);
+         PrintFormat("Both TP options ON. R:R TP=%.5f, Fractal TP=%.5f. Selecting earlier target (MathMax) = %.5f", rr_tp, fractal_tp, final_tp);
+      }
+      else if(rr_tp > 0)
+      {
+         final_tp = rr_tp;
+      }
+      else if(fractal_tp > 0)
+      {
+         final_tp = fractal_tp;
+      }
+   }
+   else if(InpUseRRTarget)
+   {
+      final_tp = rr_tp;
+   }
+   else if(InpUseFractalTarget)
+   {
+      final_tp = fractal_tp;
+   }
+
+   if(final_tp > 0)
+   {
+      return NormalizePrice(final_tp);
+   }
+
+   return 0.0;
+}
+
+//+------------------------------------------------------------------+
 //| Check for completed candle close & evaluate signal                |
 //+------------------------------------------------------------------+
 void OnNewCandle()
@@ -257,16 +402,7 @@ void ExecuteSellEntry(double bid)
    m_setup_active = false;
 
    double sl = m_signal_high;
-   double tp = 0.0;
-
-   if(InpUseRRTarget)
-   {
-      double risk_distance = sl - bid;
-      if(risk_distance <= 0) risk_distance = _Point;
-      double tp_distance = risk_distance * InpRiskRewardRatio;
-      tp = bid - tp_distance;
-      tp = NormalizePrice(tp);
-   }
+   double tp = CalculateBrokerTP(bid, sl);
 
    sl = NormalizePrice(sl);
    double lot = NormalizeLotSize(InpLotSize);
