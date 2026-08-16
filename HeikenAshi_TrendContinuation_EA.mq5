@@ -890,13 +890,13 @@ void DrawSignalArrow(ENUM_SIGNAL_TYPE signal, datetime bar_time, double price)
    if (signal == SIGNAL_BUY)
    {
       ObjectCreate(0, name, OBJ_ARROW_BUY, 0, bar_time, price - 10 * _Point);
-      ObjectSetInteger(0, name, OBJPROP_COLOR, clrDodgerBlue);
+      ObjectSetInteger(0, name, OBJPROP_COLOR, (long)clrDodgerBlue);
       ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
    }
    else if (signal == SIGNAL_SELL)
    {
       ObjectCreate(0, name, OBJ_ARROW_SELL, 0, bar_time, price + 10 * _Point);
-      ObjectSetInteger(0, name, OBJPROP_COLOR, clrRed);
+      ObjectSetInteger(0, name, OBJPROP_COLOR, (long)clrRed);
       ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
    }
 }
@@ -934,9 +934,9 @@ void UpdateDashboard()
       ObjectSetInteger(0, panel_bg, OBJPROP_YDISTANCE, 25);
       ObjectSetInteger(0, panel_bg, OBJPROP_XSIZE, 320);
       ObjectSetInteger(0, panel_bg, OBJPROP_YSIZE, 240);
-      ObjectSetInteger(0, panel_bg, OBJPROP_BGCOLOR, clrDarkSlateGray);
+      ObjectSetInteger(0, panel_bg, OBJPROP_BGCOLOR, (long)clrDarkSlateGray);
       ObjectSetInteger(0, panel_bg, OBJPROP_BORDER_TYPE, (long)BORDER_FLAT);
-      ObjectSetInteger(0, panel_bg, OBJPROP_COLOR, clrLightGray);
+      ObjectSetInteger(0, panel_bg, OBJPROP_COLOR, (long)clrLightGray);
       ObjectSetInteger(0, panel_bg, OBJPROP_CORNER, (long)CORNER_LEFT_UPPER);
    }
 
@@ -979,10 +979,10 @@ void UpdateDashboard()
          ObjectSetInteger(0, lbl_name, OBJPROP_YDISTANCE, 35 + (i * 20));
          ObjectSetInteger(0, lbl_name, OBJPROP_CORNER, (long)CORNER_LEFT_UPPER);
          ObjectSetInteger(0, lbl_name, OBJPROP_FONTSIZE, 9);
-         ObjectSetInteger(0, lbl_name, OBJPROP_FONT, "Trebuchet MS");
+         ObjectSetString(0, lbl_name, OBJPROP_FONT, "Trebuchet MS");
       }
       ObjectSetString(0, lbl_name, OBJPROP_TEXT, lines[i]);
-      ObjectSetInteger(0, lbl_name, OBJPROP_COLOR, (i == 0 ? clrGold : clrWhite));
+      ObjectSetInteger(0, lbl_name, OBJPROP_COLOR, (long)(i == 0 ? clrGold : clrWhite));
    }
 }
 
