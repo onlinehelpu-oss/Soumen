@@ -10,6 +10,7 @@
 #property description "Executes Sell breakout entries when a Red HA candle with no upper wick is preceded by a Green HA candle."
 
 // Optional indicator hints for MT5 Strategy Tester asset inclusion
+#property tester_indicator "Heiken_Ashi Series.ex5"
 #property tester_indicator "Heiken_Ashi.ex5"
 #property tester_indicator "Examples\\Heiken_Ashi.ex5"
 
@@ -146,8 +147,8 @@ int OnInit()
         }
      }
 
-   // Attach clean Heiken Ashi custom indicator to chart if enabled
-   if(InpAttachHAIndicator && (!MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_VISUAL_MODE)))
+   // Attach clean Heiken Ashi custom indicator to chart if enabled (safely handled for Strategy Tester)
+   if(InpAttachHAIndicator && !MQLInfoInteger(MQL_TESTER))
      {
       SetupHeikenAshiIndicator();
      }
@@ -180,14 +181,6 @@ void OnDeinit(const int reason)
       m_ha_visual_handle = INVALID_HANDLE;
      }
 
-   // Restore chart candle colors
-   ChartSetInteger(0, CHART_MODE, CHART_CANDLES);
-   ChartSetInteger(0, CHART_COLOR_CANDLE_BULL, (long)clrGreen);
-   ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR, (long)clrRed);
-   ChartSetInteger(0, CHART_COLOR_CHART_UP, (long)clrGreen);
-   ChartSetInteger(0, CHART_COLOR_CHART_DOWN, (long)clrRed);
-   ChartSetInteger(0, CHART_COLOR_CHART_LINE, (long)clrGray);
-
    // Clear objects and dashboard
    ObjectsDeleteAll(0, "HA_Obj_");
    ObjectsDeleteAll(0, "HA_EA_");
@@ -200,12 +193,15 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void SetupHeikenAshiIndicator()
   {
+   // Reset handle
+   m_ha_visual_handle = INVALID_HANDLE;
+
    // Try loading indicators in priority order
-   m_ha_visual_handle = iCustom(_Symbol, m_tf, "Heiken_Ashi");
+   m_ha_visual_handle = iCustom(_Symbol, m_tf, "Heiken_Ashi Series");
+   if(m_ha_visual_handle == INVALID_HANDLE)
+      m_ha_visual_handle = iCustom(_Symbol, m_tf, "Heiken_Ashi");
    if(m_ha_visual_handle == INVALID_HANDLE)
       m_ha_visual_handle = iCustom(_Symbol, m_tf, "Examples\\Heiken_Ashi");
-   if(m_ha_visual_handle == INVALID_HANDLE)
-      m_ha_visual_handle = iCustom(_Symbol, m_tf, "HeikenAshi_Ind");
 
    if(m_ha_visual_handle != INVALID_HANDLE)
      {
@@ -213,7 +209,7 @@ void SetupHeikenAshiIndicator()
      }
    else
      {
-      Print("[INFO] Heiken Ashi indicator not found on chart path. EA will continue operating using internal calculations.");
+      Print("[INFO] Heiken Ashi indicator handle not loaded. Strategy execution continues using internal calculations.");
      }
   }
 
