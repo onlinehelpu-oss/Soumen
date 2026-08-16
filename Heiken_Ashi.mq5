@@ -10,7 +10,7 @@
 #property indicator_buffers 5
 #property indicator_plots   1
 #property indicator_type1   DRAW_COLOR_CANDLES
-#property indicator_color1  clrDodgerBlue,clrRed
+#property indicator_color1  C'0,168,133', C'235,83,83' // Teal/Green & Red matching TradingView/XM chart in screenshot
 #property indicator_label1  "Heiken Ashi Open;Heiken Ashi High;Heiken Ashi Low;Heiken Ashi Close"
 
 //--- indicator buffers
@@ -114,9 +114,9 @@ bool build_hashi(const int rates_total,
 
       //--- set candle color
       if(ha_open<ha_close)
-         ExtColorBuffer[i]=0.0; // Bullish (clrDodgerBlue)
+         ExtColorBuffer[i]=0.0; // Green/Teal (C'0,168,133')
       else
-         ExtColorBuffer[i]=1.0; // Bearish (clrRed)
+         ExtColorBuffer[i]=1.0; // Red (C'235,83,83')
      }
 
    return true;

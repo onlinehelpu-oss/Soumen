@@ -72,7 +72,7 @@ input double                   InpSLBufferPoints       = 0.0;                   
 
 sinput group "=== MAIN EMA Filter Configuration ==="
 input bool                     InpUseEMAFilter         = true;                  // Enable MAIN EMA Filter
-input int                      InpEMAPeriod            = 34;                    // MAIN EMA Period (e.g. 9, 15, 21, 50, 100, 200)
+input int                      InpEMAPeriod            = 34;                    // MAIN EMA Period (e.g. 9, 15, 21, 34, 50, 100, 200)
 input ENUM_MA_METHOD           InpEMAMethod            = MODE_EMA;              // EMA Smoothing Method
 input ENUM_APPLIED_PRICE       InpEMAAppliedPrice      = PRICE_CLOSE;           // EMA Applied Price
 
@@ -106,9 +106,6 @@ double                         m_breakout_target_price = 0.0;
 double                         m_stop_loss_price       = 0.0;
 double                         m_take_profit_price     = 0.0;
 
-//--- Visual Object Tracking
-datetime                       m_last_rendered_bar_time = 0;
-
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
@@ -140,6 +137,12 @@ int OnInit()
          Print("[ERROR] Failed to create EMA handle. Error: ", GetLastError());
          return INIT_FAILED;
         }
+
+      // Automatically attach EMA line to chart window in live & Strategy Tester visual mode
+      if(!MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_VISUAL_MODE))
+        {
+         ChartIndicatorAdd(0, 0, m_ema_handle);
+        }
      }
 
    // Hide standard raw chart candles if enabled
@@ -156,7 +159,6 @@ int OnInit()
    m_setup_active = false;
    m_setup_bar_time = 0;
    m_signal_candle_time = 0;
-   m_last_rendered_bar_time = 0;
 
    Print("[INIT] Expert Advisor successfully initialized. Timeframe: ", EnumToString(m_tf),
          " | EMA Filter: ", InpUseEMAFilter ? IntegerToString(InpEMAPeriod) : "DISABLED",
@@ -458,6 +460,10 @@ void RenderVisualHACandles(const MqlRates &rates[], const HA_Candle &ha[], int c
    // Render up to 50 visible historical bars
    int limit = MathMin(count, 50);
 
+   // Colors matching TradingView/XM chart screenshot
+   color green_color = C'0,168,133'; // Teal Green
+   color red_color   = C'235,83,83'; // Bright Red
+
    for(int i = 0; i < limit; i++)
      {
       datetime t = ha[i].time;
@@ -465,7 +471,7 @@ void RenderVisualHACandles(const MqlRates &rates[], const HA_Candle &ha[], int c
       string body_name = "HA_Obj_B_" + id_str;
       string wick_name = "HA_Obj_W_" + id_str;
 
-      color c = ha[i].is_green ? clrLime : clrRed;
+      color c = ha[i].is_green ? green_color : red_color;
 
       double body_top    = MathMax(ha[i].open, ha[i].close);
       double body_bottom = MathMin(ha[i].open, ha[i].close);
