@@ -80,15 +80,20 @@ input double                   InpRiskPercent          = 1.0;                   
 input double                   InpFixedLotSize         = 0.01;                  // Fixed Lot Size
 input double                   InpMinLotOverride       = 0.0;                   // Min Lot Override (0.0 = Use Broker Default)
 
+sinput group "=== Chart Display & Visuals ==="
+input bool                     InpAttachHAIndicator    = true;                  // Attach Heiken Ashi Visual Chart Display
+input bool                     InpHideStandardCandles  = true;                  // Hide Standard Chart Bars/Candles
+input bool                     InpShowDashboard        = true;                  // Show On-Chart Visual Dashboard
+
 sinput group "=== EA System Settings ==="
 input ulong                    InpMagicNumber          = 883401;                // Magic Number
 input string                   InpTradeComment         = "HA Breakout Sell";    // Trade Comment
-input bool                     InpShowDashboard        = true;                  // Show On-Chart Visual Dashboard
 
 //--- Global Variables & Objects
 CTrade                         m_trade;
 CSymbolInfo                    m_symbol;
 int                            m_ema_handle            = INVALID_HANDLE;
+int                            m_ha_visual_handle      = INVALID_HANDLE;
 ENUM_TIMEFRAMES                m_tf                    = PERIOD_M5;
 
 //--- Setup Tracking Variables
@@ -132,6 +137,12 @@ int OnInit()
         }
      }
 
+   // Setup Heiken Ashi visual display on chart / strategy tester
+   if(InpAttachHAIndicator)
+     {
+      SetupHeikenAshiChartDisplay();
+     }
+
    m_setup_active = false;
    m_setup_bar_time = 0;
    m_signal_candle_time = 0;
@@ -154,10 +165,62 @@ void OnDeinit(const int reason)
       m_ema_handle = INVALID_HANDLE;
      }
 
+   if(m_ha_visual_handle != INVALID_HANDLE)
+     {
+      IndicatorRelease(m_ha_visual_handle);
+      m_ha_visual_handle = INVALID_HANDLE;
+     }
+
+   // Restore chart candle mode if altered
+   if(InpHideStandardCandles)
+     {
+      ChartSetInteger(0, CHART_MODE, CHART_CANDLES);
+      ChartSetInteger(0, CHART_COLOR_CANDLE_BULL, (long)clrGreen);
+      ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR, (long)clrRed);
+      ChartSetInteger(0, CHART_COLOR_CHART_BULL, (long)clrGreen);
+      ChartSetInteger(0, CHART_COLOR_CHART_BEAR, (long)clrRed);
+     }
+
    // Clear dashboard objects
    ObjectsDeleteAll(0, "HA_EA_");
    ChartRedraw(0);
    Print("[DEINIT] EA removed. Reason code: ", reason);
+  }
+
+//+------------------------------------------------------------------+
+//| Setup Heiken Ashi Visual Display on Chart                        |
+//+------------------------------------------------------------------+
+void SetupHeikenAshiChartDisplay()
+  {
+   // Hide standard bar/candle colors so only Heiken Ashi is visible
+   if(InpHideStandardCandles)
+     {
+      ChartSetInteger(0, CHART_MODE, CHART_CANDLES);
+      ChartSetInteger(0, CHART_COLOR_CANDLE_BULL, (long)clrNONE);
+      ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR, (long)clrNONE);
+      ChartSetInteger(0, CHART_COLOR_CHART_BULL, (long)clrNONE);
+      ChartSetInteger(0, CHART_COLOR_CHART_BEAR, (long)clrNONE);
+      ChartSetInteger(0, CHART_COLOR_CHART_LINE, (long)clrNONE);
+     }
+
+   // Create or attach the Heiken Ashi visual indicator
+   // Try system built-in "Examples\\Heiken_Ashi" first, then custom "HeikenAshi_Ind"
+   m_ha_visual_handle = iCustom(_Symbol, m_tf, "HeikenAshi_Ind");
+   if(m_ha_visual_handle == INVALID_HANDLE)
+     {
+      m_ha_visual_handle = iCustom(_Symbol, m_tf, "Examples\\Heiken_Ashi");
+     }
+
+   if(m_ha_visual_handle != INVALID_HANDLE)
+     {
+      ChartIndicatorAdd(0, 0, m_ha_visual_handle);
+     }
+   else
+     {
+      Print("[WARNING] Could not attach Heiken Ashi visual indicator to chart.");
+     }
+
+   ChartRedraw(0);
   }
 
 //+------------------------------------------------------------------+
