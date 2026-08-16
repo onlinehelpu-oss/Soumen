@@ -9,6 +9,9 @@
 #property description "Professional MetaTrader 5 Expert Advisor based on Heiken Ashi Strategy."
 #property description "Executes Sell breakout entries when a Red HA candle with no upper wick is preceded by a Green HA candle."
 
+// Optional indicator hint for MT5 Strategy Tester asset inclusion
+#property tester_indicator "Examples\\Heiken_Ashi.ex5"
+
 #include <Trade\Trade.mqh>
 #include <Trade\SymbolInfo.mqh>
 
@@ -81,9 +84,9 @@ input double                   InpFixedLotSize         = 0.01;                  
 input double                   InpMinLotOverride       = 0.0;                   // Min Lot Override (0.0 = Use Broker Default)
 
 sinput group "=== Chart Display & Visuals ==="
-input bool                     InpAttachHAIndicator    = true;                  // Attach Heiken Ashi Visual Chart Display
-input bool                     InpHideStandardCandles  = true;                  // Hide Standard Chart Bars/Candles
-input bool                     InpShowDashboard        = true;                  // Show On-Chart Visual Dashboard
+input bool                     InpRenderHACandlesOnChart = true;                // Render Heiken Ashi Candles On Chart
+input bool                     InpHideStandardCandles    = true;                // Hide Standard Chart Bars/Candles
+input bool                     InpShowDashboard          = true;                // Show On-Chart Visual Dashboard
 
 sinput group "=== EA System Settings ==="
 input ulong                    InpMagicNumber          = 883401;                // Magic Number
@@ -93,7 +96,6 @@ input string                   InpTradeComment         = "HA Breakout Sell";    
 CTrade                         m_trade;
 CSymbolInfo                    m_symbol;
 int                            m_ema_handle            = INVALID_HANDLE;
-int                            m_ha_visual_handle      = INVALID_HANDLE;
 ENUM_TIMEFRAMES                m_tf                    = PERIOD_M5;
 
 //--- Setup Tracking Variables
@@ -103,6 +105,9 @@ datetime                       m_signal_candle_time    = 0;
 double                         m_breakout_target_price = 0.0;
 double                         m_stop_loss_price       = 0.0;
 double                         m_take_profit_price     = 0.0;
+
+//--- Visual Object Tracking
+datetime                       m_last_rendered_bar_time = 0;
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
@@ -137,15 +142,21 @@ int OnInit()
         }
      }
 
-   // Setup Heiken Ashi visual display on chart / strategy tester
-   if(InpAttachHAIndicator)
+   // Hide standard raw chart candles if enabled
+   if(InpHideStandardCandles && (!MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_VISUAL_MODE)))
      {
-      SetupHeikenAshiChartDisplay();
+      ChartSetInteger(0, CHART_MODE, CHART_CANDLES);
+      ChartSetInteger(0, CHART_COLOR_CANDLE_BULL, (long)clrNONE);
+      ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR, (long)clrNONE);
+      ChartSetInteger(0, CHART_COLOR_CHART_UP, (long)clrNONE);
+      ChartSetInteger(0, CHART_COLOR_CHART_DOWN, (long)clrNONE);
+      ChartSetInteger(0, CHART_COLOR_CHART_LINE, (long)clrNONE);
      }
 
    m_setup_active = false;
    m_setup_bar_time = 0;
    m_signal_candle_time = 0;
+   m_last_rendered_bar_time = 0;
 
    Print("[INIT] Expert Advisor successfully initialized. Timeframe: ", EnumToString(m_tf),
          " | EMA Filter: ", InpUseEMAFilter ? IntegerToString(InpEMAPeriod) : "DISABLED",
@@ -165,13 +176,7 @@ void OnDeinit(const int reason)
       m_ema_handle = INVALID_HANDLE;
      }
 
-   if(m_ha_visual_handle != INVALID_HANDLE)
-     {
-      IndicatorRelease(m_ha_visual_handle);
-      m_ha_visual_handle = INVALID_HANDLE;
-     }
-
-   // Restore chart candle mode if altered
+   // Restore chart candle colors
    if(InpHideStandardCandles)
      {
       ChartSetInteger(0, CHART_MODE, CHART_CANDLES);
@@ -181,45 +186,11 @@ void OnDeinit(const int reason)
       ChartSetInteger(0, CHART_COLOR_CHART_DOWN, (long)clrRed);
      }
 
-   // Clear dashboard objects
+   // Clear visual chart objects
+   ObjectsDeleteAll(0, "HA_Obj_");
    ObjectsDeleteAll(0, "HA_EA_");
    ChartRedraw(0);
    Print("[DEINIT] EA removed. Reason code: ", reason);
-  }
-
-//+------------------------------------------------------------------+
-//| Setup Heiken Ashi Visual Display on Chart                        |
-//+------------------------------------------------------------------+
-void SetupHeikenAshiChartDisplay()
-  {
-   // Hide standard bar/candle colors so only Heiken Ashi is visible
-   if(InpHideStandardCandles)
-     {
-      ChartSetInteger(0, CHART_MODE, CHART_CANDLES);
-      ChartSetInteger(0, CHART_COLOR_CANDLE_BULL, (long)clrNONE);
-      ChartSetInteger(0, CHART_COLOR_CANDLE_BEAR, (long)clrNONE);
-      ChartSetInteger(0, CHART_COLOR_CHART_UP, (long)clrNONE);
-      ChartSetInteger(0, CHART_COLOR_CHART_DOWN, (long)clrNONE);
-      ChartSetInteger(0, CHART_COLOR_CHART_LINE, (long)clrNONE);
-     }
-
-   // Create or attach the Heiken Ashi visual indicator
-   m_ha_visual_handle = iCustom(_Symbol, m_tf, "HeikenAshi_Ind");
-   if(m_ha_visual_handle == INVALID_HANDLE)
-     {
-      m_ha_visual_handle = iCustom(_Symbol, m_tf, "Examples\\Heiken_Ashi");
-     }
-
-   if(m_ha_visual_handle != INVALID_HANDLE)
-     {
-      ChartIndicatorAdd(0, 0, m_ha_visual_handle);
-     }
-   else
-     {
-      Print("[WARNING] Could not attach Heiken Ashi visual indicator to chart.");
-     }
-
-   ChartRedraw(0);
   }
 
 //+------------------------------------------------------------------+
@@ -242,7 +213,7 @@ void OnTick()
      }
 
    // 2. Fetch Rates and Calculate Heiken Ashi Candles
-   int req_bars = 30;
+   int req_bars = 60;
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
 
@@ -261,7 +232,13 @@ void OnTick()
       return;
      }
 
-   // 3. New Signal Scan on Bar Open
+   // 3. Render Visual Heiken Ashi Candles on Chart
+   if(InpRenderHACandlesOnChart && (!MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_VISUAL_MODE)))
+     {
+      RenderVisualHACandles(rates, ha, req_bars);
+     }
+
+   // 4. New Signal Scan on Bar Open
    datetime current_bar_time = rates[0].time;
 
    // Check if the signal setup bar has passed without breakout occurring
@@ -278,7 +255,7 @@ void OnTick()
       CheckForNewSetup(rates, ha, current_bar_time);
      }
 
-   // 4. Tick-by-Tick Breakout Execution
+   // 5. Tick-by-Tick Breakout Execution
    if(m_setup_active && current_bar_time == m_setup_bar_time)
      {
       double current_bid = m_symbol.Bid();
@@ -294,7 +271,7 @@ void OnTick()
         }
      }
 
-   // 5. Update Visual Dashboard
+   // 6. Update Visual Dashboard
    if(InpShowDashboard)
      {
       if(m_setup_active)
@@ -471,6 +448,65 @@ bool CalculateHeikenAshi(const MqlRates &rates[], int count, HA_Candle &ha[])
      }
 
    return true;
+  }
+
+//+------------------------------------------------------------------+
+//| Render Heiken Ashi Candles using native Chart Objects            |
+//+------------------------------------------------------------------+
+void RenderVisualHACandles(const MqlRates &rates[], const HA_Candle &ha[], int count)
+  {
+   // Render up to 50 visible historical bars
+   int limit = MathMin(count, 50);
+
+   for(int i = 0; i < limit; i++)
+     {
+      datetime t = ha[i].time;
+      string id_str = IntegerToString((long)t);
+      string body_name = "HA_Obj_B_" + id_str;
+      string wick_name = "HA_Obj_W_" + id_str;
+
+      color c = ha[i].is_green ? clrLime : clrRed;
+
+      double body_top    = MathMax(ha[i].open, ha[i].close);
+      double body_bottom = MathMin(ha[i].open, ha[i].close);
+
+      // Avoid zero-height rectangle body glitch
+      if(body_top == body_bottom)
+         body_top += _Point;
+
+      // 1. Create or Update Wick Trend Line
+      if(ObjectFind(0, wick_name) < 0)
+        {
+         ObjectCreate(0, wick_name, OBJ_TREND, 0, t, ha[i].high, t, ha[i].low);
+         ObjectSetInteger(0, wick_name, OBJPROP_RAY_RIGHT, false);
+         ObjectSetInteger(0, wick_name, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, wick_name, OBJPROP_HIDDEN, true);
+         ObjectSetInteger(0, wick_name, OBJPROP_WIDTH, 1);
+        }
+      else
+        {
+         ObjectSetDouble(0, wick_name, OBJPROP_PRICE, 0, ha[i].high);
+         ObjectSetDouble(0, wick_name, OBJPROP_PRICE, 1, ha[i].low);
+        }
+      ObjectSetInteger(0, wick_name, OBJPROP_COLOR, (long)c);
+
+      // 2. Create or Update Candle Body Rectangle
+      if(ObjectFind(0, body_name) < 0)
+        {
+         ObjectCreate(0, body_name, OBJ_RECTANGLE, 0, t, body_top, t + PeriodSeconds(m_tf), body_bottom);
+         ObjectSetInteger(0, body_name, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, body_name, OBJPROP_HIDDEN, true);
+         ObjectSetInteger(0, body_name, OBJPROP_BACK, false);
+         ObjectSetInteger(0, body_name, OBJPROP_FILL, true);
+        }
+      else
+        {
+         ObjectSetDouble(0, body_name, OBJPROP_PRICE, 0, body_top);
+         ObjectSetDouble(0, body_name, OBJPROP_PRICE, 1, body_bottom);
+         ObjectSetInteger(0, body_name, OBJPROP_TIME, 1, t + PeriodSeconds(m_tf));
+        }
+      ObjectSetInteger(0, body_name, OBJPROP_COLOR, (long)c);
+     }
   }
 
 //+------------------------------------------------------------------+
