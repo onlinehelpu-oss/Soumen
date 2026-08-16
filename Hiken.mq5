@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                               HeikenAshi_TrendContinuation_EA.mq5|
+//|                                                         Hiken.mq5|
 //|                                  Copyright 2025                  |
 //|                                                                  |
 //| Multi-Timeframe Heiken Ashi Trend Continuation Strategy for MT5  |
