@@ -5,8 +5,8 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025"
 #property link      "https://www.mql5.com"
-#property version   "1.10"
-#property description "Three White Soldiers BUY Strategy with W-Pattern Filter Expert Advisor for MT5"
+#property version   "1.20"
+#property description "Three White Soldiers BUY Strategy with Downtrend W-Pattern Filter Expert Advisor for MT5"
 
 #include <Trade\Trade.mqh>
 
@@ -21,8 +21,11 @@ enum ENUM_STOP_LOSS_MODE
 input group "--- Timeframe Settings ---"
 input ENUM_TIMEFRAMES      InpSignalTimeframe = PERIOD_M15;    // Signal Timeframe
 
-input group "--- W-Pattern (Double Bottom) Filter Settings ---"
+input group "--- W-Pattern & Downtrend Filter Settings ---"
 input bool                 InpUseWPatternFilter     = true;   // Enable W-Pattern Filter
+input bool                 InpRequireDowntrendPrior = true;   // Require Prior Downtrend Before W-Pattern
+input int                  InpDowntrendLookback     = 20;     // Lookback Bars Prior to Bottom 1 for Downtrend
+input double               InpMinDowntrendDropPts   = 50.0;   // Min Price Drop Prior to Bottom 1 (Points)
 input int                  InpWPatternLookback      = 30;     // Lookback Bars for W-Pattern Detection
 input double               InpWPatternTolerancePts  = 50.0;   // Max Diff between Bottom 1 and Bottom 2 (Points)
 input double               InpMinWHeightPts         = 30.0;   // Min Height between Bottoms and Peak (Points)
@@ -79,8 +82,10 @@ int OnInit()
       return(INIT_PARAMETERS_INCORRECT);
      }
 
-   PrintFormat("[INIT] Three White Soldiers EA initialized on %s. Signal Timeframe: %s | W-Filter: %s",
-               _Symbol, EnumToString(InpSignalTimeframe), InpUseWPatternFilter ? "ENABLED" : "DISABLED");
+   PrintFormat("[INIT] Three White Soldiers EA initialized on %s. Signal Timeframe: %s | W-Filter: %s | Prior Downtrend Required: %s",
+               _Symbol, EnumToString(InpSignalTimeframe),
+               InpUseWPatternFilter ? "ENABLED" : "DISABLED",
+               InpRequireDowntrendPrior ? "YES" : "NO");
 
    return(INIT_SUCCEEDED);
   }
@@ -128,8 +133,8 @@ void OnTick()
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
 
-   int req_lookback = MathMax(InpWPatternLookback + 5, InpSwingLowLookback + 5);
-   req_lookback = MathMax(req_lookback, 10);
+   int req_lookback = MathMax(InpWPatternLookback + InpDowntrendLookback + 10, InpSwingLowLookback + 5);
+   req_lookback = MathMax(req_lookback, 20);
 
    if(CopyRates(_Symbol, InpSignalTimeframe, 0, req_lookback, rates) < req_lookback)
      {
@@ -149,19 +154,19 @@ void OnTick()
    // Check Three White Soldiers Pattern
    if(candle1_bullish && candle2_bullish && candle3_bullish)
      {
-      // If W-Pattern filter is enabled, verify W-pattern formation starting at candle 1 / 2 / 3
+      // If W-Pattern filter is enabled, verify W-pattern formation after a downtrend as fresh wave starting
       if(InpUseWPatternFilter)
         {
          if(!IsWPatternStarting(rates))
            {
-            PrintFormat("[FILTER] Three White Soldiers pattern detected at %s, but W-Pattern filter NOT satisfied. Trade skipped.",
+            PrintFormat("[FILTER] Three White Soldiers pattern detected at %s, but Downtrend W-Pattern filter NOT satisfied. Trade skipped.",
                         TimeToString(rates[1].time, TIME_DATE|TIME_MINUTES));
             return;
            }
         }
 
       PrintFormat("[SIGNAL] Three White Soldiers Pattern %s detected at %s! Candle 1 (O:%.5f, C:%.5f), Candle 2 (O:%.5f, C:%.5f), Candle 3 (O:%.5f, C:%.5f)",
-                  InpUseWPatternFilter ? "(with W-Pattern Confirmation)" : "",
+                  InpUseWPatternFilter ? "(Downtrend W-Pattern Fresh Wave Confirmed)" : "",
                   TimeToString(rates[1].time, TIME_DATE|TIME_MINUTES),
                   rates[3].open, rates[3].close,
                   rates[2].open, rates[2].close,
@@ -172,15 +177,14 @@ void OnTick()
   }
 
 //+------------------------------------------------------------------+
-//| Check if Three White Soldiers form at the start of W second leg  |
+//| Check if Three White Soldiers form at fresh wave after Downtrend W|
 //+------------------------------------------------------------------+
 bool IsWPatternStarting(const MqlRates &rates[])
   {
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
    int max_rates = ArraySize(rates);
 
-   // Second bottom (Bottom 2) should be formed around Candle 1 (index 3) or near index 1..4
-   // Find local minimum for Second Bottom (Bottom 2) around indices 1..5
+   // Second bottom (Bottom 2) should be formed around Candle 1 (index 3) or near index 1..5
    int bottom2_idx = 3; // Default to candle 1 low
    double bottom2_low = rates[3].low;
 
@@ -197,7 +201,6 @@ bool IsWPatternStarting(const MqlRates &rates[])
    int peak_idx = -1;
    double peak_high = -1.0;
 
-   // Peak must be strictly prior to bottom2_idx (e.g., index bottom2_idx + 2 to bottom2_idx + 15)
    int search_start = bottom2_idx + 2;
    int search_end = MathMin(bottom2_idx + 15, max_rates - 5);
 
@@ -230,9 +233,40 @@ bool IsWPatternStarting(const MqlRates &rates[])
 
    if(bottom1_idx == -1) return false;
 
+   // --- Validate Prior Downtrend Before Bottom 1 ---
+   if(InpRequireDowntrendPrior)
+     {
+      // Find highest high in the lookback window prior to Bottom 1 (b1_end to b1_end + InpDowntrendLookback)
+      int dt_start = bottom1_idx + 1;
+      int dt_end = MathMin(bottom1_idx + InpDowntrendLookback, max_rates - 1);
+
+      if(dt_start >= dt_end) return false;
+
+      double prior_high = -1.0;
+      int prior_high_idx = -1;
+
+      for(int i = dt_start; i <= dt_end; i++)
+        {
+         if(rates[i].high > prior_high)
+           {
+            prior_high = rates[i].high;
+            prior_high_idx = i;
+           }
+        }
+
+      if(prior_high_idx == -1) return false;
+
+      double downtrend_drop_pts = (prior_high - bottom1_low) / point;
+      if(downtrend_drop_pts < InpMinDowntrendDropPts)
+        {
+         // Price drop before Bottom 1 was not significant enough to qualify as a true down trend
+         return false;
+        }
+     }
+
    // --- Validate W-Pattern Criteria ---
 
-   // 1. Bottom 1 and Bottom 2 must be within the user-specified tolerance distance
+   // 1. Bottom 1 and Bottom 2 must be within user tolerance distance
    double bottom_diff_pts = MathAbs(bottom1_low - bottom2_low) / point;
    if(bottom_diff_pts > InpWPatternTolerancePts)
      {
@@ -248,14 +282,14 @@ bool IsWPatternStarting(const MqlRates &rates[])
       return false;
      }
 
-   // 3. Three White Soldiers (rates[3], rates[2], rates[1]) must be moving UP from Bottom 2
-   // Close of Candle 3 (rates[1].close) must be significantly higher than Bottom 2
+   // 3. Fresh Upward Wave: Three White Soldiers (rates[3], rates[2], rates[1]) must be the initial fresh wave upward from Bottom 2
+   // Close of Candle 3 (rates[1].close) must move up from Bottom 2 but not have already far passed/overrun the W neckline peak prior to Candle 1
    if(rates[1].close <= bottom2_low)
      {
       return false;
      }
 
-   PrintFormat("[W-PATTERN CONFIRMED] Bottom1 (idx:%d, low:%.5f), Peak (idx:%d, high:%.5f), Bottom2 (idx:%d, low:%.5f). Diff: %.1f pts, Height: %.1f pts",
+   PrintFormat("[DOWNTREND W-PATTERN CONFIRMED] Bottom1 (idx:%d, low:%.5f), Peak (idx:%d, high:%.5f), Bottom2 (idx:%d, low:%.5f). Diff: %.1f pts, Height: %.1f pts",
                bottom1_idx, bottom1_low, peak_idx, peak_high, bottom2_idx, bottom2_low, bottom_diff_pts, height2_pts);
 
    return true;
