@@ -5,8 +5,8 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025"
 #property link      "https://www.mql5.com"
-#property version   "1.00"
-#property description "Three White Soldiers BUY Strategy Expert Advisor for MT5"
+#property version   "1.10"
+#property description "Three White Soldiers BUY Strategy with W-Pattern Filter Expert Advisor for MT5"
 
 #include <Trade\Trade.mqh>
 
@@ -20,6 +20,12 @@ enum ENUM_STOP_LOSS_MODE
 //--- Input Parameters
 input group "--- Timeframe Settings ---"
 input ENUM_TIMEFRAMES      InpSignalTimeframe = PERIOD_M15;    // Signal Timeframe
+
+input group "--- W-Pattern (Double Bottom) Filter Settings ---"
+input bool                 InpUseWPatternFilter     = true;   // Enable W-Pattern Filter
+input int                  InpWPatternLookback      = 30;     // Lookback Bars for W-Pattern Detection
+input double               InpWPatternTolerancePts  = 50.0;   // Max Diff between Bottom 1 and Bottom 2 (Points)
+input double               InpMinWHeightPts         = 30.0;   // Min Height between Bottoms and Peak (Points)
 
 input group "--- Stop Loss & Take Profit Settings ---"
 input ENUM_STOP_LOSS_MODE  InpStopLossMode    = SL_MODE_FIRST_CANDLE_LOW; // Stop Loss Mode
@@ -67,8 +73,14 @@ int OnInit()
       return(INIT_PARAMETERS_INCORRECT);
      }
 
-   PrintFormat("[INIT] Three White Soldiers EA initialized on %s. Signal Timeframe: %s",
-               _Symbol, EnumToString(InpSignalTimeframe));
+   if(InpWPatternLookback < 10)
+     {
+      Print("[ERROR] InpWPatternLookback must be at least 10 bars.");
+      return(INIT_PARAMETERS_INCORRECT);
+     }
+
+   PrintFormat("[INIT] Three White Soldiers EA initialized on %s. Signal Timeframe: %s | W-Filter: %s",
+               _Symbol, EnumToString(InpSignalTimeframe), InpUseWPatternFilter ? "ENABLED" : "DISABLED");
 
    return(INIT_SUCCEEDED);
   }
@@ -116,8 +128,10 @@ void OnTick()
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
 
-   int copy_count = MathMax(4, InpSwingLowLookback + 2);
-   if(CopyRates(_Symbol, InpSignalTimeframe, 0, copy_count, rates) < copy_count)
+   int req_lookback = MathMax(InpWPatternLookback + 5, InpSwingLowLookback + 5);
+   req_lookback = MathMax(req_lookback, 10);
+
+   if(CopyRates(_Symbol, InpSignalTimeframe, 0, req_lookback, rates) < req_lookback)
      {
       Print("[WARNING] Not enough history rates copied on timeframe ", EnumToString(InpSignalTimeframe));
       return;
@@ -135,7 +149,19 @@ void OnTick()
    // Check Three White Soldiers Pattern
    if(candle1_bullish && candle2_bullish && candle3_bullish)
      {
-      PrintFormat("[SIGNAL] Three White Soldiers Pattern detected at %s! Candle 1 (O:%.5f, C:%.5f), Candle 2 (O:%.5f, C:%.5f), Candle 3 (O:%.5f, C:%.5f)",
+      // If W-Pattern filter is enabled, verify W-pattern formation starting at candle 1 / 2 / 3
+      if(InpUseWPatternFilter)
+        {
+         if(!IsWPatternStarting(rates))
+           {
+            PrintFormat("[FILTER] Three White Soldiers pattern detected at %s, but W-Pattern filter NOT satisfied. Trade skipped.",
+                        TimeToString(rates[1].time, TIME_DATE|TIME_MINUTES));
+            return;
+           }
+        }
+
+      PrintFormat("[SIGNAL] Three White Soldiers Pattern %s detected at %s! Candle 1 (O:%.5f, C:%.5f), Candle 2 (O:%.5f, C:%.5f), Candle 3 (O:%.5f, C:%.5f)",
+                  InpUseWPatternFilter ? "(with W-Pattern Confirmation)" : "",
                   TimeToString(rates[1].time, TIME_DATE|TIME_MINUTES),
                   rates[3].open, rates[3].close,
                   rates[2].open, rates[2].close,
@@ -143,6 +169,96 @@ void OnTick()
 
       ExecuteBuyEntry(rates);
      }
+  }
+
+//+------------------------------------------------------------------+
+//| Check if Three White Soldiers form at the start of W second leg  |
+//+------------------------------------------------------------------+
+bool IsWPatternStarting(const MqlRates &rates[])
+  {
+   double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   int max_rates = ArraySize(rates);
+
+   // Second bottom (Bottom 2) should be formed around Candle 1 (index 3) or near index 1..4
+   // Find local minimum for Second Bottom (Bottom 2) around indices 1..5
+   int bottom2_idx = 3; // Default to candle 1 low
+   double bottom2_low = rates[3].low;
+
+   for(int i = 1; i <= MathMin(5, max_rates - 1); i++)
+     {
+      if(rates[i].low < bottom2_low)
+        {
+         bottom2_low = rates[i].low;
+         bottom2_idx = i;
+        }
+     }
+
+   // Search backwards for the intervening peak (Neckline peak between Bottom 1 and Bottom 2)
+   int peak_idx = -1;
+   double peak_high = -1.0;
+
+   // Peak must be strictly prior to bottom2_idx (e.g., index bottom2_idx + 2 to bottom2_idx + 15)
+   int search_start = bottom2_idx + 2;
+   int search_end = MathMin(bottom2_idx + 15, max_rates - 5);
+
+   for(int i = search_start; i <= search_end; i++)
+     {
+      if(rates[i].high > peak_high)
+        {
+         peak_high = rates[i].high;
+         peak_idx = i;
+        }
+     }
+
+   if(peak_idx == -1) return false;
+
+   // Search further backwards for First Bottom (Bottom 1) prior to peak_idx
+   int bottom1_idx = -1;
+   double bottom1_low = 999999.0;
+
+   int b1_start = peak_idx + 2;
+   int b1_end = MathMin(peak_idx + 15, MathMin(InpWPatternLookback, max_rates - 1));
+
+   for(int i = b1_start; i <= b1_end; i++)
+     {
+      if(rates[i].low < bottom1_low)
+        {
+         bottom1_low = rates[i].low;
+         bottom1_idx = i;
+        }
+     }
+
+   if(bottom1_idx == -1) return false;
+
+   // --- Validate W-Pattern Criteria ---
+
+   // 1. Bottom 1 and Bottom 2 must be within the user-specified tolerance distance
+   double bottom_diff_pts = MathAbs(bottom1_low - bottom2_low) / point;
+   if(bottom_diff_pts > InpWPatternTolerancePts)
+     {
+      return false;
+     }
+
+   // 2. Minimum height requirement: Peak must be higher than both bottoms by at least InpMinWHeightPts
+   double height1_pts = (peak_high - bottom1_low) / point;
+   double height2_pts = (peak_high - bottom2_low) / point;
+
+   if(height1_pts < InpMinWHeightPts || height2_pts < InpMinWHeightPts)
+     {
+      return false;
+     }
+
+   // 3. Three White Soldiers (rates[3], rates[2], rates[1]) must be moving UP from Bottom 2
+   // Close of Candle 3 (rates[1].close) must be significantly higher than Bottom 2
+   if(rates[1].close <= bottom2_low)
+     {
+      return false;
+     }
+
+   PrintFormat("[W-PATTERN CONFIRMED] Bottom1 (idx:%d, low:%.5f), Peak (idx:%d, high:%.5f), Bottom2 (idx:%d, low:%.5f). Diff: %.1f pts, Height: %.1f pts",
+               bottom1_idx, bottom1_low, peak_idx, peak_high, bottom2_idx, bottom2_low, bottom_diff_pts, height2_pts);
+
+   return true;
   }
 
 //+------------------------------------------------------------------+
