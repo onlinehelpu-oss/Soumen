@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                                   MTF_EMA_VWAP_Breakout_EA.mq5   |
+//|                                                Vwap EMA sell.mq5 |
 //|                    Multi-Timeframe EMA & VWAP Sell Breakout EA   |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2025"
