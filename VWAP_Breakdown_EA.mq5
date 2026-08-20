@@ -369,8 +369,7 @@ bool HasOpenPosition()
 //+------------------------------------------------------------------+
 uint GetFillingMode()
   {
-   uint filling = (uint)m_symbol.ExecutionMode();
-   uint mode    = (uint)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+   uint mode = (uint)SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
 
    if((mode & SYMBOL_FILLING_FOK) != 0)
       return ORDER_FILLING_FOK;
