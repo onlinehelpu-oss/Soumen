@@ -6,22 +6,49 @@
 #property copyright "EA Developer"
 #property link      "https://www.mql5.com"
 #property version   "1.00"
-#property description "MT5 Expert Advisor - VWAP Breakdown Strategy"
+#property description "MT5 Expert Advisor - VWAP Breakdown Strategy with Pivot Point Standard Filter"
 #property description "1. Red Signal Candle: High > VWAP and Close < VWAP on Strategy Timeframe"
-#property description "2. Entry: Next immediate candle breaks below Signal Candle Low"
-#property description "3. Stop Loss: Signal Candle High (+ optional buffer)"
-#property description "4. Take Profit: Configurable Risk-to-Reward Ratio (1:1, 1:2, custom)"
+#property description "2. Pivot Filter: Price strictly below Pivot level (P) if Pivot Filter is enabled"
+#property description "3. Entry: Next immediate candle breaks below Signal Candle Low"
+#property description "4. Stop Loss: Signal Candle High (+ optional buffer)"
+#property description "5. Take Profit: Configurable Risk-to-Reward Ratio (1:1, 1:2, custom)"
 
 #property tester_indicator "VWAP.ex5"
+#property tester_indicator "Pivot_Points_Standard.ex5"
 
 #include <Trade\Trade.mqh>
 #include <Trade\SymbolInfo.mqh>
 #include <Trade\PositionInfo.mqh>
 
+enum ENUM_PIVOT_TYPE_EA
+  {
+   EA_PIVOT_TRADITIONAL = 0, // Traditional
+   EA_PIVOT_FIBONACCI   = 1, // Fibonacci
+   EA_PIVOT_WOODIE      = 2, // Woodie
+   EA_PIVOT_CLASSIC     = 3, // Classic
+   EA_PIVOT_DEMARK      = 4, // DM (DeMark)
+   EA_PIVOT_CAMARILLA   = 5  // Camarilla
+  };
+
+enum ENUM_PIVOT_TIMEFRAME_EA
+  {
+   EA_PIVOT_TF_AUTO    = 0, // Auto
+   EA_PIVOT_TF_DAILY   = 1, // Daily
+   EA_PIVOT_TF_WEEKLY  = 2, // Weekly
+   EA_PIVOT_TF_MONTHLY = 3, // Monthly
+   EA_PIVOT_TF_YEARLY  = 4  // Yearly
+  };
+
 //--- Input Parameters
 input group "=== Strategy Settings ===";
 input ENUM_TIMEFRAMES InpStrategyTF        = PERIOD_M15;    // Strategy Timeframe (M1, M3, M5, M15, M30, H1, D1)
 input ENUM_TIMEFRAMES InpVWAPResetPeriod   = PERIOD_D1;     // VWAP Reset Period (PERIOD_D1, PERIOD_W1, PERIOD_MN1)
+
+input group "=== Pivot Point Filter & Settings ===";
+input bool                  InpUsePivotFilter    = true;                 // Use Pivot Filter (Sell only below Pivot P)
+input bool                  InpShowPivotsOnChart = true;                 // Plot Pivot Points Standard on Chart (ON/OFF)
+input ENUM_PIVOT_TYPE_EA    InpPivotType         = EA_PIVOT_TRADITIONAL; // Pivot Type
+input ENUM_PIVOT_TIMEFRAME_EA InpPivotTimeframe  = EA_PIVOT_TF_AUTO;      // Pivot Timeframe
 
 input group "=== Risk & Target Management ===";
 input double          InpRiskRewardRatio   = 2.0;           // Risk-to-Reward Ratio (1.0 = 1:1, 2.0 = 1:2, etc.)
@@ -42,6 +69,7 @@ CSymbolInfo    m_symbol;
 CPositionInfo  m_position;
 
 int            m_vwap_handle        = INVALID_HANDLE;
+int            m_pivot_handle       = INVALID_HANDLE;
 datetime       m_last_bar_time      = 0;
 bool           m_pending_breakout   = false;
 double         m_signal_high        = 0.0;
@@ -78,17 +106,30 @@ int OnInit()
       return(INIT_FAILED);
      }
 
-   // Attach VWAP to Chart in Visual Mode / Live Chart
+   // Load Pivot Points Standard Indicator Handle
+   m_pivot_handle = iCustom(_Symbol, InpStrategyTF, "Pivot_Points_Standard", InpPivotType, InpPivotTimeframe, InpShowPivotsOnChart);
+   if(m_pivot_handle == INVALID_HANDLE)
+     {
+      Print("[WARNING] Failed to load Pivot_Points_Standard indicator handle.");
+     }
+
+   // Attach Indicators to Chart in Visual Mode / Live Chart
    if(!MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_VISUAL_MODE))
      {
       ChartIndicatorAdd(0, 0, m_vwap_handle);
+      if(InpShowPivotsOnChart && m_pivot_handle != INVALID_HANDLE)
+        {
+         ChartIndicatorAdd(0, 0, m_pivot_handle);
+        }
      }
 
    m_last_bar_time    = 0;
    m_pending_breakout = false;
 
-   Print("[INFO] VWAP Breakdown EA Initialized Successfully. Strategy TF: ", EnumToString(InpStrategyTF),
-         " | VWAP Reset: ", EnumToString(InpVWAPResetPeriod), " | RR: 1:", DoubleToString(InpRiskRewardRatio, 2));
+   Print("[INFO] VWAP Breakdown EA Initialized. Strategy TF: ", EnumToString(InpStrategyTF),
+         " | Pivot Filter: ", (InpUsePivotFilter ? "ON" : "OFF"),
+         " | Pivot Plot: ", (InpShowPivotsOnChart ? "ON" : "OFF"),
+         " | RR: 1:", DoubleToString(InpRiskRewardRatio, 2));
 
    return(INIT_SUCCEEDED);
   }
@@ -98,14 +139,18 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
-   // Release indicator handle
    if(m_vwap_handle != INVALID_HANDLE)
      {
       IndicatorRelease(m_vwap_handle);
       m_vwap_handle = INVALID_HANDLE;
      }
 
-   // Clean up visual objects
+   if(m_pivot_handle != INVALID_HANDLE)
+     {
+      IndicatorRelease(m_pivot_handle);
+      m_pivot_handle = INVALID_HANDLE;
+     }
+
    ObjectsDeleteAllPrefix(m_dashboard_obj_prefix);
    Comment("");
   }
@@ -137,23 +182,19 @@ void OnTick()
    // 2. Monitor Pending Breakout Setup (Next Candle Execution)
    if(m_pending_breakout)
      {
-      // Verify if pending setup is still valid (must be inside the immediate next candle)
       datetime candle_0_time = iTime(_Symbol, InpStrategyTF, 0);
       if(candle_0_time != m_target_bar_time)
         {
-         // Next immediate candle has closed without breakout -> Expire setup
          m_pending_breakout = false;
          Print("[INFO] Signal setup expired: Next candle closed without breaking Signal Low.");
         }
       else
         {
-         // Check for price breakdown below signal low
          double trigger_price = m_signal_low - (InpSLBufferPoints * m_symbol.Point());
          double current_bid   = m_symbol.Bid();
 
          if(current_bid <= trigger_price)
            {
-            // Trigger SELL Trade
             ExecuteShortEntry();
            }
         }
@@ -168,20 +209,17 @@ void OnTick()
 //+------------------------------------------------------------------+
 void CheckForNewSignal()
   {
-   // If limit 1 position active and we already have a position, skip signal search
    if(InpOnePositionAtOnce && HasOpenPosition())
       return;
 
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
-   // Copy historical bar at index 1 (completed candle)
    if(CopyRates(_Symbol, InpStrategyTF, 1, 1, rates) < 1)
      {
       Print("[WARNING] CopyRates failed for Strategy Timeframe.");
       return;
      }
 
-   // Index 0 of copied rates array corresponds to historical bar 1
    double open_p  = rates[0].open;
    double high_p  = rates[0].high;
    double low_p   = rates[0].low;
@@ -198,27 +236,47 @@ void CheckForNewSignal()
 
    double vwap_val = vwap_arr[0];
 
+   // Read Pivot P level if filter active
+   double pivot_p_val = 0.0;
+   bool pivot_condition_ok = true;
+
+   if(InpUsePivotFilter && m_pivot_handle != INVALID_HANDLE)
+     {
+      double p_arr[];
+      ArraySetAsSeries(p_arr, true);
+      if(CopyBuffer(m_pivot_handle, 0, 1, 1, p_arr) >= 1)
+        {
+         pivot_p_val = p_arr[0];
+         // Price must be strictly below Pivot P
+         if(close_p >= pivot_p_val)
+           {
+            pivot_condition_ok = false;
+           }
+        }
+     }
+
    // Strategy Conditions:
    // 1. Red Candle: close < open
    // 2. Touched or crossed above VWAP: high > vwap_val
    // 3. Closed below VWAP: close < vwap_val
-   bool is_red          = (close_p < open_p);
-   bool high_above_vwap = (high_p > vwap_val);
-   bool close_below_vwap= (close_p < vwap_val);
+   // 4. Pivot Filter: close < Pivot P
+   bool is_red           = (close_p < open_p);
+   bool high_above_vwap  = (high_p > vwap_val);
+   bool close_below_vwap = (close_p < vwap_val);
 
-   if(is_red && high_above_vwap && close_below_vwap)
+   if(is_red && high_above_vwap && close_below_vwap && pivot_condition_ok)
      {
       m_pending_breakout = true;
       m_signal_high      = high_p;
       m_signal_low       = low_p;
       m_signal_time      = rates[0].time;
-      m_target_bar_time  = iTime(_Symbol, InpStrategyTF, 0); // Immediate next bar (index 0)
+      m_target_bar_time  = iTime(_Symbol, InpStrategyTF, 0);
 
-      Print("[SIGNAL DETECTED] Valid Red VWAP Breakdown Signal Candle at ", TimeToString(m_signal_time),
+      Print("[SIGNAL DETECTED] Red VWAP Breakdown Signal at ", TimeToString(m_signal_time),
             " | High: ", DoubleToString(m_signal_high, _Digits),
             " | Low: ", DoubleToString(m_signal_low, _Digits),
             " | VWAP: ", DoubleToString(vwap_val, _Digits),
-            " -> Waiting for next-candle breakdown trigger below: ", DoubleToString(m_signal_low - (InpSLBufferPoints * m_symbol.Point()), _Digits));
+            " | Pivot P: ", DoubleToString(pivot_p_val, _Digits));
      }
   }
 
@@ -227,22 +285,18 @@ void CheckForNewSignal()
 //+------------------------------------------------------------------+
 void ExecuteShortEntry()
   {
-   // Double check open position constraint
    if(InpOnePositionAtOnce && HasOpenPosition())
      {
       m_pending_breakout = false;
       return;
      }
 
-   m_pending_breakout = false; // Clear flag to prevent multi-triggering
+   m_pending_breakout = false;
 
    double entry_price = m_symbol.Bid();
    double sl_price    = m_signal_high + (InpSLBufferPoints * m_symbol.Point());
-
-   // Normalize SL
    sl_price = NormalizeDouble(sl_price, _Digits);
 
-   // Ensure SL is strictly above entry price
    double min_stop_level = m_symbol.StopsLevel() * m_symbol.Point();
    if(sl_price <= entry_price + min_stop_level)
      {
@@ -251,41 +305,27 @@ void ExecuteShortEntry()
 
    double risk_distance = sl_price - entry_price;
    if(risk_distance <= 0)
-     {
-      Print("[ERROR] Invalid Risk Distance: ", risk_distance);
       return;
-     }
 
-   // Target Take Profit based on user-selected Risk-to-Reward ratio
    double tp_distance = risk_distance * InpRiskRewardRatio;
    double tp_price    = NormalizeDouble(entry_price - tp_distance, _Digits);
 
-   // Calculate position volume
    double trade_lots = CalculateLotSize(risk_distance);
    if(trade_lots <= 0)
-     {
-      Print("[ERROR] Volume calculation returned invalid lot size.");
       return;
-     }
 
-   // Validate Margin Requirements
    double req_margin = 0.0;
    if(OrderCalcMargin(ORDER_TYPE_SELL, _Symbol, trade_lots, entry_price, req_margin))
      {
       double free_margin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
       if(req_margin > free_margin)
         {
-         Print("[WARNING] Insufficient margin. Required: ", req_margin, ", Free: ", free_margin, ". Rescaling lot size.");
          trade_lots = NormalizeLotSize(trade_lots * (free_margin * 0.9 / req_margin));
          if(trade_lots < m_symbol.LotsMin())
-           {
-            Print("[ERROR] Rescaled lot size below broker minimum limit.");
             return;
-           }
         }
      }
 
-   // Submit Market Sell Order
    Print("[EXECUTION] Submitting Market SELL | Entry: ", entry_price,
          " | SL: ", sl_price, " | TP: ", tp_price, " | Volume: ", trade_lots);
 
@@ -404,6 +444,8 @@ void UpdateDashboard(string status)
    string text = "=== VWAP BREAKDOWN EA ===" +
                  "\nStrategy TF: " + EnumToString(InpStrategyTF) +
                  "\nVWAP Period: " + EnumToString(InpVWAPResetPeriod) +
+                 "\nPivot Filter: " + (InpUsePivotFilter ? "ON (Below P)" : "OFF") +
+                 "\nPivot Plot: " + (InpShowPivotsOnChart ? "ON" : "OFF") +
                  "\nTarget RR: 1:" + DoubleToString(InpRiskRewardRatio, 2) +
                  "\nPending Setup: " + (m_pending_breakout ? "YES (Signal Low: " + DoubleToString(m_signal_low, _Digits) + ")" : "NO") +
                  "\nStatus: " + status;
