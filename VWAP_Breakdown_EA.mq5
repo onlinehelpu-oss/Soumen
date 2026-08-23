@@ -5,50 +5,48 @@
 //+------------------------------------------------------------------+
 #property copyright "EA Developer"
 #property link      "https://www.mql5.com"
-#property version   "1.00"
-#property description "MT5 Expert Advisor - VWAP Breakdown Strategy with Pivot Point Standard Filter"
+#property version   "2.00"
+#property description "All-In-One Single File VWAP Breakdown EA with Pivot Points Standard"
 #property description "1. Red Signal Candle: High > VWAP and Close < VWAP on Strategy Timeframe"
-#property description "2. Pivot Filter: Price strictly below Pivot level (P) if Pivot Filter is enabled"
+#property description "2. Pivot Filter (Optional): Close < Pivot Level P"
 #property description "3. Entry: Next immediate candle breaks below Signal Candle Low"
 #property description "4. Stop Loss: Signal Candle High (+ optional buffer)"
 #property description "5. Take Profit: Configurable Risk-to-Reward Ratio (1:1, 1:2, custom)"
-
-#property tester_indicator "VWAP.ex5"
-#property tester_indicator "Pivot_Points_Standard.ex5"
 
 #include <Trade\Trade.mqh>
 #include <Trade\SymbolInfo.mqh>
 #include <Trade\PositionInfo.mqh>
 
-enum ENUM_PIVOT_TYPE_EA
+enum ENUM_PIVOT_TYPE_ALL
   {
-   EA_PIVOT_TRADITIONAL = 0, // Traditional
-   EA_PIVOT_FIBONACCI   = 1, // Fibonacci
-   EA_PIVOT_WOODIE      = 2, // Woodie
-   EA_PIVOT_CLASSIC     = 3, // Classic
-   EA_PIVOT_DEMARK      = 4, // DM (DeMark)
-   EA_PIVOT_CAMARILLA   = 5  // Camarilla
+   PIVOT_TRADITIONAL = 0, // Traditional
+   PIVOT_FIBONACCI   = 1, // Fibonacci
+   PIVOT_WOODIE      = 2, // Woodie
+   PIVOT_CLASSIC     = 3, // Classic
+   PIVOT_DEMARK      = 4, // DM (DeMark)
+   PIVOT_CAMARILLA   = 5  // Camarilla
   };
 
-enum ENUM_PIVOT_TIMEFRAME_EA
+enum ENUM_PIVOT_TIMEFRAME_ALL
   {
-   EA_PIVOT_TF_AUTO    = 0, // Auto
-   EA_PIVOT_TF_DAILY   = 1, // Daily
-   EA_PIVOT_TF_WEEKLY  = 2, // Weekly
-   EA_PIVOT_TF_MONTHLY = 3, // Monthly
-   EA_PIVOT_TF_YEARLY  = 4  // Yearly
+   PIVOT_TF_AUTO    = 0, // Auto
+   PIVOT_TF_DAILY   = 1, // Daily
+   PIVOT_TF_WEEKLY  = 2, // Weekly
+   PIVOT_TF_MONTHLY = 3, // Monthly
+   PIVOT_TF_YEARLY  = 4  // Yearly
   };
 
 //--- Input Parameters
 input group "=== Strategy Settings ===";
 input ENUM_TIMEFRAMES InpStrategyTF        = PERIOD_M15;    // Strategy Timeframe (M1, M3, M5, M15, M30, H1, D1)
 input ENUM_TIMEFRAMES InpVWAPResetPeriod   = PERIOD_D1;     // VWAP Reset Period (PERIOD_D1, PERIOD_W1, PERIOD_MN1)
+input bool            InpShowVWAPOnChart   = true;          // Plot Live VWAP Line & Price Tag on Chart (ON/OFF)
 
 input group "=== Pivot Point Filter & Settings ===";
-input bool                  InpUsePivotFilter    = true;                 // Use Pivot Filter (Sell only below Pivot P)
-input bool                  InpShowPivotsOnChart = true;                 // Plot Pivot Points Standard on Chart (ON/OFF)
-input ENUM_PIVOT_TYPE_EA    InpPivotType         = EA_PIVOT_TRADITIONAL; // Pivot Type
-input ENUM_PIVOT_TIMEFRAME_EA InpPivotTimeframe  = EA_PIVOT_TF_AUTO;      // Pivot Timeframe
+input bool                    InpUsePivotFilter    = true;              // Use Pivot Filter (Sell only below Pivot P)
+input bool                    InpShowPivotsOnChart = true;              // Plot Pivot Lines on Chart (ON/OFF)
+input ENUM_PIVOT_TYPE_ALL     InpPivotType         = PIVOT_TRADITIONAL; // Pivot Type
+input ENUM_PIVOT_TIMEFRAME_ALL InpPivotTimeframe  = PIVOT_TF_AUTO;     // Pivot Timeframe
 
 input group "=== Risk & Target Management ===";
 input double          InpRiskRewardRatio   = 2.0;           // Risk-to-Reward Ratio (1.0 = 1:1, 2.0 = 1:2, etc.)
@@ -68,22 +66,20 @@ CTrade         m_trade;
 CSymbolInfo    m_symbol;
 CPositionInfo  m_position;
 
-int            m_vwap_handle        = INVALID_HANDLE;
-int            m_pivot_handle       = INVALID_HANDLE;
 datetime       m_last_bar_time      = 0;
 bool           m_pending_breakout   = false;
 double         m_signal_high        = 0.0;
 double         m_signal_low         = 0.0;
 datetime       m_signal_time        = 0;
 datetime       m_target_bar_time    = 0;
-string         m_dashboard_obj_prefix = "VWAP_EA_Dash_";
+
+string         m_obj_prefix         = "VWAP_AllInOne_";
 
 //+------------------------------------------------------------------+
 //| Expert initialization function                                   |
 //+------------------------------------------------------------------+
 int OnInit()
   {
-   // Initialize Symbol Info
    if(!m_symbol.Name(_Symbol))
      {
       Print("[ERROR] Failed to initialize symbol info for ", _Symbol);
@@ -91,45 +87,16 @@ int OnInit()
      }
    m_symbol.Refresh();
 
-   // Set Trade Magic
    m_trade.SetExpertMagicNumber(InpMagicNumber);
-
-   // Configure Filling Mode
    uint filling = GetFillingMode();
    m_trade.SetTypeFilling((ENUM_ORDER_TYPE_FILLING)filling);
-
-   // Load VWAP Indicator Handle
-   m_vwap_handle = iCustom(_Symbol, InpStrategyTF, "VWAP", InpVWAPResetPeriod);
-   if(m_vwap_handle == INVALID_HANDLE)
-     {
-      Print("[ERROR] Failed to create VWAP indicator handle. Ensure VWAP.ex5 is compiled in Indicators folder.");
-      return(INIT_FAILED);
-     }
-
-   // Load Pivot Points Standard Indicator Handle
-   m_pivot_handle = iCustom(_Symbol, InpStrategyTF, "Pivot_Points_Standard", InpPivotType, InpPivotTimeframe, InpShowPivotsOnChart);
-   if(m_pivot_handle == INVALID_HANDLE)
-     {
-      Print("[WARNING] Failed to load Pivot_Points_Standard indicator handle.");
-     }
-
-   // Attach Indicators to Chart in Visual Mode / Live Chart
-   if(!MQLInfoInteger(MQL_TESTER) || MQLInfoInteger(MQL_VISUAL_MODE))
-     {
-      ChartIndicatorAdd(0, 0, m_vwap_handle);
-      if(InpShowPivotsOnChart && m_pivot_handle != INVALID_HANDLE)
-        {
-         ChartIndicatorAdd(0, 0, m_pivot_handle);
-        }
-     }
 
    m_last_bar_time    = 0;
    m_pending_breakout = false;
 
-   Print("[INFO] VWAP Breakdown EA Initialized. Strategy TF: ", EnumToString(InpStrategyTF),
+   Print("[INFO] VWAP Breakdown All-In-One EA Initialized. Strategy TF: ", EnumToString(InpStrategyTF),
          " | Pivot Filter: ", (InpUsePivotFilter ? "ON" : "OFF"),
-         " | Pivot Plot: ", (InpShowPivotsOnChart ? "ON" : "OFF"),
-         " | RR: 1:", DoubleToString(InpRiskRewardRatio, 2));
+         " | Target RR: 1:", DoubleToString(InpRiskRewardRatio, 2));
 
    return(INIT_SUCCEEDED);
   }
@@ -139,19 +106,7 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
   {
-   if(m_vwap_handle != INVALID_HANDLE)
-     {
-      IndicatorRelease(m_vwap_handle);
-      m_vwap_handle = INVALID_HANDLE;
-     }
-
-   if(m_pivot_handle != INVALID_HANDLE)
-     {
-      IndicatorRelease(m_pivot_handle);
-      m_pivot_handle = INVALID_HANDLE;
-     }
-
-   ObjectsDeleteAllPrefix(m_dashboard_obj_prefix);
+   ObjectsDeleteAllPrefix(m_obj_prefix);
    Comment("");
   }
 
@@ -163,7 +118,6 @@ void OnTick()
    if(!m_symbol.RefreshRates())
       return;
 
-   // Check spread filter
    double spread_pts = (m_symbol.Ask() - m_symbol.Bid()) / m_symbol.Point();
    if(InpMaxSpreadPoints > 0 && spread_pts > InpMaxSpreadPoints)
      {
@@ -200,6 +154,9 @@ void OnTick()
         }
      }
 
+   // 3. Render / Update Live Chart Visuals (VWAP line & Pivot levels)
+   RenderChartVisuals();
+
    if(InpShowDashboard)
       UpdateDashboard("Active");
   }
@@ -215,43 +172,27 @@ void CheckForNewSignal()
    MqlRates rates[];
    ArraySetAsSeries(rates, true);
    if(CopyRates(_Symbol, InpStrategyTF, 1, 1, rates) < 1)
-     {
-      Print("[WARNING] CopyRates failed for Strategy Timeframe.");
       return;
-     }
 
    double open_p  = rates[0].open;
    double high_p  = rates[0].high;
    double low_p   = rates[0].low;
    double close_p = rates[0].close;
 
-   // Read VWAP value for completed bar 1
-   double vwap_arr[];
-   ArraySetAsSeries(vwap_arr, true);
-   if(CopyBuffer(m_vwap_handle, 0, 1, 1, vwap_arr) < 1)
-     {
-      Print("[WARNING] CopyBuffer failed for VWAP handle.");
+   // 1. Internal VWAP Calculation for Bar 1
+   double vwap_val = CalculateVWAP(InpStrategyTF, 1);
+   if(vwap_val <= 0)
       return;
-     }
 
-   double vwap_val = vwap_arr[0];
-
-   // Read Pivot P level if filter active
-   double pivot_p_val = 0.0;
+   // 2. Internal Pivot Level P Calculation
+   double pivot_p_val = CalculatePivotP(InpStrategyTF, 1);
    bool pivot_condition_ok = true;
 
-   if(InpUsePivotFilter && m_pivot_handle != INVALID_HANDLE)
+   if(InpUsePivotFilter && pivot_p_val > 0)
      {
-      double p_arr[];
-      ArraySetAsSeries(p_arr, true);
-      if(CopyBuffer(m_pivot_handle, 0, 1, 1, p_arr) >= 1)
+      if(close_p >= pivot_p_val)
         {
-         pivot_p_val = p_arr[0];
-         // Price must be strictly below Pivot P
-         if(close_p >= pivot_p_val)
-           {
-            pivot_condition_ok = false;
-           }
+         pivot_condition_ok = false;
         }
      }
 
@@ -340,6 +281,204 @@ void ExecuteShortEntry()
   }
 
 //+------------------------------------------------------------------+
+//| Calculate Intraday/Period VWAP Internally                        |
+//+------------------------------------------------------------------+
+double CalculateVWAP(ENUM_TIMEFRAMES tf, int target_bar)
+  {
+   datetime bar_time = iTime(_Symbol, tf, target_bar);
+   if(bar_time <= 0) return 0.0;
+
+   // Find start bar index for VWAP reset period
+   datetime period_start = 0;
+   MqlDateTime dt;
+   TimeToStruct(bar_time, dt);
+
+   if(InpVWAPResetPeriod == PERIOD_W1)
+     {
+      int day_offset = (dt.day_of_week == 0) ? 6 : dt.day_of_week - 1;
+      period_start = bar_time - (day_offset * 86400) - (dt.hour * 3600 + dt.min * 60 + dt.sec);
+     }
+   else if(InpVWAPResetPeriod == PERIOD_MN1)
+     {
+      dt.day = 1; dt.hour = 0; dt.min = 0; dt.sec = 0;
+      period_start = StructToTime(dt);
+     }
+   else // PERIOD_D1
+     {
+      dt.hour = 0; dt.min = 0; dt.sec = 0;
+      period_start = StructToTime(dt);
+     }
+
+   int start_bar = iBarShift(_Symbol, tf, period_start, false);
+   if(start_bar < target_bar) start_bar = target_bar + 100;
+
+   int count = start_bar - target_bar + 1;
+   if(count <= 0) count = 1;
+
+   MqlRates rates[];
+   ArraySetAsSeries(rates, true);
+   if(CopyRates(_Symbol, tf, target_bar, count, rates) < count)
+      return 0.0;
+
+   double cum_pv  = 0.0;
+   double cum_vol = 0.0;
+
+   for(int k = count - 1; k >= 0; k--)
+     {
+      double typical_price = (rates[k].high + rates[k].low + rates[k].close) / 3.0;
+      double vol           = (double)(rates[k].real_volume > 0 ? rates[k].real_volume : rates[k].tick_volume);
+      if(vol <= 0) vol = 1.0;
+
+      cum_pv  += typical_price * vol;
+      cum_vol += vol;
+     }
+
+   return (cum_vol > 0) ? (cum_pv / cum_vol) : rates[0].close;
+  }
+
+//+------------------------------------------------------------------+
+//| Calculate Pivot Points Standard Level P Internally               |
+//+------------------------------------------------------------------+
+double CalculatePivotP(ENUM_TIMEFRAMES tf, int target_bar)
+  {
+   datetime bar_time = iTime(_Symbol, tf, target_bar);
+   ENUM_TIMEFRAMES anchor_tf = PERIOD_D1;
+
+   if(InpPivotTimeframe == PIVOT_TF_WEEKLY)  anchor_tf = PERIOD_W1;
+   else if(InpPivotTimeframe == PIVOT_TF_MONTHLY || InpPivotTimeframe == PIVOT_TF_YEARLY) anchor_tf = PERIOD_MN1;
+   else if(InpPivotTimeframe == PIVOT_TF_AUTO)
+     {
+      if(tf <= PERIOD_M15)      anchor_tf = PERIOD_D1;
+      else if(tf <= PERIOD_H4)  anchor_tf = PERIOD_W1;
+      else                      anchor_tf = PERIOD_MN1;
+     }
+
+   int htf_bar = iBarShift(_Symbol, anchor_tf, bar_time, false);
+   int target_htf = (htf_bar >= 0) ? htf_bar + 1 : 1;
+
+   double htf_high  = iHigh(_Symbol, anchor_tf, target_htf);
+   double htf_low   = iLow(_Symbol, anchor_tf, target_htf);
+   double htf_close = iClose(_Symbol, anchor_tf, target_htf);
+   double htf_open  = iOpen(_Symbol, anchor_tf, target_htf);
+
+   if(htf_high <= 0 || htf_low <= 0 || htf_close <= 0)
+      return 0.0;
+
+   if(InpPivotType == PIVOT_WOODIE)
+      return (htf_high + htf_low + 2.0 * htf_open) / 4.0;
+   else if(InpPivotType == PIVOT_DEMARK)
+     {
+      double x = 0;
+      if(htf_close < htf_open)      x = htf_high + 2.0 * htf_low + htf_close;
+      else if(htf_close > htf_open) x = 2.0 * htf_high + htf_low + htf_close;
+      else                          x = htf_high + htf_low + 2.0 * htf_close;
+      return x / 4.0;
+     }
+
+   // Traditional, Fibonacci, Classic, Camarilla
+   return (htf_high + htf_low + htf_close) / 3.0;
+  }
+
+//+------------------------------------------------------------------+
+//| Render Live Chart Visuals (VWAP & Pivot Lines/Labels)            |
+//+------------------------------------------------------------------+
+void RenderChartVisuals()
+  {
+   if(MQLInfoInteger(MQL_TESTER) && !MQLInfoInteger(MQL_VISUAL_MODE))
+      return;
+
+   // 1. Live VWAP Line & Value Tag
+   if(InpShowVWAPOnChart)
+     {
+      double current_vwap = CalculateVWAP(InpStrategyTF, 0);
+      if(current_vwap > 0)
+        {
+         string line_name = m_obj_prefix + "VWAP_Line";
+         string text_name = m_obj_prefix + "VWAP_Tag";
+
+         if(ObjectFind(0, line_name) < 0)
+           {
+            ObjectCreate(0, line_name, OBJ_HLINE, 0, 0, current_vwap);
+            ObjectSetInteger(0, line_name, OBJPROP_COLOR, (long)clrDodgerBlue);
+            ObjectSetInteger(0, line_name, OBJPROP_STYLE, (long)STYLE_SOLID);
+            ObjectSetInteger(0, line_name, OBJPROP_WIDTH, 2);
+           }
+         else
+           {
+            ObjectMove(0, line_name, 0, 0, current_vwap);
+           }
+
+         datetime last_time = iTime(_Symbol, InpStrategyTF, 0);
+         datetime tag_time  = last_time + PeriodSeconds(InpStrategyTF) * 3;
+
+         if(ObjectFind(0, text_name) < 0)
+           {
+            ObjectCreate(0, text_name, OBJ_TEXT, 0, tag_time, current_vwap);
+            ObjectSetInteger(0, text_name, OBJPROP_ANCHOR, (long)ANCHOR_LEFT);
+            ObjectSetInteger(0, text_name, OBJPROP_COLOR, (long)clrDodgerBlue);
+            ObjectSetInteger(0, text_name, OBJPROP_FONTSIZE, 9);
+            ObjectSetString(0, text_name, OBJPROP_FONT, "Arial Bold");
+           }
+         else
+           {
+            ObjectMove(0, text_name, 0, tag_time, current_vwap);
+           }
+         ObjectSetString(0, text_name, OBJPROP_TEXT, " VWAP " + DoubleToString(current_vwap, _Digits));
+        }
+     }
+   else
+     {
+      ObjectDelete(0, m_obj_prefix + "VWAP_Line");
+      ObjectDelete(0, m_obj_prefix + "VWAP_Tag");
+     }
+
+   // 2. Pivot Level P Line & Label
+   if(InpShowPivotsOnChart)
+     {
+      double current_pivot_p = CalculatePivotP(InpStrategyTF, 0);
+      if(current_pivot_p > 0)
+        {
+         string line_name = m_obj_prefix + "PivotP_Line";
+         string text_name = m_obj_prefix + "PivotP_Tag";
+
+         if(ObjectFind(0, line_name) < 0)
+           {
+            ObjectCreate(0, line_name, OBJ_HLINE, 0, 0, current_pivot_p);
+            ObjectSetInteger(0, line_name, OBJPROP_COLOR, (long)clrDarkOrange);
+            ObjectSetInteger(0, line_name, OBJPROP_STYLE, (long)STYLE_DASH);
+            ObjectSetInteger(0, line_name, OBJPROP_WIDTH, 1);
+           }
+         else
+           {
+            ObjectMove(0, line_name, 0, 0, current_pivot_p);
+           }
+
+         datetime last_time = iTime(_Symbol, InpStrategyTF, 0);
+         datetime tag_time  = last_time + PeriodSeconds(InpStrategyTF) * 3;
+
+         if(ObjectFind(0, text_name) < 0)
+           {
+            ObjectCreate(0, text_name, OBJ_TEXT, 0, tag_time, current_pivot_p);
+            ObjectSetInteger(0, text_name, OBJPROP_ANCHOR, (long)ANCHOR_LEFT);
+            ObjectSetInteger(0, text_name, OBJPROP_COLOR, (long)clrDarkOrange);
+            ObjectSetInteger(0, text_name, OBJPROP_FONTSIZE, 9);
+            ObjectSetString(0, text_name, OBJPROP_FONT, "Arial Bold");
+           }
+         else
+           {
+            ObjectMove(0, text_name, 0, tag_time, current_pivot_p);
+           }
+         ObjectSetString(0, text_name, OBJPROP_TEXT, " P " + DoubleToString(current_pivot_p, _Digits));
+        }
+     }
+   else
+     {
+      ObjectDelete(0, m_obj_prefix + "PivotP_Line");
+      ObjectDelete(0, m_obj_prefix + "PivotP_Tag");
+     }
+  }
+
+//+------------------------------------------------------------------+
 //| Calculate Lot Size based on Risk Settings                        |
 //+------------------------------------------------------------------+
 double CalculateLotSize(double risk_distance_price)
@@ -420,7 +559,7 @@ uint GetFillingMode()
   }
 
 //+------------------------------------------------------------------+
-//| Remove Visual Dashboard Objects                                  |
+//| Remove Visual Objects                                            |
 //+------------------------------------------------------------------+
 void ObjectsDeleteAllPrefix(string prefix)
   {
@@ -441,7 +580,7 @@ void UpdateDashboard(string status)
    if(!InpShowDashboard)
       return;
 
-   string text = "=== VWAP BREAKDOWN EA ===" +
+   string text = "=== VWAP BREAKDOWN ALL-IN-ONE EA ===" +
                  "\nStrategy TF: " + EnumToString(InpStrategyTF) +
                  "\nVWAP Period: " + EnumToString(InpVWAPResetPeriod) +
                  "\nPivot Filter: " + (InpUsePivotFilter ? "ON (Below P)" : "OFF") +
