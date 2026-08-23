@@ -3,14 +3,12 @@
 //|                                                            Jules |
 //|                                             https://www.mql5.com |
 //|                                                                  |
-//| A completely self-contained Expert Advisor implementing VWAP and |
-//| Liquidity Swings strategy on MT5. No external custom indicator    |
-//| files are required, ensuring instant out-of-the-box execution     |
-//| and plotting in any Strategy Tester or live environment.          |
+//| A completely self-contained Expert Advisor implementing VWAP,    |
+//| Pivot Points, and Liquidity Swings strategy on MT5.               |
 //+------------------------------------------------------------------+
 #property copyright "Jules"
 #property link      "https://www.mql5.com"
-#property version   "1.05"
+#property version   "1.06"
 
 #include <Trade\Trade.mqh>
 #include <Trade\SymbolInfo.mqh>
@@ -22,6 +20,23 @@ enum ENUM_ANCHOR_PERIOD
    ANCHOR_WEEK,    // Week
    ANCHOR_MONTH,   // Month
    ANCHOR_YEAR     // Year
+};
+
+enum ENUM_PIVOT_TYPE
+{
+   PIVOT_TRADITIONAL, // Traditional
+   PIVOT_FIBONACCI,   // Fibonacci
+   PIVOT_WOODIE,      // Woodie
+   PIVOT_CLASSIC,     // Classic
+   PIVOT_DEMARK,      // DeMark
+   PIVOT_CAMARILLA    // Camarilla
+};
+
+enum ENUM_PIVOT_TF
+{
+   PIVOT_TF_DAILY,    // Daily
+   PIVOT_TF_WEEKLY,   // Weekly
+   PIVOT_TF_MONTHLY   // Monthly
 };
 
 //--- inputs
@@ -36,6 +51,11 @@ input group "=== VWAP Settings ==="
 input ENUM_TIMEFRAMES InpVWAPTimeframe = PERIOD_H1;          // VWAP Timeframe
 input ENUM_ANCHOR_PERIOD InpAnchorPeriod = ANCHOR_SESSION;   // VWAP Anchor Period
 
+input group "=== Pivot Point Filter ==="
+input bool InpUsePivotFilter = true;                         // Pivot Point Filter (ON/OFF)
+input ENUM_PIVOT_TYPE InpPivotType = PIVOT_TRADITIONAL;     // Pivot Calculation Type
+input ENUM_PIVOT_TF   InpPivotTF   = PIVOT_TF_DAILY;        // Pivot Timeframe
+
 input group "=== Liquidity Swings (Target) ==="
 input int InpPivotLookback = 14;                             // Swing Pivot Lookback (length)
 input double InpFallbackRR = 2.0;                            // Fallback Risk:Reward (if no swing low)
@@ -43,7 +63,7 @@ input double InpFallbackRR = 2.0;                            // Fallback Risk:Re
 input group "=== Risk & Trade Management ==="
 input double InpLotSize = 0.1;                               // Trade Lot Size
 input ulong InpMagicNumber = 887766;                         // Magic Number
-input bool InpPlotOnChart = true;                            // Plot VWAP, EMA & Swings on Chart
+input bool InpPlotOnChart = true;                            // Plot VWAP, EMA, Pivots & Swings on Chart
 input bool InpUseBreakEven = true;                           // Move SL to Cost-to-Cost at 1:1
 input double InpBreakEvenRatio = 1.0;                        // Breakeven Risk:Reward Ratio
 
@@ -93,7 +113,7 @@ int OnInit()
       return(INIT_FAILED);
    }
 
-   Print("[+] Self-Contained Expert Advisor initialized successfully.");
+   Print("[+] Self-Contained Expert Advisor with Pivot Filter initialized successfully.");
    return(INIT_SUCCEEDED);
 }
 
@@ -109,6 +129,7 @@ void OnDeinit(const int reason)
    {
       ObjectsDeleteAll(0, "EA_VWAP_");
       ObjectsDeleteAll(0, "EA_EMA_");
+      ObjectsDeleteAll(0, "EA_Pivot_");
       ObjectsDeleteAll(0, "EA_Swing_");
       ObjectsDeleteAll(0, "EA_ActiveSetup_");
    }
@@ -171,6 +192,48 @@ double CalculateVWAP(datetime target_time)
 }
 
 //+------------------------------------------------------------------+
+//| Self-Contained Pivot Point Calculation                           |
+//+------------------------------------------------------------------+
+double CalculatePivotPoint(datetime target_time)
+{
+   ENUM_TIMEFRAMES htf = PERIOD_D1;
+   if(InpPivotTF == PIVOT_TF_WEEKLY) htf = PERIOD_W1;
+   else if(InpPivotTF == PIVOT_TF_MONTHLY) htf = PERIOD_MN1;
+
+   MqlRates htf_rates[];
+   int copied = CopyRates(_Symbol, htf, target_time, 2, htf_rates);
+   if(copied >= 2)
+   {
+      double prev_high  = htf_rates[0].high;
+      double prev_low   = htf_rates[0].low;
+      double prev_close = htf_rates[0].close;
+      double prev_open  = htf_rates[0].open;
+
+      switch(InpPivotType)
+      {
+         case PIVOT_TRADITIONAL:
+         case PIVOT_FIBONACCI:
+         case PIVOT_CLASSIC:
+         case PIVOT_CAMARILLA:
+            return (prev_high + prev_low + prev_close) / 3.0;
+
+         case PIVOT_WOODIE:
+            return (prev_high + prev_low + 2.0 * prev_close) / 4.0;
+
+         case PIVOT_DEMARK:
+         {
+            double x = 0;
+            if(prev_close < prev_open) x = prev_high + 2.0 * prev_low + prev_close;
+            else if(prev_close > prev_open) x = 2.0 * prev_high + prev_low + prev_close;
+            else x = prev_high + prev_low + 2.0 * prev_close;
+            return x / 4.0;
+         }
+      }
+   }
+   return 0.0;
+}
+
+//+------------------------------------------------------------------+
 //| Find previous confirmed swing low natively                       |
 //+------------------------------------------------------------------+
 double FindPreviousSwingLow(int lookback)
@@ -179,8 +242,6 @@ double FindPreviousSwingLow(int lookback)
    int copied = CopyRates(_Symbol, InpStrategyTimeframe, 0, 300, swing_rates);
    if(copied < 2 * lookback + 1) return 0.0;
 
-   // Chronological ordering: swing_rates[0] is oldest, swing_rates[copied-1] is current bar.
-   // We search backwards from the latest confirmed pivot candle (copied - 1 - lookback)
    for(int i = copied - 1 - lookback; i >= lookback; i--)
    {
       double current_low = swing_rates[i].low;
@@ -240,7 +301,6 @@ void ManageBreakEven()
             double sl = PositionGetDouble(POSITION_SL);
             double tp = PositionGetDouble(POSITION_TP);
 
-            // This is a Short position
             if(PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
             {
                if(sl > entry)
@@ -331,7 +391,7 @@ void PlotIndicatorsOnChart()
       }
    }
 
-   // 2. Plot self-contained VWAP
+   // 2. Plot VWAP
    ObjectsDeleteAll(0, "EA_VWAP_");
    for(int i = 1; i < copied; i++)
    {
@@ -354,7 +414,34 @@ void PlotIndicatorsOnChart()
       }
    }
 
-   // 3. Plot Liquidity Swings High and Low markers
+   // 3. Plot Pivot Point line (P) if enabled
+   if(InpUsePivotFilter)
+   {
+      ObjectsDeleteAll(0, "EA_Pivot_");
+      for(int i = 1; i < copied; i++)
+      {
+         datetime t1 = rates[i-1].time;
+         datetime t2 = rates[i].time;
+         double p1 = CalculatePivotPoint(t1);
+         double p2 = CalculatePivotPoint(t2);
+
+         if(p1 > 0 && p2 > 0)
+         {
+            string name = "EA_Pivot_" + (string)i;
+            if(ObjectCreate(0, name, OBJ_TREND, 0, t1, p1, t2, p2))
+            {
+               ObjectSetInteger(0, name, OBJPROP_COLOR, clrPurple);
+               ObjectSetInteger(0, name, OBJPROP_WIDTH, 2);
+               ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DASH);
+               ObjectSetInteger(0, name, OBJPROP_RAY_RIGHT, false);
+               ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+               ObjectSetInteger(0, name, OBJPROP_BACK, true);
+            }
+         }
+      }
+   }
+
+   // 4. Plot Liquidity Swings High and Low markers
    ObjectsDeleteAll(0, "EA_Swing_");
    for(int i = InpPivotLookback; i < copied - InpPivotLookback; i++)
    {
@@ -393,7 +480,7 @@ void PlotIndicatorsOnChart()
       }
    }
 
-   // 4. Plot Active Setup low and high lines
+   // 5. Plot Active Setup low and high lines
    ObjectsDeleteAll(0, "EA_ActiveSetup_");
    if(m_setup_active)
    {
@@ -439,10 +526,6 @@ void OnTick()
       }
 
       // Check for a new signal candle (runs once per bar)
-      // CopyRates with count 3:
-      // rates[2] is current incomplete bar (index 0)
-      // rates[1] is the last completed bar (index 1 / signal candle)
-      // rates[0] is the bar before that (index 2 / previous candle)
       MqlRates rates[];
       if(CopyRates(_Symbol, InpStrategyTimeframe, 0, 3, rates) == 3)
       {
@@ -501,56 +584,71 @@ void OnTick()
       double entry_level = m_signal_low - InpEntryBufferPoints * _Point;
       if(current_bid < entry_level)
       {
-         // Calculate self-contained VWAP
+         // 1. VWAP Filter Check
          double vwap_val = CalculateVWAP(TimeCurrent());
-         if(vwap_val > 0)
+         bool vwap_valid = (vwap_val > 0) ? (current_bid < vwap_val) : false;
+
+         // 2. Pivot Point Filter Check
+         bool pivot_valid = true;
+         double pivot_val = 0.0;
+         if(InpUsePivotFilter)
          {
-            if(current_bid < vwap_val)
+            pivot_val = CalculatePivotPoint(TimeCurrent());
+            if(pivot_val > 0)
             {
-               // Confirm entry!
-               double entry_price = current_bid;
-               double sl = m_signal_high;
-               double tp = m_target_price;
-
-               // Adjust and normalize SL / TP
-               if(tp <= 0 || tp >= entry_price)
-               {
-                  double sl_dist = sl - entry_price;
-                  tp = entry_price - sl_dist * InpFallbackRR;
-                  Print("[!] Invalid or missing swing low. Using Fallback Risk:Reward of ", InpFallbackRR, "x to set Target: ", tp);
-               }
-
-               AdjustSLTP(entry_price, sl, tp);
-
-               double normalized_lots = NormalizeLotSize(InpLotSize);
-
-               Print("[>] Sending Market SELL order: Lot=", normalized_lots,
-                     " | Entry=", entry_price, " SL=", sl, " TP=", tp, " | VWAP=", vwap_val);
-
-               if(m_trade.Sell(normalized_lots, _Symbol, entry_price, sl, tp, "VWAP Liquidity Swings EA"))
-               {
-                  Print("[+] Trade executed successfully.");
-                  m_setup_active = false; // consume setup
-                  PlotIndicatorsOnChart();
-               }
-               else
-               {
-                  Print("[-] Order execution failed: Error ", m_trade.ResultRetcode(), " - ", m_trade.ResultComment());
-               }
+               pivot_valid = (current_bid < pivot_val);
             }
             else
             {
-               static datetime last_vwap_warn = 0;
-               if(TimeCurrent() - last_vwap_warn > 60)
-               {
-                  Print("[!] Breakout detected but price (", current_bid, ") is above VWAP (", vwap_val, "). Trade skipped.");
-                  last_vwap_warn = TimeCurrent();
-               }
+               pivot_valid = false;
+            }
+         }
+
+         if(vwap_valid && pivot_valid)
+         {
+            // Confirm entry!
+            double entry_price = current_bid;
+            double sl = m_signal_high;
+            double tp = m_target_price;
+
+            // Adjust and normalize SL / TP
+            if(tp <= 0 || tp >= entry_price)
+            {
+               double sl_dist = sl - entry_price;
+               tp = entry_price - sl_dist * InpFallbackRR;
+               Print("[!] Invalid or missing swing low. Using Fallback Risk:Reward of ", InpFallbackRR, "x to set Target: ", tp);
+            }
+
+            AdjustSLTP(entry_price, sl, tp);
+
+            double normalized_lots = NormalizeLotSize(InpLotSize);
+
+            Print("[>] Sending Market SELL order: Lot=", normalized_lots,
+                  " | Entry=", entry_price, " SL=", sl, " TP=", tp,
+                  " | VWAP=", vwap_val, " | Pivot=", pivot_val);
+
+            if(m_trade.Sell(normalized_lots, _Symbol, entry_price, sl, tp, "VWAP Swings EA"))
+            {
+               Print("[+] Trade executed successfully.");
+               m_setup_active = false; // consume setup
+               PlotIndicatorsOnChart();
+            }
+            else
+            {
+               Print("[-] Order execution failed: Error ", m_trade.ResultRetcode(), " - ", m_trade.ResultComment());
             }
          }
          else
          {
-            // VWAP has not loaded yet, wait for data
+            static datetime last_filter_warn = 0;
+            if(TimeCurrent() - last_filter_warn > 60)
+            {
+               Print("[!] Breakout detected but filter failed: VWAP_Valid=", vwap_valid,
+                     " (Price: ", current_bid, " VWAP: ", vwap_val,
+                     ") | Pivot_Valid=", pivot_valid,
+                     " (Pivot: ", pivot_val, "). Trade skipped.");
+               last_filter_warn = TimeCurrent();
+            }
          }
       }
    }
