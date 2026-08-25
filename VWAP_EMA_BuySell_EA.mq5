@@ -850,7 +850,7 @@ int GetPlotBarCount(const int max_bars_input)
   }
 
 //+------------------------------------------------------------------+
-//| Draw VWAP line                                                   |
+//| Draw VWAP line using exact per-bar calculation                   |
 //+------------------------------------------------------------------+
 void DrawVWAPLine()
   {
@@ -861,10 +861,6 @@ void DrawVWAPLine()
    int copied = CopyRates(m_sym, InpStrategyTF, 0, bars_needed, rates);
    if(copied < 2) return;
 
-   double   cumulative_pv   = 0.0;
-   double   cumulative_vol  = 0.0;
-   datetime current_session = 0;
-
    uint argb = ColorToARGB(InpVWAPColor, 255);
    int prev_x = -1, prev_y = -1;
    double last_val = 0.0;
@@ -872,22 +868,9 @@ void DrawVWAPLine()
 
    for(int i = 0; i < copied; i++)
      {
-      datetime bar_session = iTime(m_sym, InpVWAPResetPeriod, iBarShift(m_sym, InpVWAPResetPeriod, rates[i].time, false));
-      if(bar_session != current_session)
-        {
-         current_session = bar_session;
-         cumulative_pv    = 0.0;
-         cumulative_vol   = 0.0;
-        }
-
-      double typical_price = (rates[i].high + rates[i].low + rates[i].close) / 3.0;
-      double volume = (rates[i].tick_volume > 0) ? (double)rates[i].tick_volume : (double)rates[i].real_volume;
-      if(volume <= 0) volume = 1.0;
-
-      cumulative_pv  += typical_price * volume;
-      cumulative_vol += volume;
-
-      double val = (cumulative_vol > 0.0) ? (cumulative_pv / cumulative_vol) : typical_price;
+      int shift = copied - 1 - i;
+      double val = CalculateBuiltinVWAP(shift);
+      if(val <= 0.0) continue;
 
       int x, y;
       if(ChartTimePriceToXY(0, 0, rates[i].time, val, x, y))
