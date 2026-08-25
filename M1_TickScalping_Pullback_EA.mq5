@@ -13,7 +13,6 @@
 #include <Trade\SymbolInfo.mqh>
 #include <Trade\PositionInfo.mqh>
 #include <Trade\AccountInfo.mqh>
-#include <Trade\DealInfo.mqh>
 
 //+------------------------------------------------------------------+
 //| ENUMERATIONS                                                     |
@@ -203,7 +202,6 @@ CTrade         m_trade;
 CSymbolInfo    m_symbol;
 CPositionInfo  m_position;
 CAccountInfo   m_account;
-CDealInfo      m_deal;
 
 int            m_atr_handle         = INVALID_HANDLE;
 int            m_ema_fast_handle    = INVALID_HANDLE;
@@ -1144,12 +1142,19 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
    if(trans.type == TRADE_TRANSACTION_DEAL_ADD)
      {
       ulong deal_ticket = trans.deal;
-      if(m_deal.Ticket(deal_ticket))
+      if(HistoryDealSelect(deal_ticket))
         {
-         if(m_deal.Symbol() == _Symbol && m_deal.Entry() == DEAL_ENTRY_OUT)
+         string deal_symbol = HistoryDealGetString(deal_ticket, DEAL_SYMBOL);
+         long deal_entry    = HistoryDealGetInteger(deal_ticket, DEAL_ENTRY);
+
+         if(deal_symbol == _Symbol && deal_entry == DEAL_ENTRY_OUT)
            {
             m_total_trades++;
-            double pnl = m_deal.Profit() + m_deal.Swap() + m_deal.Commission();
+            double profit     = HistoryDealGetDouble(deal_ticket, DEAL_PROFIT);
+            double swap       = HistoryDealGetDouble(deal_ticket, DEAL_SWAP);
+            double commission = HistoryDealGetDouble(deal_ticket, DEAL_COMMISSION);
+            double pnl        = profit + swap + commission;
+
             if(pnl > 0.0)
               {
                m_winning_trades++;
