@@ -124,7 +124,7 @@ input int             InpEMAFastPeriod         = 9;          // Fast EMA Period
 input int             InpEMASlowPeriod         = 21;         // Slow EMA Period
 input int             InpATRPeriod             = 14;         // ATR Period
 input int             InpSwingLookback         = 10;         // Swing High/Low Lookback Bars
-input double          InpRangeExpansionFactor  = 1.3;        // Min M1 Range Expansion vs Avg
+input double          InpRangeExpansionFactor  = 1.1;        // Min M1 Range Expansion vs Avg
 
 input group "=== 2. Tick Engine & Rolling Windows ==="
 input int             InpTickHistorySize       = 100;        // Max Rolling Ticks History
@@ -139,26 +139,26 @@ input double          InpWeightDisplacement    = 0.25;       // Impulse Weight: 
 input double          InpWeightImbalance       = 0.20;       // Impulse Weight: Directional Imbalance
 input double          InpWeightAcceleration    = 0.15;       // Impulse Weight: Acceleration
 input double          InpWeightRangeExpansion  = 0.15;       // Impulse Weight: Range Expansion
-input double          InpImpulseScoreThreshold = 65.0;       // Min Impulse Score Threshold (0-100)
-input double          InpMinImpulseDisplacePts = 80.0;       // Min Impulse Displacement (Points)
+input double          InpImpulseScoreThreshold = 50.0;       // Min Impulse Score Threshold (0-100)
+input double          InpMinImpulseDisplacePts = 30.0;       // Min Impulse Displacement (Points)
 
 input group "=== 4. Pullback Engine ==="
-input double          InpMinPullbackDepthPct   = 0.15;       // Min Pullback Depth (15% of Impulse)
-input double          InpMaxPullbackDepthPct   = 0.70;       // Max Pullback Depth (70% of Impulse)
+input double          InpMinPullbackDepthPct   = 0.10;       // Min Pullback Depth (10% of Impulse)
+input double          InpMaxPullbackDepthPct   = 0.75;       // Max Pullback Depth (75% of Impulse)
 input double          InpMaxCounterVelRatio    = 0.80;       // Max Counter-Direction Velocity Ratio
-input int             InpMaxPullbackDurationSec= 45;         // Max Pullback Duration (Seconds)
-input double          InpPullbackScoreThreshold= 60.0;       // Min Pullback Quality Score (0-100)
+input int             InpMaxPullbackDurationSec= 60;         // Max Pullback Duration (Seconds)
+input double          InpPullbackScoreThreshold= 50.0;       // Min Pullback Quality Score (0-100)
 
 input group "=== 5. Re-acceleration & Entry Trigger ==="
 input ENUM_ENTRY_MODE InpEntryMode             = ENTRY_BREAK_VELOCITY_CONFIRM; // Entry Execution Mode
-input double          InpReaccelScoreThreshold = 60.0;       // Min Re-acceleration Score (0-100)
-input int             InpMinDirectionalTicks   = 3;          // Min Consecutive Directional Ticks
-input double          InpMinTradeScore         = 70.0;       // Min Unified TradeScore (0-100)
+input double          InpReaccelScoreThreshold = 50.0;       // Min Re-acceleration Score (0-100)
+input int             InpMinDirectionalTicks   = 2;          // Min Consecutive Directional Ticks
+input double          InpMinTradeScore         = 55.0;       // Min Unified TradeScore (0-100)
 
 input group "=== 6. Spread & Execution Protection ==="
-input double          InpMaxAllowedSpreadPts   = 35.0;       // Max Allowed Spread (Points)
-input double          InpMaxSpreadExpansionRatio= 2.0;       // Max Spread Expansion Ratio vs Avg
-input int             InpMaxSlippage           = 10;         // Max Allowed Slippage (Points)
+input double          InpMaxAllowedSpreadPts   = 50.0;       // Max Allowed Spread (Points)
+input double          InpMaxSpreadExpansionRatio= 2.5;       // Max Spread Expansion Ratio vs Avg
+input int             InpMaxSlippage           = 20;         // Max Allowed Slippage (Points)
 input bool            InpUseSessionFilter      = false;      // Enable Trading Session Filter
 input int             InpSessionStartHour      = 1;          // Session Start Hour (Broker Time)
 input int             InpSessionEndHour        = 23;         // Session End Hour (Broker Time)
@@ -185,9 +185,9 @@ input double          InpTrailingStepPts       = 30.0;       // Trailing Step Di
 input bool            InpEnableMomentumDecayExit= true;     // Enable Early Exit on Momentum Collapse
 
 input group "=== 9. Cooldown & Position Limits ==="
-input int             InpMinTimeBetweenTradesSec= 30;        // Min Time Between Trades (Seconds)
-input int             InpMaxTradesPerM1Candle  = 2;          // Max Executed Trades per M1 Candle
-input int             InpCooldownAfterSLSec    = 180;        // Cooldown Period After SL (Seconds)
+input int             InpMinTimeBetweenTradesSec= 15;        // Min Time Between Trades (Seconds)
+input int             InpMaxTradesPerM1Candle  = 3;          // Max Executed Trades per M1 Candle
+input int             InpCooldownAfterSLSec    = 60;         // Cooldown Period After SL (Seconds)
 input bool            InpOnePositionPerDirection= true;      // Limit to 1 Position per Direction
 input int             InpMaxSimultaneousPos    = 1;          // Max Total Simultaneous Positions
 
@@ -397,9 +397,9 @@ void UpdateMarketContext(double &atr_pts, double &m1_range_pts, double &body_rat
    TickRecord cur_tick = GetTickRelative(0);
    if(cur_tick.spread_pts > InpMaxAllowedSpreadPts || cur_tick.spread_pts > m_avg_spread_pts * InpMaxSpreadExpansionRatio)
       m_current_regime = REGIME_ABNORMAL_SPREAD;
-   else if(atr_pts < 50.0)
+   else if(atr_pts < 30.0)
       m_current_regime = REGIME_LOW_VOLATILITY;
-   else if(atr_pts > 350.0)
+   else if(atr_pts > 450.0)
       m_current_regime = REGIME_EXTREME_VOL;
    else if(is_expansion)
       m_current_regime = REGIME_EXPANSION;
@@ -422,15 +422,15 @@ double EvaluateImpulse(ENUM_SIGNAL_DIR &dir_out)
    if(displace < InpMinImpulseDisplacePts) return 0.0;
 
    // Score components (0 - 100)
-   double s_vel       = MathMin(100.0, (vel / 150.0) * 100.0);
-   double s_displace  = MathMin(100.0, (displace / (InpMinImpulseDisplacePts * 2.5)) * 100.0);
+   double s_vel       = MathMin(100.0, (vel / 100.0) * 100.0);
+   double s_displace  = MathMin(100.0, (displace / (InpMinImpulseDisplacePts * 2.0)) * 100.0);
    double s_imbalance = MathAbs(imbalance) * 100.0;
-   double s_accel     = MathMin(100.0, MathMax(0.0, (accel / 50.0) * 100.0));
+   double s_accel     = MathMin(100.0, MathMax(0.0, (accel / 30.0) * 100.0));
 
    double atr_pts, m1_range, body_ratio, ema_f, ema_s;
    bool is_expansion;
    UpdateMarketContext(atr_pts, m1_range, body_ratio, ema_f, ema_s, is_expansion);
-   double s_expansion = is_expansion ? 100.0 : 40.0;
+   double s_expansion = is_expansion ? 100.0 : 50.0;
 
    double w_tot = InpWeightVelocity + InpWeightDisplacement + InpWeightImbalance + InpWeightAcceleration + InpWeightRangeExpansion;
    if(w_tot <= 0.0) w_tot = 1.0;
@@ -441,9 +441,9 @@ double EvaluateImpulse(ENUM_SIGNAL_DIR &dir_out)
                    s_accel * InpWeightAcceleration +
                    s_expansion * InpWeightRangeExpansion) / w_tot;
 
-   if(imbalance > 0.3 && consec >= InpMinDirectionalTicks)
+   if(imbalance > 0.15 && consec >= InpMinDirectionalTicks)
       dir_out = SIGNAL_BUY;
-   else if(imbalance < -0.3 && consec >= InpMinDirectionalTicks)
+   else if(imbalance < -0.15 && consec >= InpMinDirectionalTicks)
       dir_out = SIGNAL_SELL;
 
    return score;
@@ -478,9 +478,9 @@ double EvaluatePullbackQuality(double &depth_pct_out)
       if(cur.mid < m_setup.pullback_extreme_price || m_setup.pullback_extreme_price == 0.0)
          m_setup.pullback_extreme_price = cur.mid;
 
-      // Track micro-pullback resistance (local peak during pullback phase)
-      if(cur.mid > m_setup.pullback_micro_high_price)
-         m_setup.pullback_micro_high_price = cur.mid;
+      // Lock micro-pullback resistance level at top 25% of pullback distance
+      if(m_setup.state == STATE_WAIT_FOR_PULLBACK)
+         m_setup.pullback_micro_high_price = m_setup.pullback_extreme_price + (m_setup.impulse_peak_price - m_setup.pullback_extreme_price) * 0.25;
      }
    else if(m_setup.direction == SIGNAL_SELL)
      {
@@ -497,9 +497,9 @@ double EvaluatePullbackQuality(double &depth_pct_out)
       if(cur.mid > m_setup.pullback_extreme_price || m_setup.pullback_extreme_price == 0.0)
          m_setup.pullback_extreme_price = cur.mid;
 
-      // Track micro-pullback support (local trough during pullback phase)
-      if(cur.mid < m_setup.pullback_micro_low_price || m_setup.pullback_micro_low_price == 0.0)
-         m_setup.pullback_micro_low_price = cur.mid;
+      // Lock micro-pullback support level at bottom 25% of pullback distance
+      if(m_setup.state == STATE_WAIT_FOR_PULLBACK)
+         m_setup.pullback_micro_low_price = m_setup.pullback_extreme_price - (m_setup.pullback_extreme_price - m_setup.impulse_peak_price) * 0.25;
      }
 
    depth_pct_out = pb_dist / m_setup.impulse_displacement;
@@ -520,8 +520,8 @@ double EvaluatePullbackQuality(double &depth_pct_out)
    ComputeRollingTickMetrics(InpWindowShort, vel, displace, imbalance, accel, consec);
 
    // If counter momentum explodes opposite to impulse direction
-   if((m_setup.direction == SIGNAL_BUY && imbalance < -0.7 && vel > 120.0) ||
-      (m_setup.direction == SIGNAL_SELL && imbalance > 0.7 && vel > 120.0))
+   if((m_setup.direction == SIGNAL_BUY && imbalance < -0.8 && vel > 150.0) ||
+      (m_setup.direction == SIGNAL_SELL && imbalance > 0.8 && vel > 150.0))
      {
       if(InpEnableJournalLogs)
          PrintFormat("SETUP INVALIDATED: Counter-momentum explosion! Imbalance=%.2f, Vel=%.2f", imbalance, vel);
@@ -530,10 +530,10 @@ double EvaluatePullbackQuality(double &depth_pct_out)
      }
 
    // Calculate Quality Score
-   double depth_score = 100.0 - MathAbs(depth_pct_out - 0.382) * 150.0; // Optimal depth near ~38.2%
+   double depth_score = 100.0 - MathAbs(depth_pct_out - 0.382) * 120.0; // Optimal depth near ~38.2%
    depth_score = MathMax(0.0, MathMin(100.0, depth_score));
 
-   double counter_press_score = MathMax(0.0, 100.0 - (vel / 100.0) * 50.0);
+   double counter_press_score = MathMax(0.0, 100.0 - (vel / 100.0) * 40.0);
    double spread_score = (cur.spread_pts <= m_avg_spread_pts) ? 100.0 : MathMax(0.0, 100.0 - (cur.spread_pts - m_avg_spread_pts) * 5.0);
 
    double pb_score = (depth_score * 0.5) + (counter_press_score * 0.3) + (spread_score * 0.2);
@@ -552,16 +552,16 @@ double EvaluateReacceleration()
    int consec;
    ComputeRollingTickMetrics(InpWindowShort, vel, displace, imbalance, accel, consec);
 
-   bool dir_matches = (m_setup.direction == SIGNAL_BUY && imbalance > 0.2) ||
-                      (m_setup.direction == SIGNAL_SELL && imbalance < -0.2);
+   bool dir_matches = (m_setup.direction == SIGNAL_BUY && imbalance > 0.1) ||
+                      (m_setup.direction == SIGNAL_SELL && imbalance < -0.1);
 
    if(!dir_matches || consec < InpMinDirectionalTicks)
       return 0.0;
 
-   double s_vel     = MathMin(100.0, (vel / 120.0) * 100.0);
-   double s_accel   = MathMin(100.0, MathMax(0.0, (accel / 40.0) * 100.0));
+   double s_vel     = MathMin(100.0, (vel / 80.0) * 100.0);
+   double s_accel   = MathMin(100.0, MathMax(0.0, (accel / 25.0) * 100.0));
    double s_imb     = MathAbs(imbalance) * 100.0;
-   double s_consec  = MathMin(100.0, (consec / 5.0) * 100.0);
+   double s_consec  = MathMin(100.0, (consec / 4.0) * 100.0);
 
    double reaccel_score = (s_vel * 0.35) + (s_accel * 0.25) + (s_imb * 0.25) + (s_consec * 0.15);
 
@@ -575,16 +575,16 @@ double EvaluateReacceleration()
          break_confirmed = true;
          break;
       case ENTRY_MICRO_PULLBACK_BREAK:
-         if(m_setup.direction == SIGNAL_BUY && cur.bid >= m_setup.pullback_micro_high_price) break_confirmed = true;
-         if(m_setup.direction == SIGNAL_SELL && cur.ask <= m_setup.pullback_micro_low_price) break_confirmed = true;
+         if(m_setup.direction == SIGNAL_BUY && cur.mid >= m_setup.pullback_micro_high_price) break_confirmed = true;
+         if(m_setup.direction == SIGNAL_SELL && cur.mid <= m_setup.pullback_micro_low_price) break_confirmed = true;
          break;
       case ENTRY_BREAK_VELOCITY_CONFIRM:
-         if(m_setup.direction == SIGNAL_BUY && cur.bid >= m_setup.pullback_micro_high_price && vel > 40.0) break_confirmed = true;
-         if(m_setup.direction == SIGNAL_SELL && cur.ask <= m_setup.pullback_micro_low_price && vel > 40.0) break_confirmed = true;
+         if(m_setup.direction == SIGNAL_BUY && cur.mid >= m_setup.pullback_micro_high_price && vel > 20.0) break_confirmed = true;
+         if(m_setup.direction == SIGNAL_SELL && cur.mid <= m_setup.pullback_micro_low_price && vel > 20.0) break_confirmed = true;
          break;
       case ENTRY_BREAK_ACCEL_CONFIRM:
-         if(m_setup.direction == SIGNAL_BUY && cur.bid >= m_setup.pullback_micro_high_price && accel > 10.0) break_confirmed = true;
-         if(m_setup.direction == SIGNAL_SELL && cur.ask <= m_setup.pullback_micro_low_price && accel > 10.0) break_confirmed = true;
+         if(m_setup.direction == SIGNAL_BUY && cur.mid >= m_setup.pullback_micro_high_price && accel > 5.0) break_confirmed = true;
+         if(m_setup.direction == SIGNAL_SELL && cur.mid <= m_setup.pullback_micro_low_price && accel > 5.0) break_confirmed = true;
          break;
      }
 
