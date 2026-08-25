@@ -865,20 +865,33 @@ void DrawVWAPLine()
    int prev_x = -1, prev_y = -1;
    double last_val = 0.0;
    datetime last_time = 0;
+   int width = (int)m_canvas.Width();
+   int height = (int)m_canvas.Height();
 
    for(int i = 0; i < copied; i++)
      {
       int shift = copied - 1 - i;
       double val = CalculateBuiltinVWAP(shift);
-      if(val <= 0.0) continue;
+      if(val <= 0.0) { prev_x = -1; continue; }
 
       int x, y;
       if(ChartTimePriceToXY(0, 0, rates[i].time, val, x, y))
         {
-         if(prev_x >= 0)
-            DrawThickLineAA(prev_x, prev_y, x, y, argb, InpVWAPLineWidth);
-         prev_x = x;
-         prev_y = y;
+         if(x >= 0 && x < width && y >= 0 && y < height)
+           {
+            if(prev_x >= 0)
+               DrawThickLineAA(prev_x, prev_y, x, y, argb, InpVWAPLineWidth);
+            prev_x = x;
+            prev_y = y;
+           }
+         else
+           {
+            prev_x = -1;
+           }
+        }
+      else
+        {
+         prev_x = -1;
         }
 
       last_val  = val;
@@ -914,22 +927,35 @@ void DrawEMALine(const int handle, const ENUM_TIMEFRAMES tf, const color clr,
    int prev_x = -1, prev_y = -1;
    double last_val = 0.0;
    datetime last_time = 0;
+   int canvas_w = (int)m_canvas.Width();
+   int canvas_h = (int)m_canvas.Height();
 
    for(int shift = copied - 1; shift >= 0; shift--)
      {
       double val = buf[shift];
-      if(val <= 0.0) continue;
+      if(val <= 0.0) { prev_x = -1; continue; }
 
       datetime t = iTime(m_sym, tf, shift);
-      if(t == 0) continue;
+      if(t == 0) { prev_x = -1; continue; }
 
       int x, y;
       if(ChartTimePriceToXY(0, 0, t, val, x, y))
         {
-         if(prev_x >= 0)
-            DrawThickLineAA(prev_x, prev_y, x, y, argb, width);
-         prev_x = x;
-         prev_y = y;
+         if(x >= 0 && x < canvas_w && y >= 0 && y < canvas_h)
+           {
+            if(prev_x >= 0)
+               DrawThickLineAA(prev_x, prev_y, x, y, argb, width);
+            prev_x = x;
+            prev_y = y;
+           }
+         else
+           {
+            prev_x = -1;
+           }
+        }
+      else
+        {
+         prev_x = -1;
         }
 
       last_val  = val;
