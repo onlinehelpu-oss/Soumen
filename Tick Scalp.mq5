@@ -1,5 +1,5 @@
 //+------------------------------------------------------------------+
-//|                                   M1_TickScalping_Pullback_EA.mq5|
+//|                                                   Tick Scalp.mq5|
 //|                    Copyright 2025, Advanced Quantitative Trading |
 //|                                      https://www.mql5.com        |
 //+------------------------------------------------------------------+
