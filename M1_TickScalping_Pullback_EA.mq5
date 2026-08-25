@@ -231,6 +231,15 @@ int            m_losing_trades       = 0;
 double         m_total_profit        = 0.0;
 double         m_total_loss          = 0.0;
 
+// Helper function for safe point distance
+double GetSymbolPoint()
+  {
+   double point = m_symbol.Point();
+   if(point <= 0.0) point = _Point;
+   if(point <= 0.0) point = 0.00001;
+   return point;
+  }
+
 //+------------------------------------------------------------------+
 //| TICK ENGINE UTILITIES                                            |
 //+------------------------------------------------------------------+
@@ -241,11 +250,12 @@ void AddTickRecord(const MqlTick &tick)
 
    int idx = m_tick_head;
    TickRecord rec = {0};
+   double point = GetSymbolPoint();
 
    rec.bid = tick.bid;
    rec.ask = tick.ask;
    rec.mid = (tick.bid + tick.ask) * 0.5;
-   rec.spread_pts = (m_symbol.Point() > 0) ? (tick.ask - tick.bid) / m_symbol.Point() : 0.0;
+   rec.spread_pts = (tick.ask - tick.bid) / point;
    rec.time_msc = tick.time_msc;
 
    if(m_tick_count > 0)
@@ -306,7 +316,8 @@ void ComputeRollingTickMetrics(int window, double &vel_pts_sec, double &displace
    double elapsed_sec = (elapsed_msc > 0) ? ((double)elapsed_msc / 1000.0) : 0.1;
    if(elapsed_sec <= 0.001) elapsed_sec = 0.001;
 
-   displace_pts = (m_symbol.Point() > 0) ? MathAbs(latest.mid - oldest.mid) / m_symbol.Point() : 0.0;
+   double point = GetSymbolPoint();
+   displace_pts = MathAbs(latest.mid - oldest.mid) / point;
    vel_pts_sec = displace_pts / elapsed_sec;
 
    int buy_ticks = 0, sell_ticks = 0;
@@ -343,8 +354,8 @@ void ComputeRollingTickMetrics(int window, double &vel_pts_sec, double &displace
       if(dt1 <= 0.001) dt1 = 0.001;
       if(dt2 <= 0.001) dt2 = 0.001;
 
-      double v1 = ((m_symbol.Point() > 0) ? MathAbs(latest.mid - mid_rec.mid) / m_symbol.Point() : 0.0) / dt1;
-      double v2 = ((m_symbol.Point() > 0) ? MathAbs(mid_rec.mid - oldest.mid) / m_symbol.Point() : 0.0) / dt2;
+      double v1 = (MathAbs(latest.mid - mid_rec.mid) / point) / dt1;
+      double v2 = (MathAbs(mid_rec.mid - oldest.mid) / point) / dt2;
       accel = v1 - v2;
      }
   }
@@ -361,9 +372,11 @@ void UpdateMarketContext(double &atr_pts, double &m1_range_pts, double &body_rat
    ema_slow = 0.0;
    is_expansion = false;
 
+   double point = GetSymbolPoint();
+
    double atr_buf[1], ema_f_buf[1], ema_s_buf[1];
    if(CopyBuffer(m_atr_handle, 0, 0, 1, atr_buf) > 0)
-      atr_pts = (m_symbol.Point() > 0) ? atr_buf[0] / m_symbol.Point() : 0.0;
+      atr_pts = atr_buf[0] / point;
    if(CopyBuffer(m_ema_fast_handle, 0, 0, 1, ema_f_buf) > 0)
       ema_fast = ema_f_buf[0];
    if(CopyBuffer(m_ema_slow_handle, 0, 0, 1, ema_s_buf) > 0)
@@ -380,14 +393,14 @@ void UpdateMarketContext(double &atr_pts, double &m1_range_pts, double &body_rat
 
       double range = h - l;
       double body = MathAbs(c - o);
-      m1_range_pts = (m_symbol.Point() > 0) ? range / m_symbol.Point() : 0.0;
-      body_ratio = (range > 0) ? (body / range) : 0.0;
+      m1_range_pts = range / point;
+      body_ratio = (range > 0.0) ? (body / range) : 0.0;
 
       // Calculate historical average M1 candle range
       double sum_range = 0.0;
       for(int i = 0; i < last_idx; i++)
          sum_range += (rates[i].high - rates[i].low);
-      double avg_range = sum_range / (double)last_idx;
+      double avg_range = (last_idx > 0) ? (sum_range / (double)last_idx) : 0.0;
 
       if(avg_range > 0.0 && range >= avg_range * InpRangeExpansionFactor)
          is_expansion = true;
@@ -422,8 +435,9 @@ double EvaluateImpulse(ENUM_SIGNAL_DIR &dir_out)
    if(displace < InpMinImpulseDisplacePts) return 0.0;
 
    // Score components (0 - 100)
+   double min_disp = (InpMinImpulseDisplacePts > 0.0) ? InpMinImpulseDisplacePts : 1.0;
    double s_vel       = MathMin(100.0, (vel / 100.0) * 100.0);
-   double s_displace  = MathMin(100.0, (displace / (InpMinImpulseDisplacePts * 2.0)) * 100.0);
+   double s_displace  = MathMin(100.0, (displace / (min_disp * 2.0)) * 100.0);
    double s_imbalance = MathAbs(imbalance) * 100.0;
    double s_accel     = MathMin(100.0, MathMax(0.0, (accel / 30.0) * 100.0));
 
@@ -460,8 +474,13 @@ double EvaluatePullbackQuality(double &depth_pct_out)
 
    TickRecord cur = GetTickRelative(0);
    double impulse_range = m_setup.impulse_displacement;
-   if(impulse_range <= 0.001) return 0.0;
+   if(impulse_range <= 0.001)
+     {
+      depth_pct_out = 0.0;
+      return 0.0;
+     }
 
+   double point = GetSymbolPoint();
    double pb_dist = 0.0;
    if(m_setup.direction == SIGNAL_BUY)
      {
@@ -469,10 +488,10 @@ double EvaluatePullbackQuality(double &depth_pct_out)
       if(cur.mid > m_setup.impulse_peak_price)
         {
          m_setup.impulse_peak_price = cur.mid;
-         m_setup.impulse_displacement = (m_symbol.Point() > 0) ? MathAbs(cur.mid - m_setup.impulse_start_price) / m_symbol.Point() : 0.0;
+         m_setup.impulse_displacement = MathAbs(cur.mid - m_setup.impulse_start_price) / point;
         }
 
-      pb_dist = (m_symbol.Point() > 0) ? (m_setup.impulse_peak_price - cur.mid) / m_symbol.Point() : 0.0;
+      pb_dist = (m_setup.impulse_peak_price - cur.mid) / point;
 
       // Track lowest price reached during pullback (Structure SL)
       if(cur.mid < m_setup.pullback_extreme_price || m_setup.pullback_extreme_price == 0.0)
@@ -488,10 +507,10 @@ double EvaluatePullbackQuality(double &depth_pct_out)
       if(cur.mid < m_setup.impulse_peak_price)
         {
          m_setup.impulse_peak_price = cur.mid;
-         m_setup.impulse_displacement = (m_symbol.Point() > 0) ? MathAbs(cur.mid - m_setup.impulse_start_price) / m_symbol.Point() : 0.0;
+         m_setup.impulse_displacement = MathAbs(cur.mid - m_setup.impulse_start_price) / point;
         }
 
-      pb_dist = (m_symbol.Point() > 0) ? (cur.mid - m_setup.impulse_peak_price) / m_symbol.Point() : 0.0;
+      pb_dist = (cur.mid - m_setup.impulse_peak_price) / point;
 
       // Track highest price reached during pullback (Structure SL)
       if(cur.mid > m_setup.pullback_extreme_price || m_setup.pullback_extreme_price == 0.0)
@@ -502,7 +521,7 @@ double EvaluatePullbackQuality(double &depth_pct_out)
          m_setup.pullback_micro_low_price = m_setup.pullback_extreme_price - (m_setup.pullback_extreme_price - m_setup.impulse_peak_price) * 0.25;
      }
 
-   depth_pct_out = pb_dist / m_setup.impulse_displacement;
+   depth_pct_out = pb_dist / MathMax(0.001, m_setup.impulse_displacement);
 
    // Check Invalidation
    long elapsed_sec = TimeCurrent() - m_setup.pullback_start_time;
@@ -600,7 +619,8 @@ double EvaluateReacceleration()
 double CalculateTradeScore(double impulse_score, double pullback_score, double reaccel_score)
   {
    TickRecord cur = GetTickRelative(0);
-   double spread_quality = (cur.spread_pts <= InpMaxAllowedSpreadPts) ? MathMax(0.0, 100.0 - (cur.spread_pts / InpMaxAllowedSpreadPts) * 30.0) : 0.0;
+   double max_spread = (InpMaxAllowedSpreadPts > 0.0) ? InpMaxAllowedSpreadPts : 1.0;
+   double spread_quality = (cur.spread_pts <= max_spread) ? MathMax(0.0, 100.0 - (cur.spread_pts / max_spread) * 30.0) : 0.0;
    double vol_quality = (m_current_regime == REGIME_EXPANSION) ? 100.0 : ((m_current_regime == REGIME_NORMAL_VOLATILITY) ? 80.0 : 40.0);
    double exec_quality = 90.0;
 
@@ -623,6 +643,7 @@ void CalculateSLTP(ENUM_SIGNAL_DIR dir, double entry_price, double &sl_price, do
    bool is_exp;
    UpdateMarketContext(atr_pts, m1_range, body_ratio, ema_f, ema_s, is_exp);
 
+   double point = GetSymbolPoint();
    double sl_pts = InpSLFixedPoints;
 
    switch(InpSLMode)
@@ -635,30 +656,30 @@ void CalculateSLTP(ENUM_SIGNAL_DIR dir, double entry_price, double &sl_price, do
          break;
       case SL_MODE_PULLBACK_STRUCT:
          if(dir == SIGNAL_BUY)
-            sl_pts = (m_symbol.Point() > 0) ? MathAbs(entry_price - m_setup.pullback_extreme_price) / m_symbol.Point() : InpSLFixedPoints;
+            sl_pts = MathAbs(entry_price - m_setup.pullback_extreme_price) / point;
          else
-            sl_pts = (m_symbol.Point() > 0) ? MathAbs(m_setup.pullback_extreme_price - entry_price) / m_symbol.Point() : InpSLFixedPoints;
+            sl_pts = MathAbs(m_setup.pullback_extreme_price - entry_price) / point;
          break;
       case SL_MODE_IMPULSE_BASED:
          if(dir == SIGNAL_BUY)
-            sl_pts = (m_symbol.Point() > 0) ? MathAbs(entry_price - m_setup.impulse_start_price) / m_symbol.Point() : InpSLFixedPoints;
+            sl_pts = MathAbs(entry_price - m_setup.impulse_start_price) / point;
          else
-            sl_pts = (m_symbol.Point() > 0) ? MathAbs(m_setup.impulse_start_price - entry_price) / m_symbol.Point() : InpSLFixedPoints;
+            sl_pts = MathAbs(m_setup.impulse_start_price - entry_price) / point;
          break;
       case SL_MODE_HYBRID_ADAPTIVE:
          if(dir == SIGNAL_BUY)
-            sl_pts = ((m_symbol.Point() > 0) ? MathAbs(entry_price - m_setup.pullback_extreme_price) / m_symbol.Point() : InpSLFixedPoints) + InpSLVolatilityBufferPts;
+            sl_pts = (MathAbs(entry_price - m_setup.pullback_extreme_price) / point) + InpSLVolatilityBufferPts;
          else
-            sl_pts = ((m_symbol.Point() > 0) ? MathAbs(m_setup.pullback_extreme_price - entry_price) / m_symbol.Point() : InpSLFixedPoints) + InpSLVolatilityBufferPts;
+            sl_pts = (MathAbs(m_setup.pullback_extreme_price - entry_price) / point) + InpSLVolatilityBufferPts;
          break;
      }
 
    sl_pts = MathMax(sl_pts, (double)m_symbol.StopsLevel() + 10.0);
 
    if(dir == SIGNAL_BUY)
-      sl_price = entry_price - (sl_pts * m_symbol.Point());
+      sl_price = entry_price - (sl_pts * point);
    else
-      sl_price = entry_price + (sl_pts * m_symbol.Point());
+      sl_price = entry_price + (sl_pts * point);
 
    // Take Profit
    double tp_pts = sl_pts * InpRiskRewardRatio;
@@ -668,9 +689,9 @@ void CalculateSLTP(ENUM_SIGNAL_DIR dir, double entry_price, double &sl_price, do
       tp_pts = m_setup.impulse_displacement * 1.2;
 
    if(dir == SIGNAL_BUY)
-      tp_price = entry_price + (tp_pts * m_symbol.Point());
+      tp_price = entry_price + (tp_pts * point);
    else
-      tp_price = entry_price - (tp_pts * m_symbol.Point());
+      tp_price = entry_price - (tp_pts * point);
 
    sl_price = m_symbol.NormalizePrice(sl_price);
    tp_price = m_symbol.NormalizePrice(tp_price);
@@ -688,11 +709,14 @@ double CalculateLotSize(double sl_distance_pts)
       double capital = (InpRiskMode == RISK_PCT_EQUITY) ? m_account.Equity() : m_account.Balance();
       double risk_amount = capital * (InpRiskPercent / 100.0);
 
+      double point    = GetSymbolPoint();
       double tick_val = m_symbol.TickValue();
       double tick_sz  = m_symbol.TickSize();
+      if(tick_sz <= 0.0) tick_sz = point;
+
       if(tick_val > 0.0 && tick_sz > 0.0 && sl_distance_pts > 0.0)
         {
-         double loss_per_lot = (sl_distance_pts * m_symbol.Point() / tick_sz) * tick_val;
+         double loss_per_lot = (sl_distance_pts * point / tick_sz) * tick_val;
          if(loss_per_lot > 0.0)
             lot = risk_amount / loss_per_lot;
         }
@@ -702,18 +726,19 @@ double CalculateLotSize(double sl_distance_pts)
    double min_lot = m_symbol.LotsMin();
    double max_lot = m_symbol.LotsMax();
    double step_lot = m_symbol.LotsStep();
+   if(step_lot <= 0.0) step_lot = 0.01;
 
    lot = MathFloor(lot / step_lot) * step_lot;
    lot = MathMax(min_lot, MathMin(max_lot, lot));
 
    // Check Margin Utilization Limit
    double margin_req = 0.0;
-   if(OrderCalcMargin(ORDER_TYPE_BUY, _Symbol, lot, m_symbol.Ask(), margin_req))
+   if(OrderCalcMargin(ORDER_TYPE_BUY, _Symbol, lot, m_symbol.Ask(), margin_req) && margin_req > 0.0)
      {
       double free_margin = m_account.FreeMargin();
-      if(margin_req > free_margin * (InpMaxMarginUtilPct / 100.0))
+      double max_allowed_margin = free_margin * (InpMaxMarginUtilPct / 100.0);
+      if(margin_req > max_allowed_margin && max_allowed_margin > 0.0)
         {
-         double max_allowed_margin = free_margin * (InpMaxMarginUtilPct / 100.0);
          lot = lot * (max_allowed_margin / margin_req);
          lot = MathFloor(lot / step_lot) * step_lot;
          lot = MathMax(min_lot, lot);
@@ -783,7 +808,8 @@ void ExecuteTrade()
    double sl_price = 0.0, tp_price = 0.0;
    CalculateSLTP(m_setup.direction, entry_price, sl_price, tp_price);
 
-   double sl_pts = (m_symbol.Point() > 0) ? MathAbs(entry_price - sl_price) / m_symbol.Point() : InpSLFixedPoints;
+   double point = GetSymbolPoint();
+   double sl_pts = MathAbs(entry_price - sl_price) / point;
    double lot = CalculateLotSize(sl_pts);
 
    m_trade.SetDeviationInPoints(InpMaxSlippage);
@@ -835,6 +861,8 @@ void ExecuteTrade()
 //+------------------------------------------------------------------+
 void ManageOpenPositions()
   {
+   double point = GetSymbolPoint();
+
    for(int i = PositionsTotal() - 1; i >= 0; i--)
      {
       if(!m_position.SelectByIndex(i) || m_position.Symbol() != _Symbol)
@@ -847,11 +875,11 @@ void ManageOpenPositions()
       double current_tp = m_position.TakeProfit();
       double current_price = (type == POSITION_TYPE_BUY) ? m_symbol.Bid() : m_symbol.Ask();
 
-      double profit_pts = (type == POSITION_TYPE_BUY) ? (current_price - open_price) / m_symbol.Point()
-                                                      : (open_price - current_price) / m_symbol.Point();
+      double profit_pts = (type == POSITION_TYPE_BUY) ? (current_price - open_price) / point
+                                                      : (open_price - current_price) / point;
 
-      double sl_dist_pts = (type == POSITION_TYPE_BUY) ? (open_price - current_sl) / m_symbol.Point()
-                                                       : (current_sl - open_price) / m_symbol.Point();
+      double sl_dist_pts = (type == POSITION_TYPE_BUY) ? (open_price - current_sl) / point
+                                                       : (current_sl - open_price) / point;
 
       // 1. Momentum Decay Detector Exit
       if(InpEnableMomentumDecayExit && profit_pts > 30.0)
@@ -881,8 +909,8 @@ void ManageOpenPositions()
             double new_sl = 0.0;
             if(type == POSITION_TYPE_BUY)
               {
-               new_sl = current_price - (InpTrailingStepPts * m_symbol.Point());
-               if(new_sl > current_sl + (10.0 * m_symbol.Point()))
+               new_sl = current_price - (InpTrailingStepPts * point);
+               if(new_sl > current_sl + (10.0 * point))
                  {
                   new_sl = m_symbol.NormalizePrice(new_sl);
                   m_trade.PositionModify(ticket, new_sl, current_tp);
@@ -890,8 +918,8 @@ void ManageOpenPositions()
               }
             else if(type == POSITION_TYPE_SELL)
               {
-               new_sl = current_price + (InpTrailingStepPts * m_symbol.Point());
-               if(current_sl == 0.0 || new_sl < current_sl - (10.0 * m_symbol.Point()))
+               new_sl = current_price + (InpTrailingStepPts * point);
+               if(current_sl == 0.0 || new_sl < current_sl - (10.0 * point))
                  {
                   new_sl = m_symbol.NormalizePrice(new_sl);
                   m_trade.PositionModify(ticket, new_sl, current_tp);
@@ -977,11 +1005,8 @@ void CleanVisualObjects()
 int OnInit()
   {
    m_symbol.Name(_Symbol);
-   if(!m_symbol.RefreshRates())
-     {
-      Print("Failed to refresh symbol rates during initialization.");
-      return INIT_FAILED;
-     }
+   m_symbol.Refresh();
+   m_symbol.RefreshRates();
 
    // Initialize Indicators
    m_atr_handle = iATR(_Symbol, InpContextTimeframe, InpATRPeriod);
@@ -1060,6 +1085,7 @@ void OnTick()
             int window_ticks = MathMin(InpWindowMed, m_tick_count - 1);
             TickRecord oldest_imp = GetTickRelative(window_ticks);
             double mid_price = (tick.bid + tick.ask) * 0.5;
+            double point = GetSymbolPoint();
 
             m_setup.state = STATE_WAIT_FOR_PULLBACK;
             m_setup.direction = imp_dir;
@@ -1069,7 +1095,7 @@ void OnTick()
             m_setup.impulse_start_price = oldest_imp.mid;
             m_setup.impulse_peak_price = mid_price;
 
-            double disp_pts = (m_symbol.Point() > 0) ? MathAbs(mid_price - oldest_imp.mid) / m_symbol.Point() : 0.0;
+            double disp_pts = MathAbs(mid_price - oldest_imp.mid) / point;
             m_setup.impulse_displacement = MathMax(disp_pts, InpMinImpulseDisplacePts);
 
             m_setup.pullback_extreme_price = mid_price;
@@ -1176,12 +1202,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 //+------------------------------------------------------------------+
 double OnTester()
   {
-   double profit_factor = 0.0;
-   if(m_total_loss > 0.0)
-      profit_factor = m_total_profit / m_total_loss;
-   else if(m_total_profit > 0.0)
-      profit_factor = 99.0;
-
+   double profit_factor = (m_total_loss > 0.0) ? (m_total_profit / m_total_loss) : ((m_total_profit > 0.0) ? 99.0 : 0.0);
    double win_rate = (m_total_trades > 0) ? ((double)m_winning_trades / (double)m_total_trades) * 100.0 : 0.0;
 
    PrintFormat("=== TESTER SUMMARY METRICS ===");
