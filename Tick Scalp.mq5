@@ -124,7 +124,7 @@ input int             InpEMAFastPeriod         = 9;          // Fast EMA Period
 input int             InpEMASlowPeriod         = 21;         // Slow EMA Period
 input int             InpATRPeriod             = 14;         // ATR Period
 input int             InpSwingLookback         = 10;         // Swing High/Low Lookback Bars
-input double          InpRangeExpansionFactor  = 1.1;        // Min M1 Range Expansion vs Avg
+input double          InpRangeExpansionFactor  = 1.2;        // Min M1 Range Expansion vs Avg
 
 input group "=== 2. Tick Engine & Rolling Windows ==="
 input int             InpTickHistorySize       = 100;        // Max Rolling Ticks History
@@ -139,26 +139,26 @@ input double          InpWeightDisplacement    = 0.25;       // Impulse Weight: 
 input double          InpWeightImbalance       = 0.20;       // Impulse Weight: Directional Imbalance
 input double          InpWeightAcceleration    = 0.15;       // Impulse Weight: Acceleration
 input double          InpWeightRangeExpansion  = 0.15;       // Impulse Weight: Range Expansion
-input double          InpImpulseScoreThreshold = 50.0;       // Min Impulse Score Threshold (0-100)
-input double          InpMinImpulseDisplacePts = 30.0;       // Min Impulse Displacement (Points)
+input double          InpImpulseScoreThreshold = 65.0;       // Min Impulse Score Threshold (0-100)
+input double          InpMinImpulseDisplacePts = 60.0;       // Min Impulse Displacement (Points)
 
 input group "=== 4. Pullback Engine ==="
-input double          InpMinPullbackDepthPct   = 0.10;       // Min Pullback Depth (10% of Impulse)
-input double          InpMaxPullbackDepthPct   = 0.75;       // Max Pullback Depth (75% of Impulse)
+input double          InpMinPullbackDepthPct   = 0.15;       // Min Pullback Depth (15% of Impulse)
+input double          InpMaxPullbackDepthPct   = 0.70;       // Max Pullback Depth (70% of Impulse)
 input double          InpMaxCounterVelRatio    = 0.80;       // Max Counter-Direction Velocity Ratio
-input int             InpMaxPullbackDurationSec= 60;         // Max Pullback Duration (Seconds)
-input double          InpPullbackScoreThreshold= 50.0;       // Min Pullback Quality Score (0-100)
+input int             InpMaxPullbackDurationSec= 45;         // Max Pullback Duration (Seconds)
+input double          InpPullbackScoreThreshold= 60.0;       // Min Pullback Quality Score (0-100)
 
 input group "=== 5. Re-acceleration & Entry Trigger ==="
 input ENUM_ENTRY_MODE InpEntryMode             = ENTRY_BREAK_VELOCITY_CONFIRM; // Entry Execution Mode
-input double          InpReaccelScoreThreshold = 50.0;       // Min Re-acceleration Score (0-100)
-input int             InpMinDirectionalTicks   = 2;          // Min Consecutive Directional Ticks
-input double          InpMinTradeScore         = 55.0;       // Min Unified TradeScore (0-100)
+input double          InpReaccelScoreThreshold = 60.0;       // Min Re-acceleration Score (0-100)
+input int             InpMinDirectionalTicks   = 3;          // Min Consecutive Directional Ticks
+input double          InpMinTradeScore         = 68.0;       // Min Unified TradeScore (0-100)
 
 input group "=== 6. Spread & Execution Protection ==="
-input double          InpMaxAllowedSpreadPts   = 50.0;       // Max Allowed Spread (Points)
-input double          InpMaxSpreadExpansionRatio= 2.5;       // Max Spread Expansion Ratio vs Avg
-input int             InpMaxSlippage           = 20;         // Max Allowed Slippage (Points)
+input double          InpMaxAllowedSpreadPts   = 40.0;       // Max Allowed Spread (Points)
+input double          InpMaxSpreadExpansionRatio= 2.0;       // Max Spread Expansion Ratio vs Avg
+input int             InpMaxSlippage           = 15;         // Max Allowed Slippage (Points)
 input bool            InpUseSessionFilter      = false;      // Enable Trading Session Filter
 input int             InpSessionStartHour      = 1;          // Session Start Hour (Broker Time)
 input int             InpSessionEndHour        = 23;         // Session End Hour (Broker Time)
@@ -177,17 +177,17 @@ input double          InpDailyProfitTargetPct  = 10.0;       // Daily Profit Tar
 
 input group "=== 8. Take Profit & Momentum Exit ==="
 input ENUM_TP_MODE    InpTPMode                = TP_MODE_FIXED_RR; // Take Profit Mode
-input double          InpRiskRewardRatio       = 2.0;        // Risk-to-Reward Ratio (e.g. 2.0 = 1:2)
-input double          InpTPATRMultiplier       = 3.0;        // ATR TP Multiplier
+input double          InpRiskRewardRatio       = 2.5;        // Risk-to-Reward Ratio (e.g. 2.5 = 1:2.5)
+input double          InpTPATRMultiplier       = 3.5;        // ATR TP Multiplier
 input bool            InpUseTrailingSL         = true;       // Enable Trailing Stop Loss
 input double          InpTrailingStartRR       = 1.0;        // Trailing Start Trigger (RR Ratio)
-input double          InpTrailingStepPts       = 30.0;       // Trailing Step Distance (Points)
+input double          InpTrailingStepPts       = 25.0;       // Trailing Step Distance (Points)
 input bool            InpEnableMomentumDecayExit= true;     // Enable Early Exit on Momentum Collapse
 
 input group "=== 9. Cooldown & Position Limits ==="
-input int             InpMinTimeBetweenTradesSec= 15;        // Min Time Between Trades (Seconds)
-input int             InpMaxTradesPerM1Candle  = 3;          // Max Executed Trades per M1 Candle
-input int             InpCooldownAfterSLSec    = 60;         // Cooldown Period After SL (Seconds)
+input int             InpMinTimeBetweenTradesSec= 45;        // Min Time Between Trades (Seconds)
+input int             InpMaxTradesPerM1Candle  = 1;          // Max Executed Trades per M1 Candle
+input int             InpCooldownAfterSLSec    = 120;        // Cooldown Period After SL (Seconds)
 input bool            InpOnePositionPerDirection= true;      // Limit to 1 Position per Direction
 input int             InpMaxSimultaneousPos    = 1;          // Max Total Simultaneous Positions
 
@@ -436,10 +436,10 @@ double EvaluateImpulse(ENUM_SIGNAL_DIR &dir_out)
 
    // Score components (0 - 100)
    double min_disp = (InpMinImpulseDisplacePts > 0.0) ? InpMinImpulseDisplacePts : 1.0;
-   double s_vel       = MathMin(100.0, (vel / 100.0) * 100.0);
+   double s_vel       = MathMin(100.0, (vel / 120.0) * 100.0);
    double s_displace  = MathMin(100.0, (displace / (min_disp * 2.0)) * 100.0);
    double s_imbalance = MathAbs(imbalance) * 100.0;
-   double s_accel     = MathMin(100.0, MathMax(0.0, (accel / 30.0) * 100.0));
+   double s_accel     = MathMin(100.0, MathMax(0.0, (accel / 40.0) * 100.0));
 
    double atr_pts, m1_range, body_ratio, ema_f, ema_s;
    bool is_expansion;
@@ -455,10 +455,19 @@ double EvaluateImpulse(ENUM_SIGNAL_DIR &dir_out)
                    s_accel * InpWeightAcceleration +
                    s_expansion * InpWeightRangeExpansion) / w_tot;
 
-   if(imbalance > 0.15 && consec >= InpMinDirectionalTicks)
-      dir_out = SIGNAL_BUY;
-   else if(imbalance < -0.15 && consec >= InpMinDirectionalTicks)
-      dir_out = SIGNAL_SELL;
+   TickRecord latest = GetTickRelative(0);
+
+   // EMA Trend Alignment Gate: Require impulses to follow EMA Fast & Slow alignment
+   if(imbalance > 0.25 && consec >= InpMinDirectionalTicks)
+     {
+      if(latest.mid >= ema_f && ema_f >= ema_s)
+         dir_out = SIGNAL_BUY;
+     }
+   else if(imbalance < -0.25 && consec >= InpMinDirectionalTicks)
+     {
+      if(latest.mid <= ema_f && ema_f <= ema_s)
+         dir_out = SIGNAL_SELL;
+     }
 
    return score;
   }
@@ -571,16 +580,16 @@ double EvaluateReacceleration()
    int consec;
    ComputeRollingTickMetrics(InpWindowShort, vel, displace, imbalance, accel, consec);
 
-   bool dir_matches = (m_setup.direction == SIGNAL_BUY && imbalance > 0.1) ||
-                      (m_setup.direction == SIGNAL_SELL && imbalance < -0.1);
+   bool dir_matches = (m_setup.direction == SIGNAL_BUY && imbalance > 0.15) ||
+                      (m_setup.direction == SIGNAL_SELL && imbalance < -0.15);
 
    if(!dir_matches || consec < InpMinDirectionalTicks)
       return 0.0;
 
-   double s_vel     = MathMin(100.0, (vel / 80.0) * 100.0);
-   double s_accel   = MathMin(100.0, MathMax(0.0, (accel / 25.0) * 100.0));
+   double s_vel     = MathMin(100.0, (vel / 100.0) * 100.0);
+   double s_accel   = MathMin(100.0, MathMax(0.0, (accel / 30.0) * 100.0));
    double s_imb     = MathAbs(imbalance) * 100.0;
-   double s_consec  = MathMin(100.0, (consec / 4.0) * 100.0);
+   double s_consec  = MathMin(100.0, (consec / 5.0) * 100.0);
 
    double reaccel_score = (s_vel * 0.35) + (s_accel * 0.25) + (s_imb * 0.25) + (s_consec * 0.15);
 
@@ -598,8 +607,8 @@ double EvaluateReacceleration()
          if(m_setup.direction == SIGNAL_SELL && cur.mid <= m_setup.pullback_micro_low_price) break_confirmed = true;
          break;
       case ENTRY_BREAK_VELOCITY_CONFIRM:
-         if(m_setup.direction == SIGNAL_BUY && cur.mid >= m_setup.pullback_micro_high_price && vel > 20.0) break_confirmed = true;
-         if(m_setup.direction == SIGNAL_SELL && cur.mid <= m_setup.pullback_micro_low_price && vel > 20.0) break_confirmed = true;
+         if(m_setup.direction == SIGNAL_BUY && cur.mid >= m_setup.pullback_micro_high_price && vel > 25.0) break_confirmed = true;
+         if(m_setup.direction == SIGNAL_SELL && cur.mid <= m_setup.pullback_micro_low_price && vel > 25.0) break_confirmed = true;
          break;
       case ENTRY_BREAK_ACCEL_CONFIRM:
          if(m_setup.direction == SIGNAL_BUY && cur.mid >= m_setup.pullback_micro_high_price && accel > 5.0) break_confirmed = true;
@@ -686,7 +695,7 @@ void CalculateSLTP(ENUM_SIGNAL_DIR dir, double entry_price, double &sl_price, do
    if(InpTPMode == TP_MODE_ATR_TARGET)
       tp_pts = atr_pts * InpTPATRMultiplier;
    else if(InpTPMode == TP_MODE_DYNAMIC_TARGET)
-      tp_pts = m_setup.impulse_displacement * 1.2;
+      tp_pts = m_setup.impulse_displacement * 1.5;
 
    if(dir == SIGNAL_BUY)
       tp_price = entry_price + (tp_pts * point);
