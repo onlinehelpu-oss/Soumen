@@ -36,21 +36,8 @@ TOKEN_PATH = os.path.join(TOKENS_DIR, f"{TODAY}.json")
 
 def load_or_prompt_creds() -> Dict[str, str]:
     if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                api_key = data.get("api_key") or data.get("client_id") or os.getenv("FYERS_APP_ID")
-                api_secret = data.get("api_secret") or data.get("secret_key") or os.getenv("FYERS_SECRET_ID")
-                redirect_url = data.get("redirect_url") or os.getenv("FYERS_REDIRECT_URL")
-                if api_key and api_secret and redirect_url:
-                    return {
-                        "api_key": api_key,
-                        "api_secret": api_secret,
-                        "redirect_url": redirect_url,
-                    }
-        except Exception:
-            pass
+        with open(CONFIG_FILE, "r") as f:
+            return json.load(f)
     print("---- Enter your Fyers Login Credentials (v3) ----")
     creds = {
         "api_key": input("Enter APP ID (e.g., ABCDE12345-100): ").strip(),
@@ -58,24 +45,9 @@ def load_or_prompt_creds() -> Dict[str, str]:
         "redirect_url": input("Enter Redirect URL (must match app): ").strip(),
     }
     if input("Save to 'fyers_login_details.json'? (Y/N): ").strip().upper() == "Y":
-        try:
-            base = {}
-            if os.path.exists(CONFIG_FILE):
-                try:
-                    with open(CONFIG_FILE, "r") as f:
-                        base = json.load(f) or {}
-                        if not isinstance(base, dict):
-                            base = {}
-                except Exception:
-                    base = {}
-            base.update(creds)
-            base["client_id"] = creds["api_key"]
-            base["secret_key"] = creds["api_secret"]
-            with open(CONFIG_FILE, "w") as f:
-                json.dump(base, f, indent=2)
-            print(f"Saved '{CONFIG_FILE}'.")
-        except Exception as e:
-            print(f"[auth] Could not save creds: {e}")
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(creds, f, indent=2)
+        print(f"Saved '{CONFIG_FILE}'.")
     else:
         print("Skipping save.")
     return creds
