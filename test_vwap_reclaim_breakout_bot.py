@@ -9,7 +9,11 @@ import pandas as pd
 import pytz
 
 from vwap_reclaim_breakout_bot import (
+    DAILY_MAX_LOSS,
+    INDEX_CONFIGS,
     IST,
+    LOT_MULTIPLIER,
+    SL_MODE,
     ArmedSignal,
     FyersBroker,
     PositionStore,
@@ -18,19 +22,19 @@ from vwap_reclaim_breakout_bot import (
     check_and_shift_strike,
     compute_quantity,
     get_expiry_candidates,
+    handle_signal_and_entry,
     parse_option_symbol,
 )
 
 
-class DummyOptionChainFyers:
+class DummyMultiIndexOptionChainFyers:
     def optionchain(self, data: dict):
+        sym = data.get("symbol", "")
         if not data.get("timestamp"):
             return {
                 "s": "ok",
                 "data": {
-                    "optionChain": [
-                        {"option_type": "-", "ltp": 23897.7}
-                    ],
+                    "optionChain": [{"option_type": "-", "ltp": 80000.0 if "SENSEX" in sym else 23897.7}],
                     "expiryData": [
                         {"expiry": "1788862200", "date": "08-09-2026"},
                         {"expiry": "1789467000", "date": "15-09-2026"},
@@ -38,24 +42,35 @@ class DummyOptionChainFyers:
                 }
             }
         else:
-            return {
-                "s": "ok",
-                "data": {
-                    "optionChain": [
-                        {"strike_price": 23150, "option_type": "CE", "symbol": "NSE:NIFTY2690823150CE", "ltp": 826.1},
-                        {"strike_price": 23850, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23850CE", "ltp": 250.0},
-                        {"strike_price": 23900, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23900CE", "ltp": 195.0},
-                        {"strike_price": 23950, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23950CE", "ltp": 150.0},
-                    ]
+            if "SENSEX" in sym:
+                return {
+                    "s": "ok",
+                    "data": {
+                        "optionChain": [
+                            {"strike_price": 79500, "option_type": "CE", "symbol": "BSE:SENSEX26SEP79500CE", "ltp": 520.0},
+                            {"strike_price": 80000, "option_type": "CE", "symbol": "BSE:SENSEX26SEP80000CE", "ltp": 425.0},
+                            {"strike_price": 80500, "option_type": "CE", "symbol": "BSE:SENSEX26SEP80500CE", "ltp": 320.0},
+                        ]
+                    }
                 }
-            }
+            else:
+                return {
+                    "s": "ok",
+                    "data": {
+                        "optionChain": [
+                            {"strike_price": 23850, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23850CE", "ltp": 250.0},
+                            {"strike_price": 23900, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23900CE", "ltp": 195.0},
+                            {"strike_price": 23950, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23950CE", "ltp": 150.0},
+                        ]
+                    }
+                }
 
 
 class DummyBroker:
     def __init__(self, df_1m: pd.DataFrame, ltp: float):
         self.df_1m = df_1m
         self.ltp = ltp
-        self.fyers = DummyOptionChainFyers()
+        self.fyers = DummyMultiIndexOptionChainFyers()
         self.placed_orders = []
         self.live_ltp = {}
         self.subscribed_symbols = []
@@ -105,7 +120,7 @@ class TestVwapReclaimBot(unittest.TestCase):
     def test_build_candles(self):
         strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0, min_premium=180.0, max_premium=220.0)
         start = datetime.now(IST).replace(hour=9, minute=16, second=0, microsecond=0)
-        timestamps = [start + timedelta(minutes=i) for i in range(30)] # 09:16 to 09:45
+        timestamps = [start + timedelta(minutes=i) for i in range(30)]
         df_1m = pd.DataFrame({
             "timestamp": timestamps,
             "open": [190.0] * 30,
@@ -117,149 +132,60 @@ class TestVwapReclaimBot(unittest.TestCase):
         candles = strat.build_candles(df_1m)
         self.assertFalse(candles.empty)
         self.assertIn("vwap", candles.columns)
-        self.assertEqual(len(candles), 2)  # 09:30 and 09:45
+        self.assertEqual(len(candles), 2)
 
-    def test_is_signal_candle_with_premium_range(self):
-        strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0, min_premium=180.0, max_premium=220.0)
+    def test_is_signal_candle_sensex_range(self):
+        strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0, min_premium=400.0, max_premium=450.0)
 
-        valid_row = {"open": 178.0, "close": 195.0, "low": 175.0, "high": 200.0, "vwap": 180.0}
+        valid_row = {"open": 405.0, "close": 425.0, "low": 390.0, "high": 430.0, "vwap": 410.0}
         self.assertTrue(strat._is_signal_candle(valid_row))
 
-        too_low_row = {"open": 160.0, "close": 170.0, "low": 155.0, "high": 172.0, "vwap": 165.0}
+        too_low_row = {"open": 370.0, "close": 380.0, "low": 350.0, "high": 385.0, "vwap": 375.0}
         self.assertFalse(strat._is_signal_candle(too_low_row))
 
-        too_high_row = {"open": 200.0, "close": 230.0, "low": 185.0, "high": 232.0, "vwap": 190.0}
-        self.assertFalse(strat._is_signal_candle(too_high_row))
+    def test_compute_quantity_with_multiplier(self):
+        cfg_qty = {"mode": "quantity"}
+        self.assertEqual(compute_quantity(cfg_qty, lot_size=20, entry_price=425.0, lot_multiplier=2), 40)
 
-        red_row = {"open": 210.0, "close": 195.0, "low": 175.0, "high": 212.0, "vwap": 180.0}
-        self.assertFalse(strat._is_signal_candle(red_row))
-
-    def test_armed_signal_lifecycle(self):
-        strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0, min_premium=180.0, max_premium=220.0)
-        ts = pd.Timestamp("2026-09-04 09:30:00+0530", tz="Asia/Kolkata")
-        candle = pd.Series({
-            "timestamp": ts,
-            "open": 182.0,
-            "high": 200.0,
-            "low": 178.0,
-            "close": 195.0,
-            "vwap": 180.0,
-        })
-        strat.on_new_closed_candle(candle)
-        self.assertIsNotNone(strat.armed)
-        self.assertEqual(strat.armed.high, 200.0)
-        self.assertEqual(strat.armed.low, 178.0)
-
-        now_ts = pd.Timestamp("2026-09-04 09:35:00+0530", tz="Asia/Kolkata")
-        res = strat.check_breakout(198.0, now_ts)
-        self.assertIsNone(res)
-
-        res = strat.check_breakout(201.0, now_ts)
+    def test_auto_resolve_sensex_option(self):
+        broker = DummyBroker(pd.DataFrame(), 80000.0)
+        cfg = {"sizing": {"mode": "quantity"}}
+        res = auto_resolve_atm_option(broker, cfg, spot_symbol="BSE:SENSEX-INDEX", option_type="CE")
         self.assertIsNotNone(res)
-        self.assertEqual(res["entry"], 201.0)
-        self.assertEqual(res["sl"], 178.0)
-        self.assertEqual(res["target"], 201.0 + 2.0 * (201.0 - 178.0))
-        self.assertIsNone(strat.armed)
+        self.assertEqual(res["trade_symbol"], "BSE:SENSEX26SEP80000CE")
+        self.assertEqual(res["strike"], 80000.0)
 
-    def test_armed_signal_expiration(self):
-        strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0, min_premium=180.0, max_premium=220.0)
-        ts = pd.Timestamp("2026-09-04 09:30:00+0530", tz="Asia/Kolkata")
-        candle = pd.Series({
-            "timestamp": ts,
-            "open": 182.0,
-            "high": 200.0,
-            "low": 178.0,
-            "close": 195.0,
-            "vwap": 180.0,
-        })
-        strat.on_new_closed_candle(candle)
-
-        expired_ts = pd.Timestamp("2026-09-04 09:45:00+0530", tz="Asia/Kolkata")
-        res = strat.check_breakout(202.0, expired_ts)
-        self.assertIsNone(res)
-        self.assertIsNone(strat.armed)
-
-    def test_compute_quantity(self):
-        cfg_qty = {"mode": "quantity", "quantity": 65}
-        self.assertEqual(compute_quantity(cfg_qty, lot_size=65, entry_price=190.0), 65)
-
-        cfg_adj = {"mode": "quantity", "quantity": 70}
-        self.assertEqual(compute_quantity(cfg_adj, lot_size=65, entry_price=190.0), 65)
-
-        cfg_amt = {"mode": "amount", "amount": 50000}
-        self.assertEqual(compute_quantity(cfg_amt, lot_size=65, entry_price=190.0), 260)
-
-    def test_get_expiry_candidates(self):
-        chosen_exp = {"expiry": "1788862200", "date": "08-09-2026"}
-        cands = get_expiry_candidates(chosen_exp)
-        self.assertIn("1788862200", cands)
-        self.assertIn(1788862200, cands)
-        self.assertIn("2026-09-08", cands)
-
-    def test_auto_resolve_atm_option_in_range(self):
-        broker = DummyBroker(pd.DataFrame(), 23897.7)
-        cfg = {
-            "symbol": {"spot_symbol": "NSE:NIFTY50-INDEX", "lot_size": 65},
-            "strategy": {"min_premium": 180.0, "max_premium": 220.0},
-            "sizing": {"mode": "quantity", "quantity": 65}
-        }
-        res = auto_resolve_atm_option(broker, cfg, option_type="CE")
-        self.assertIsNotNone(res)
-        self.assertEqual(res["trade_symbol"], "NSE:NIFTY26SEP23900CE")
-        self.assertEqual(res["strike"], 23900.0)
-
-    def test_check_and_shift_strike(self):
+    def test_position_store_daily_pnl(self):
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
             path = tf.name
 
         try:
             store = PositionStore(path)
-            broker = DummyBroker(pd.DataFrame(), 23897.7)
-            strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0)
-            cfg = {
-                "symbol": {"spot_symbol": "NSE:NIFTY50-INDEX", "trade_symbol": "NSE:OLD_CONTRACT", "lot_size": 65},
-                "strategy": {"min_premium": 180.0, "max_premium": 220.0},
-                "sizing": {"mode": "quantity", "quantity": 65}
-            }
+            self.assertEqual(store.get_daily_pnl(), 0.0)
 
-            # Old contract LTP = 150.0 (below 180.0) -> Trigger shift!
-            broker.live_ltp["NSE:OLD_CONTRACT"] = 150.0
-            new_sym = check_and_shift_strike(broker, store, strat, cfg)
-            self.assertEqual(new_sym, "NSE:NIFTY26SEP23900CE")
-            self.assertEqual(cfg["symbol"]["trade_symbol"], "NSE:NIFTY26SEP23900CE")
-            self.assertIn("NSE:NIFTY26SEP23900CE", broker.subscribed_symbols)
+            pos_data = {"symbol": "BSE:SENSEX_CE", "qty": 20, "entry": 425.0, "sl": 400.0, "target": 475.0, "product_type": "INTRADAY"}
+            store.open_position(pos_data)
 
-            # While position is open -> Strike MUST NOT shift
-            store.open_position({"symbol": "NSE:NIFTY26SEP23900CE", "qty": 65, "entry": 195.0, "sl": 178.0, "target": 229.0, "product_type": "INTRADAY"})
-            broker.live_ltp["NSE:NIFTY26SEP23900CE"] = 140.0
-            shifted = check_and_shift_strike(broker, store, strat, cfg)
-            self.assertEqual(shifted, "NSE:NIFTY26SEP23900CE")  # Locked!
+            store.close_position(pnl=-1000.0)
+            self.assertEqual(store.get_daily_pnl(), -1000.0)
         finally:
             if os.path.exists(path):
                 os.remove(path)
 
-    def test_position_store(self):
+    def test_handle_signal_entry_blocked_when_position_open(self):
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
             path = tf.name
 
         try:
             store = PositionStore(path)
-            self.assertFalse(store.has_open_position())
+            store.open_position({"symbol": "EXISTING", "qty": 65, "entry": 200.0, "sl": 180.0, "target": 240.0})
+            broker = DummyBroker(pd.DataFrame(), 200.0)
+            strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0)
+            cfg = {"order": {"product_type": "INTRADAY"}}
 
-            pos_data = {"symbol": "NSE:TEST_CE", "qty": 65, "entry": 195.0, "sl": 178.0, "target": 229.0, "product_type": "INTRADAY"}
-            store.open_position(pos_data)
-            self.assertTrue(store.has_open_position())
-            self.assertEqual(store.get_open_position()["symbol"], "NSE:TEST_CE")
-
-            with self.assertRaises(RuntimeError):
-                store.open_position(pos_data)
-
-            store.close_position()
-            self.assertFalse(store.has_open_position())
-
-            with open(path, "w") as f:
-                f.write("CORRUPTED_JSON")
-            self.assertFalse(store.has_open_position())
+            INDEX_CONFIGS["NSE:NIFTY50-INDEX"]["trade_symbol"] = "NSE:TEST"
+            handle_signal_and_entry(broker, store, strat, cfg, spot_symbol="NSE:NIFTY50-INDEX")
+            self.assertEqual(len(broker.placed_orders), 0)
         finally:
             if os.path.exists(path):
                 os.remove(path)

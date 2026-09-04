@@ -6,33 +6,17 @@ Run directly in PyCharm: fill in CONFIG below, then run this file.
 pip install fyers-apiv3 pandas requests pytz numpy
 
 --------------------------------------------------------------------------
-STRATEGY (Entirely Option Candle Price Based + Dynamic Strike Shifting)
-  Signal candle (selected timeframe option chart): green option candle
-  whose low dips below option VWAP, closes back above option VWAP, AND
-  close price (LTP) is between min_premium (180.0) and max_premium (220.0).
-
-  Dynamic Strike Shifting:
-  - While no trade position is open, the bot dynamically checks the option
-    premium. If option LTP drifts outside 180-220, the bot automatically
-    re-scans the live option chain for the current expiry and shifts
-    tracking to a new contract in the 180-220 premium range.
-  - When a trade opens, strike shifting is locked until the trade exits.
-
-  Confirmation: only the immediate next candle gets a chance to break the
-  signal option candle's high -- checked live via option LTP polling, not
-  on candle close. No break within that window -> signal discarded.
-
-  Stop-loss = signal option candle's low.
-  Target = entry + RR x (entry - SL) [all calculated in option premium points].
-
-  Only one open position at a time. Once opened, a position is monitored
-  continuously -- including across restarts and into later sessions --
-  until SL or target is hit on option price.
-
-BROKER ARCHITECTURE (any-broker compatible)
-  The strategy, sizing, and position-monitoring code never talk to Fyers
-  directly -- they only call five methods: login(), get_historical_1m(),
-  get_ltp(), place_order(), get_positions().
+STRATEGY (Multi-Index Option Price Based + Dynamic Strike Shifting)
+  - Tracks multiple spot indices (NIFTY, SENSEX, or any added symbol).
+  - Index-specific option premium ranges:
+      * NIFTY: 180 to 220 premium range (target ~200)
+      * SENSEX: 400 to 450 premium range (target ~425)
+  - Signal candle: Green option candle whose low dips below option VWAP,
+    closes back above option VWAP, AND close price is within index premium range.
+  - Position Management:
+      * SL_MODE = "signal_low"
+      * LOT_MULTIPLIER = 1
+      * DAILY_MAX_LOSS = 50000.0
 --------------------------------------------------------------------------
 """
 
@@ -57,6 +41,37 @@ from fyers_apiv3.FyersWebsocket import data_ws
 # =========================================================================
 # CONFIG -- edit these values directly
 # =========================================================================
+# Position management settings
+SL_MODE = "signal_low"       # "signal_low"
+LOT_MULTIPLIER = 1           # Multiplier for exchange lot size
+DAILY_MAX_LOSS = 50000.0     # Daily loss circuit breaker threshold
+
+# Spot indices to track and support
+SPOT_INDICES = [
+    "NSE:NIFTY50-INDEX",
+    "BSE:SENSEX-INDEX",
+]
+
+# Index-specific configurations
+INDEX_CONFIGS = {
+    "NSE:NIFTY50-INDEX": {
+        "name": "NIFTY",
+        "lot_size": 65,
+        "min_premium": 180.0,
+        "max_premium": 220.0,
+        "option_type": "CE",
+        "default_symbol": "NSE:NIFTY25JAN23500CE",
+    },
+    "BSE:SENSEX-INDEX": {
+        "name": "SENSEX",
+        "lot_size": 20,
+        "min_premium": 400.0,
+        "max_premium": 450.0,
+        "option_type": "CE",
+        "default_symbol": "BSE:SENSEX25JAN80000CE",
+    },
+}
+
 CONFIG = {
     "broker": {
         "proxy": {
@@ -67,29 +82,25 @@ CONFIG = {
     },
 
     "symbol": {
-        # Tradable option contract symbol
-        "trade_symbol": "NSE:NIFTY25JAN23500CE",
-        "lot_size": 65,   # verify current exchange lot size before running
-        "spot_symbol": "NSE:NIFTY50-INDEX",
-        "auto_select_option": True,  # Auto-resolve current expiry & contract in 180-220 premium range
+        "spot_indices": SPOT_INDICES,
+        "auto_select_option": True,
     },
 
     "strategy": {
         "timeframe": "M15",    # M1, M3, M5, M15, M30, H1, H4, D1
         "risk_reward": 2.0,
-        "min_premium": 180.0,  # Minimum option candle close price (e.g. >= 180)
-        "max_premium": 220.0,  # Maximum option candle close price (e.g. <= 220)
+        "sl_mode": SL_MODE,
+        "lot_multiplier": LOT_MULTIPLIER,
+        "daily_max_loss": DAILY_MAX_LOSS,
         "max_open_positions": 1,
     },
 
     "sizing": {
-        "mode": "quantity",   # "quantity" or "amount"
-        "quantity": 65,        # used when mode == "quantity"
-        "amount": 50000,        # used when mode == "amount"
+        "mode": "quantity",
     },
 
     "order": {
-        "product_type": "INTRADAY",   # INTRADAY, MARGIN, or CNC
+        "product_type": "INTRADAY",
     },
 
     "polling": {
@@ -450,42 +461,29 @@ def parse_option_symbol(symbol: str) -> Optional[Dict]:
     }
 
 
-def print_startup_summary(broker, cfg: dict):
-    trade_symbol = cfg["symbol"]["trade_symbol"]
-    spot_symbol = cfg["symbol"]["spot_symbol"]
-
-    try:
-        spot_ltp = broker.get_ltp(spot_symbol)
-    except Exception as e:
-        spot_ltp = None
-        logging.warning(f"Could not fetch spot price for {spot_symbol}: {e}")
-
-    try:
-        option_ltp = broker.get_ltp(trade_symbol)
-    except Exception as e:
-        option_ltp = None
-        logging.warning(f"Could not fetch quote for {trade_symbol}: {e}")
-
-    parsed = parse_option_symbol(trade_symbol)
-
+def print_startup_summary(broker, tracking_dict: Dict[str, Dict]):
     logging.info("=" * 60)
-    logging.info("TRACKING SUMMARY (OPTION PRICE BASED STRATEGY)")
-    logging.info(f"  Underlying spot ({spot_symbol}): "
-                 f"{spot_ltp if spot_ltp is not None else 'unavailable'}")
-    logging.info(f"  Option symbol  : {trade_symbol}")
-    if parsed:
-        logging.info(f"    Underlying : {parsed['underlying']}")
-        logging.info(f"    Expiry     : {parsed['expiry_display']}")
-        logging.info(f"    Strike     : {parsed['strike']}")
-        logging.info(f"    Type       : {parsed['option_type']}")
-    logging.info(f"  Option LTP   : "
-                 f"{option_ltp if option_ltp is not None else 'unavailable'}")
-    logging.info(f"  Timeframe    : {cfg['strategy']['timeframe']}  "
-                 f"Risk:Reward: 1:{cfg['strategy']['risk_reward']}")
-    logging.info(f"  Min Premium  : {cfg['strategy'].get('min_premium', 180.0)}")
-    logging.info(f"  Max Premium  : {cfg['strategy'].get('max_premium', 220.0)}")
-    logging.info(f"  Sizing mode  : {cfg['sizing']['mode']}")
-    logging.info(f"  Product type : {cfg['order']['product_type']}")
+    logging.info("MULTI-INDEX TRACKING SUMMARY")
+    logging.info(f"  SL_MODE         : {SL_MODE}")
+    logging.info(f"  LOT_MULTIPLIER  : {LOT_MULTIPLIER}")
+    logging.info(f"  DAILY_MAX_LOSS  : {DAILY_MAX_LOSS}")
+    for spot_sym, info in tracking_dict.items():
+        opt_sym = info.get("trade_symbol")
+        try:
+            spot_ltp = broker.get_ltp(spot_sym)
+        except Exception:
+            spot_ltp = "unavailable"
+        try:
+            opt_ltp = broker.get_ltp(opt_sym) if opt_sym else "unavailable"
+        except Exception:
+            opt_ltp = "unavailable"
+
+        logging.info(f"  Index: {spot_sym} ({info.get('name')})")
+        logging.info(f"    Spot LTP      : {spot_ltp}")
+        logging.info(f"    Option Contract: {opt_sym}")
+        logging.info(f"    Option LTP    : {opt_ltp}")
+        logging.info(f"    Premium Range : {info.get('min_premium')}-{info.get('max_premium')}")
+        logging.info(f"    Lot Size      : {info.get('lot_size')} x {LOT_MULTIPLIER} = {info.get('quantity')}")
     logging.info("=" * 60)
 
 
@@ -605,57 +603,50 @@ class VwapReclaimBreakoutStrategy:
 # =========================================================================
 # POSITION SIZING
 # =========================================================================
-def compute_quantity(sizing_cfg: dict, lot_size: int, entry_price: float) -> int:
-    mode = sizing_cfg["mode"]
+def compute_quantity(sizing_cfg: dict, lot_size: int, entry_price: float, lot_multiplier: int = LOT_MULTIPLIER) -> int:
+    mode = sizing_cfg.get("mode", "quantity")
+    base_lot = lot_size * lot_multiplier
     if mode == "quantity":
-        qty = int(sizing_cfg["quantity"])
-        if qty % lot_size != 0:
-            adjusted = (qty // lot_size) * lot_size
-            if adjusted <= 0:
-                adjusted = lot_size
-            logging.warning(
-                f"Configured quantity {qty} is not a multiple of lot size {lot_size}. "
-                f"Adjusting quantity to {adjusted}."
-            )
-            qty = adjusted
+        qty = base_lot
     elif mode == "amount":
-        amount = float(sizing_cfg["amount"])
+        amount = float(sizing_cfg.get("amount", 50000))
         if entry_price <= 0:
             raise ValueError("entry_price must be > 0 to size by amount")
         lots = math.floor((amount / entry_price) / lot_size)
+        lots = max(1, lots) * lot_multiplier
         qty = lots * lot_size
-        if qty <= 0:
-            raise ValueError(
-                f"Allocated amount {amount} is too small for one lot "
-                f"({lot_size} units at price {entry_price})"
-            )
     else:
-        raise ValueError(f"Unknown sizing mode: {mode}")
+        qty = base_lot
 
     if qty % lot_size != 0:
-        raise ValueError(f"Quantity {qty} is not a multiple of lot size {lot_size}")
-    return qty
+        qty = (qty // lot_size) * lot_size
+    return max(lot_size, qty)
 
 
 # =========================================================================
-# PERSISTENT POSITION STORE
+# PERSISTENT POSITION STORE WITH DAILY PNL TRACKING
 # =========================================================================
 class PositionStore:
 
     def __init__(self, path: str):
         self.path = path
         if not os.path.exists(self.path):
-            self._write({"open_position": None})
+            self._write({"open_position": None, "daily_pnl": 0.0, "pnl_date": str(datetime.now(IST).date())})
 
     def _read(self) -> Dict:
         if not os.path.exists(self.path):
-            return {"open_position": None}
+            return {"open_position": None, "daily_pnl": 0.0, "pnl_date": str(datetime.now(IST).date())}
         try:
             with open(self.path, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+                today_str = str(datetime.now(IST).date())
+                if data.get("pnl_date") != today_str:
+                    data["daily_pnl"] = 0.0
+                    data["pnl_date"] = today_str
+                return data
         except json.JSONDecodeError as e:
             logging.error(f"Error decoding state file {self.path}: {e}. Resetting position state.")
-            data = {"open_position": None}
+            data = {"open_position": None, "daily_pnl": 0.0, "pnl_date": str(datetime.now(IST).date())}
             self._write(data)
             return data
 
@@ -671,6 +662,9 @@ class PositionStore:
     def get_open_position(self) -> Optional[Dict]:
         return self._read().get("open_position")
 
+    def get_daily_pnl(self) -> float:
+        return float(self._read().get("daily_pnl", 0.0))
+
     def open_position(self, position: Dict):
         data = self._read()
         if data.get("open_position") is not None:
@@ -678,9 +672,10 @@ class PositionStore:
         data["open_position"] = position
         self._write(data)
 
-    def close_position(self):
+    def close_position(self, pnl: float = 0.0):
         data = self._read()
         data["open_position"] = None
+        data["daily_pnl"] = float(data.get("daily_pnl", 0.0)) + pnl
         self._write(data)
 
 
@@ -688,16 +683,17 @@ class PositionStore:
 # DYNAMIC STRIKE SHIFTING
 # =========================================================================
 def check_and_shift_strike(broker: FyersBroker, store: PositionStore,
-                           strat: VwapReclaimBreakoutStrategy, cfg: dict) -> str:
-    """Checks if current option contract LTP has drifted outside the 180-220
-    premium range when no position is open, and dynamically shifts tracking
-    to a new contract in the 180-220 range."""
-    current_symbol = cfg["symbol"]["trade_symbol"]
-    if store.has_open_position():
-        return current_symbol
+                           strat: VwapReclaimBreakoutStrategy, cfg: dict,
+                           spot_symbol: str) -> str:
+    info = INDEX_CONFIGS.get(spot_symbol, {
+        "name": spot_symbol, "lot_size": 65, "min_premium": 180.0, "max_premium": 220.0, "option_type": "CE"
+    })
+    current_symbol = info.get("trade_symbol")
+    if not current_symbol or store.has_open_position():
+        return current_symbol or ""
 
-    min_prem = cfg["strategy"].get("min_premium", 180.0)
-    max_prem = cfg["strategy"].get("max_premium", 220.0)
+    min_prem = info.get("min_premium", 180.0)
+    max_prem = info.get("max_premium", 220.0)
 
     try:
         current_ltp = broker.get_ltp(current_symbol)
@@ -706,17 +702,16 @@ def check_and_shift_strike(broker: FyersBroker, store: PositionStore,
         current_ltp = None
 
     if current_ltp is None or current_ltp < min_prem or current_ltp > max_prem:
-        logging.info(f"Current contract {current_symbol} LTP ({current_ltp}) is outside target range ({min_prem}-{max_prem}). "
+        logging.info(f"[{info['name']}] Contract {current_symbol} LTP ({current_ltp}) is outside target range ({min_prem}-{max_prem}). "
                      f"Re-scanning option chain for dynamic strike shift...")
-        auto_picked = auto_resolve_atm_option(broker, cfg)
+        auto_picked = auto_resolve_atm_option(broker, cfg, spot_symbol=spot_symbol, option_type=info.get("option_type", "CE"))
         if auto_picked and auto_picked["trade_symbol"] != current_symbol:
             new_symbol = auto_picked["trade_symbol"]
-            logging.info(f"DYNAMIC STRIKE SHIFT: Shifting from {current_symbol} (LTP={current_ltp}) "
+            logging.info(f"[{info['name']}] DYNAMIC STRIKE SHIFT: Shifting from {current_symbol} (LTP={current_ltp}) "
                          f"to {new_symbol} (New LTP={broker.get_ltp(new_symbol):.2f})")
-            cfg["symbol"]["trade_symbol"] = new_symbol
-            cfg["symbol"]["lot_size"] = auto_picked["lot_size"]
-            cfg["sizing"]["mode"] = "quantity"
-            cfg["sizing"]["quantity"] = auto_picked["quantity"]
+            info["trade_symbol"] = new_symbol
+            info["lot_size"] = auto_picked["lot_size"]
+            info["quantity"] = auto_picked["quantity"]
 
             broker.subscribe_symbol(new_symbol)
 
@@ -762,13 +757,29 @@ def handle_open_position(broker: FyersBroker, store: PositionStore, symbol: str)
     if exit_reason:
         order_id = broker.place_order(symbol=target_symbol, qty=pos["qty"], side="SELL",
                                        product_type=pos["product_type"], order_type="MARKET")
-        logging.info(f"Exit triggered ({exit_reason}) for {target_symbol} at option_ltp={ltp:.2f}, order_id={order_id}")
-        store.close_position()
+        trade_pnl = (ltp - pos["entry"]) * pos["qty"]
+        logging.info(f"Exit triggered ({exit_reason}) for {target_symbol} at option_ltp={ltp:.2f}, "
+                     f"PnL={trade_pnl:.2f}, order_id={order_id}")
+        store.close_position(pnl=trade_pnl)
 
 
 def handle_signal_and_entry(broker: FyersBroker, store: PositionStore,
-                             strat: VwapReclaimBreakoutStrategy, cfg: dict, symbol: str):
+                             strat: VwapReclaimBreakoutStrategy, cfg: dict, spot_symbol: str):
+    if store.has_open_position():
+        return
+
+    info = INDEX_CONFIGS.get(spot_symbol)
+    if not info or not info.get("trade_symbol"):
+        return
+
+    symbol = info["trade_symbol"]
     now_ist = datetime.now(IST)
+
+    daily_pnl = store.get_daily_pnl()
+    if daily_pnl <= -DAILY_MAX_LOSS:
+        logging.warning(f"[CIRCUIT BREAKER] Daily loss limit reached ({daily_pnl:.2f} <= -{DAILY_MAX_LOSS:.2f}). "
+                        f"Skipping new entry for {symbol}.")
+        return
 
     df_1m = broker.get_historical_1m(symbol, days_back=5)
     candles = strat.build_candles(df_1m)
@@ -785,28 +796,25 @@ def handle_signal_and_entry(broker: FyersBroker, store: PositionStore,
     if result is None:
         return
 
-    lot_size = cfg["symbol"]["lot_size"]
-    qty = compute_quantity(cfg["sizing"], lot_size, result["entry"])
+    lot_size = info["lot_size"]
+    qty = compute_quantity(cfg["sizing"], lot_size, result["entry"], lot_multiplier=LOT_MULTIPLIER)
 
     order_id = broker.place_order(symbol=symbol, qty=qty, side="BUY",
                                    product_type=cfg["order"]["product_type"],
                                    order_type="MARKET")
-    logging.info(f"ENTRY (OPTION): symbol={symbol} qty={qty} entry_premium~={result['entry']:.2f} "
+    logging.info(f"ENTRY (OPTION [{info['name']}]): symbol={symbol} qty={qty} entry_premium~={result['entry']:.2f} "
                  f"sl={result['sl']:.2f} target={result['target']:.2f} order_id={order_id}")
 
     store.open_position({
         "symbol": symbol, "qty": qty, "entry": result["entry"], "sl": result["sl"],
         "target": result["target"], "product_type": cfg["order"]["product_type"],
-        "opened_at": str(now_ist),
+        "opened_at": str(now_ist), "index_name": info["name"],
     })
 
 
 # =========================================================================
 # LIVE OPTION CHAIN LOOKUP & AUTOMATIC EXPIRY / PREMIUM RANGE RESOLUTION
 # =========================================================================
-SUGGESTED_LOT_SIZE = 65
-
-
 def get_expiry_candidates(chosen_expiry: dict) -> list:
     candidates = []
     exp_val = chosen_expiry.get("expiry")
@@ -833,18 +841,20 @@ def get_expiry_candidates(chosen_expiry: dict) -> list:
     return out
 
 
-def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "CE") -> Optional[Dict]:
-    underlying_symbol = cfg["symbol"]["spot_symbol"]
-    min_prem = cfg["strategy"].get("min_premium", 180.0)
-    max_prem = cfg["strategy"].get("max_premium", 220.0)
+def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, spot_symbol: str, option_type: str = "CE") -> Optional[Dict]:
+    info = INDEX_CONFIGS.get(spot_symbol, {
+        "name": spot_symbol, "lot_size": 65, "min_premium": 180.0, "max_premium": 220.0
+    })
+    min_prem = info.get("min_premium", 180.0)
+    max_prem = info.get("max_premium", 220.0)
     target_prem = (min_prem + max_prem) / 2.0
     fyers = broker.fyers
 
     resp = fyers.optionchain(data={
-        "symbol": underlying_symbol, "strikecount": 1, "timestamp": "",
+        "symbol": spot_symbol, "strikecount": 1, "timestamp": "",
     })
     if resp.get("s") != "ok":
-        logging.warning(f"Option chain fetch failed: {resp}")
+        logging.warning(f"Option chain fetch failed for {spot_symbol}: {resp}")
         return None
 
     data = resp.get("data", {})
@@ -857,34 +867,34 @@ def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "
 
     if spot_ltp is None or spot_ltp <= 0:
         try:
-            spot_ltp = broker.get_ltp(underlying_symbol)
+            spot_ltp = broker.get_ltp(spot_symbol)
         except Exception as e:
-            logging.warning(f"Could not fetch spot LTP for {underlying_symbol}: {e}")
+            logging.warning(f"Could not fetch spot LTP for {spot_symbol}: {e}")
 
     expiries = data.get("expiryData", [])
     if not expiries:
-        logging.warning(f"No expiries returned: {data}")
+        logging.warning(f"No expiries returned for {spot_symbol}: {data}")
         return None
 
     chosen_expiry = expiries[0]
     exp_display = chosen_expiry.get("expiry") or chosen_expiry.get("date") or chosen_expiry.get("expiry_date")
-    logging.info(f"Auto-selected current expiry: {exp_display}")
+    logging.info(f"[{info['name']}] Auto-selected current expiry: {exp_display}")
 
     candidates = get_expiry_candidates(chosen_expiry)
     resp2 = None
     for cand in candidates:
         r = fyers.optionchain(data={
-            "symbol": underlying_symbol,
-            "strikecount": 30,
+            "symbol": spot_symbol,
+            "strikecount": 35,
             "timestamp": cand,
         })
         if r.get("s") == "ok":
             resp2 = r
-            logging.info(f"Option chain fetched successfully for expiry timestamp: {cand}")
+            logging.info(f"[{info['name']}] Option chain fetched successfully for expiry timestamp: {cand}")
             break
 
     if not resp2:
-        logging.warning(f"Option chain fetch failed for expiry candidates {candidates}")
+        logging.warning(f"[{info['name']}] Option chain fetch failed for expiry candidates {candidates}")
         return None
 
     data2 = resp2.get("data", {})
@@ -901,7 +911,7 @@ def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "
 
     rows_list = sorted(by_strike.items())
     if not rows_list:
-        logging.warning("No strike rows parsed from option chain.")
+        logging.warning(f"[{info['name']}] No strike rows parsed from option chain.")
         return None
 
     valid_candidates = []
@@ -917,7 +927,7 @@ def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "
             })
 
     if not valid_candidates:
-        logging.warning(f"No valid option contracts found for side {option_type}.")
+        logging.warning(f"[{info['name']}] No valid option contracts found for side {option_type}.")
         return None
 
     in_range = [c for c in valid_candidates if min_prem <= c["ltp"] <= max_prem]
@@ -930,10 +940,10 @@ def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "
     symbol = best["symbol"]
     opt_ltp = best["ltp"]
 
-    lot_size = cfg["symbol"].get("lot_size", SUGGESTED_LOT_SIZE)
-    quantity = compute_quantity(cfg["sizing"], lot_size, opt_ltp or 200.0)
+    lot_size = info.get("lot_size", 65)
+    quantity = compute_quantity(cfg["sizing"], lot_size, opt_ltp or target_prem, lot_multiplier=LOT_MULTIPLIER)
 
-    logging.info(f"AUTO-RESOLVED OPTION CONTRACT: {symbol} (Strike: {chosen_strike} {option_type}, "
+    logging.info(f"[{info['name']}] AUTO-RESOLVED OPTION CONTRACT: {symbol} (Strike: {chosen_strike} {option_type}, "
                  f"Premium LTP: {opt_ltp:.2f}, Target Range: {min_prem}-{max_prem}, Spot: {spot_ltp})")
     return {
         "trade_symbol": symbol,
@@ -945,138 +955,6 @@ def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "
     }
 
 
-def run_option_chain_lookup(broker: FyersBroker, cfg: dict) -> Optional[Dict]:
-    auto_picked = auto_resolve_atm_option(broker, cfg)
-    if auto_picked:
-        confirm = input(
-            f"\nAutomatically selected current expiry contract: {auto_picked['trade_symbol']} "
-            f"(Strike: {auto_picked['strike']} {auto_picked['option_type']}).\n"
-            f"Use this contract? (Y/n / 'm' for manual pick): "
-        ).strip().lower()
-        if confirm != "m" and confirm != "n":
-            return auto_picked
-
-    underlying_symbol = cfg["symbol"]["spot_symbol"]
-    fyers = broker.fyers
-
-    resp = fyers.optionchain(data={
-        "symbol": underlying_symbol, "strikecount": 1, "timestamp": "",
-    })
-    if resp.get("s") != "ok":
-        print(f"Option chain fetch failed: {resp}")
-        return None
-
-    data = resp.get("data", {})
-    chain = data.get("optionChain", []) or data.get("optionsChain", [])
-    spot_ltp = None
-    for row in chain:
-        if row.get("option_type") in (None, "", "-"):
-            spot_ltp = row.get("ltp")
-            break
-
-    if spot_ltp is None or spot_ltp <= 0:
-        try:
-            spot_ltp = broker.get_ltp(underlying_symbol)
-        except Exception as e:
-            logging.warning(f"Could not fetch spot LTP for {underlying_symbol}: {e}")
-
-    expiries = data.get("expiryData", [])
-    if not expiries:
-        print(f"No expiries returned: {data}")
-        return None
-
-    print(f"\nUnderlying: {underlying_symbol}  Spot LTP: {spot_ltp}")
-    print("\nAvailable expiries (nearest first -- [0] is the nearest weekly expiry):")
-    for i, exp in enumerate(expiries):
-        exp_str = exp.get("expiry") or exp.get("expiry_date") or exp.get("date")
-        date_param = exp.get("date") or exp.get("expiry_date") or exp.get("expiry")
-        print(f"  [{i}] {exp_str}  (date param: {date_param})")
-
-    choice = input(
-        "\nPick an expiry number, or press Enter to auto-pick current "
-        "(weekly) expiry [0], or type 'c' to cancel: "
-    ).strip()
-    if choice.lower() == "c":
-        return None
-    expiry_idx = int(choice) if choice else 0
-    chosen_expiry = expiries[expiry_idx]
-
-    candidates = get_expiry_candidates(chosen_expiry)
-    resp2 = None
-    for cand in candidates:
-        r = fyers.optionchain(data={
-            "symbol": underlying_symbol,
-            "strikecount": 10,
-            "timestamp": cand,
-        })
-        if r.get("s") == "ok":
-            resp2 = r
-            break
-
-    if not resp2:
-        print(f"Option chain fetch failed for expiry {chosen_expiry}")
-        return None
-
-    data2 = resp2.get("data", {})
-    chain2 = data2.get("optionChain", []) or data2.get("optionsChain", [])
-    by_strike = {}
-    for row in chain2:
-        strike = row.get("strike_price")
-        if strike is None:
-            strike = row.get("strikePrice", row.get("strike"))
-        if strike is None:
-            continue
-        opt_type = row.get("option_type")
-        by_strike.setdefault(float(strike), {})[opt_type] = row
-
-    rows_list = sorted(by_strike.items())
-    if not rows_list:
-        print("No strike rows parsed from option chain.")
-        return None
-
-    ref_spot = spot_ltp if spot_ltp is not None else 0.0
-    atm_idx = min(range(len(rows_list)), key=lambda i: abs(rows_list[i][0] - ref_spot))
-
-    for idx, (strike, sides) in enumerate(rows_list):
-        ce = sides.get("CE", {})
-        pe = sides.get("PE", {})
-        marker = "  <- ATM" if idx == atm_idx else ""
-        print(f"[{idx:>3}] {strike:>6.1f} | {ce.get('symbol', '-'):<28} "
-              f"{ce.get('ltp', '-'):>8} | {pe.get('symbol', '-'):<28} "
-              f"{pe.get('ltp', '-'):>8}{marker}")
-
-    pick = input(
-        "\nPick a row number, or press Enter to auto-pick the ATM strike "
-        "shown above, or type 'c' to cancel: "
-    ).strip()
-    if pick.lower() == "c":
-        return None
-    row_idx = int(pick) if pick else atm_idx
-    strike, sides = rows_list[row_idx]
-
-    side = input(
-        "CE or PE? (press Enter for CE -- this strategy trades bullish "
-        "breakouts): "
-    ).strip().upper()
-    side = side if side in ("CE", "PE") else "CE"
-    chosen = sides.get(side, {})
-    symbol = chosen.get("symbol")
-    if not symbol:
-        print(f"Selected option side {side} not available for strike {strike}.")
-        return None
-
-    lot_size_input = input(
-        f"Confirm/enter current lot size [{SUGGESTED_LOT_SIZE}]: "
-    ).strip()
-    lot_size = int(lot_size_input) if lot_size_input else SUGGESTED_LOT_SIZE
-
-    lots = input("How many lots do you want to trade [1]: ").strip()
-    lots = int(lots) if lots else 1
-    quantity = lots * lot_size
-
-    return {"trade_symbol": symbol, "lot_size": lot_size, "quantity": quantity}
-
-
 def main():
     setup_logging(CONFIG["log_file"])
 
@@ -1085,30 +963,36 @@ def main():
     broker.login()
     logging.info("Login successful.")
 
-    if CONFIG["symbol"].get("auto_select_option"):
-        auto_picked = auto_resolve_atm_option(broker, CONFIG)
+    strategies: Dict[str, VwapReclaimBreakoutStrategy] = {}
+    ws_subscribe_symbols: List[str] = []
+
+    for spot_sym in SPOT_INDICES:
+        info = INDEX_CONFIGS.setdefault(spot_sym, {
+            "name": spot_sym, "lot_size": 65, "min_premium": 180.0, "max_premium": 220.0, "option_type": "CE"
+        })
+        auto_picked = auto_resolve_atm_option(broker, CONFIG, spot_symbol=spot_sym, option_type=info.get("option_type", "CE"))
         if auto_picked:
-            CONFIG["symbol"]["trade_symbol"] = auto_picked["trade_symbol"]
-            CONFIG["symbol"]["lot_size"] = auto_picked["lot_size"]
-            CONFIG["sizing"]["mode"] = "quantity"
-            CONFIG["sizing"]["quantity"] = auto_picked["quantity"]
-            logging.info(f"Auto-selected tracking option contract: {auto_picked['trade_symbol']} "
-                         f"(qty={auto_picked['quantity']})")
+            info["trade_symbol"] = auto_picked["trade_symbol"]
+            info["lot_size"] = auto_picked["lot_size"]
+            info["quantity"] = auto_picked["quantity"]
+            ws_subscribe_symbols.extend([spot_sym, auto_picked["trade_symbol"]])
+        else:
+            info["trade_symbol"] = info.get("default_symbol", "")
+            ws_subscribe_symbols.append(spot_sym)
 
-    print_startup_summary(broker, CONFIG)
+        strategies[spot_sym] = VwapReclaimBreakoutStrategy(
+            timeframe=CONFIG["strategy"]["timeframe"],
+            risk_reward=CONFIG["strategy"]["risk_reward"],
+            min_premium=info["min_premium"],
+            max_premium=info["max_premium"],
+        )
 
-    spot_symbol = CONFIG["symbol"]["spot_symbol"]
-    trade_symbol = CONFIG["symbol"]["trade_symbol"]
+    print_startup_summary(broker, INDEX_CONFIGS)
+
     if isinstance(broker, FyersBroker):
-        broker.start_websocket(symbols=[spot_symbol, trade_symbol])
+        broker.start_websocket(symbols=ws_subscribe_symbols)
 
     store = PositionStore(CONFIG["state_file"])
-    strat = VwapReclaimBreakoutStrategy(
-        timeframe=CONFIG["strategy"]["timeframe"],
-        risk_reward=CONFIG["strategy"]["risk_reward"],
-        min_premium=CONFIG["strategy"].get("min_premium", 180.0),
-        max_premium=CONFIG["strategy"].get("max_premium", 220.0),
-    )
     monitor_interval = CONFIG["polling"]["position_monitor_seconds"]
 
     while True:
@@ -1116,11 +1000,17 @@ def main():
             now_ist = datetime.now(IST)
 
             if store.has_open_position():
-                handle_open_position(broker, store, CONFIG["symbol"]["trade_symbol"])
+                open_pos = store.get_open_position()
+                symbol = open_pos.get("symbol", "")
+                handle_open_position(broker, store, symbol)
             elif in_market_hours(CONFIG, now_ist):
-                # Dynamically shift option strike if option premium drifts out of [180, 220] range
-                symbol = check_and_shift_strike(broker, store, strat, CONFIG)
-                handle_signal_and_entry(broker, store, strat, CONFIG, symbol)
+                for spot_sym in SPOT_INDICES:
+                    if store.has_open_position():
+                        break
+                    strat = strategies[spot_sym]
+                    symbol = check_and_shift_strike(broker, store, strat, CONFIG, spot_symbol=spot_sym)
+                    if symbol:
+                        handle_signal_and_entry(broker, store, strat, CONFIG, spot_symbol=spot_sym)
 
             time.sleep(monitor_interval)
 
