@@ -16,6 +16,7 @@ from vwap_reclaim_breakout_bot import (
     VwapReclaimBreakoutStrategy,
     auto_resolve_atm_option,
     compute_quantity,
+    get_expiry_candidates,
     parse_option_symbol,
 )
 
@@ -30,8 +31,8 @@ class DummyOptionChainFyers:
                         {"option_type": "-", "ltp": 23897.7}
                     ],
                     "expiryData": [
-                        {"expiry": "08-SEP-2026", "date": "08-09-2026"},
-                        {"expiry": "15-SEP-2026", "date": "15-09-2026"},
+                        {"expiry": "1788862200", "date": "08-09-2026"},
+                        {"expiry": "1789467000", "date": "15-09-2026"},
                     ]
                 }
             }
@@ -177,6 +178,13 @@ class TestVwapReclaimBot(unittest.TestCase):
 
         cfg_amt = {"mode": "amount", "amount": 50000}
         self.assertEqual(compute_quantity(cfg_amt, lot_size=65, entry_price=100.0), 455)
+
+    def test_get_expiry_candidates(self):
+        chosen_exp = {"expiry": "1788862200", "date": "08-09-2026"}
+        cands = get_expiry_candidates(chosen_exp)
+        self.assertIn("1788862200", cands)
+        self.assertIn(1788862200, cands)
+        self.assertIn("2026-09-08", cands)
 
     def test_auto_resolve_atm_option(self):
         broker = DummyBroker(pd.DataFrame(), 23897.7)

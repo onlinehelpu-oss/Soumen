@@ -84,14 +84,9 @@ CONFIG = {
     },
 
     "symbol": {
-        # Exact tradable symbol candles are analysed on AND orders placed
-        # for -- an index future or a specific option contract. Strike/
-        # expiry selection is NOT automated; update this yourself.
+        # Tradable symbol candles are analysed on AND orders placed for.
         "trade_symbol": "NSE:NIFTY25JAN23500CE",
         "lot_size": 65,   # verify current exchange lot size before running
-        # Only used to display the underlying's live spot price at startup
-        # and in logs -- has no effect on trading logic. Change to
-        # "BSE:SENSEX-INDEX" if trade_symbol is a Sensex option.
         "spot_symbol": "NSE:NIFTY50-INDEX",
         "auto_select_option": True,  # Auto-resolve current expiry & ATM strike on real-time basis
     },
@@ -136,9 +131,6 @@ TOKENS_DIR = "AccessToken"
 
 
 def load_or_create_credentials(broker_name: str, required_fields: list) -> dict:
-    """Generic, any-broker credential store keyed by broker name, so adding
-    a second broker later never touches this function or this file's
-    layout -- it just registers its own required_fields."""
     all_creds = {}
     if os.path.exists(CREDENTIALS_FILE):
         try:
@@ -193,7 +185,6 @@ ORDER_TYPE_MAP = {"MARKET": 2, "LIMIT": 1, "SL": 4, "SL-M": 3}
 
 
 class FyersBroker:
-    """Reference implementation of the broker interface."""
 
     NAME = "fyers"
     REQUIRED_FIELDS = [
@@ -240,11 +231,14 @@ class FyersBroker:
         return self.access_token
 
     def start_websocket(self, symbols: List[str]):
-        """Starts real-time Fyers WebSocket connection for streaming ticks."""
         if not self.creds or not self.access_token:
             return
 
-        self.subscribed_symbols = list(set(symbols))
+        valid_symbols = [s for s in symbols if s and isinstance(s, str)]
+        if not valid_symbols:
+            return
+
+        self.subscribed_symbols = list(set(valid_symbols))
         token_str = f"{self.creds['client_id']}:{self.access_token}"
 
         def on_message(msg):
@@ -283,7 +277,7 @@ class FyersBroker:
             logging.warning(f"Failed to start WebSocket: {e}")
 
     def subscribe_symbol(self, symbol: str):
-        if symbol not in self.subscribed_symbols:
+        if symbol and symbol not in self.subscribed_symbols:
             self.subscribed_symbols.append(symbol)
             if self.ws_socket:
                 try:
@@ -500,7 +494,7 @@ def print_startup_summary(broker, cfg: dict):
         logging.info(f"    Strike     : {parsed['strike']}")
         logging.info(f"    Type       : {parsed['option_type']}")
     else:
-        logging.info("    (Non-standard or weekly expiry symbol format)")
+        logging.info("    (Weekly or active custom contract format)")
     logging.info(f"  Current premium (LTP): "
                  f"{option_ltp if option_ltp is not None else 'unavailable'}")
     logging.info(f"  Timeframe: {cfg['strategy']['timeframe']}  "
@@ -743,7 +737,6 @@ def handle_signal_and_entry(broker: FyersBroker, store: PositionStore,
     if candles.empty:
         return
 
-    # Filter out in-progress/incomplete resampled candles whose timestamp > now_ist
     closed_candles = candles[candles["timestamp"] <= pd.Timestamp(now_ist)]
     if not closed_candles.empty:
         last_closed = closed_candles.iloc[-1]
@@ -776,9 +769,34 @@ def handle_signal_and_entry(broker: FyersBroker, store: PositionStore,
 SUGGESTED_LOT_SIZE = 65
 
 
+def get_expiry_candidates(chosen_expiry: dict) -> list:
+    """Generates candidate values for option chain timestamp query."""
+    candidates = []
+    exp_val = chosen_expiry.get("expiry")
+    if exp_val:
+        candidates.append(str(exp_val))
+        try:
+            candidates.append(int(exp_val))
+        except Exception:
+            pass
+
+    raw_date = chosen_expiry.get("date") or chosen_expiry.get("expiry_date")
+    if raw_date:
+        candidates.append(str(raw_date))
+        if len(raw_date) == 10 and raw_date[2] == "-" and raw_date[5] == "-":
+            d, m, y = raw_date.split("-")
+            candidates.append(f"{y}-{m}-{d}")
+
+    seen = set()
+    out = []
+    for c in candidates:
+        if c not in seen and c is not None and c != "":
+            seen.add(c)
+            out.append(c)
+    return out
+
+
 def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "CE") -> Optional[Dict]:
-    """Automatically selects the current (nearest) expiry and ATM strike contract
-    on a real-time basis from Fyers option chain."""
     underlying_symbol = cfg["symbol"]["spot_symbol"]
     fyers = broker.fyers
 
@@ -808,21 +826,25 @@ def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "
         logging.warning(f"No expiries returned: {data}")
         return None
 
-    # Automatically select current (nearest) expiry [0]
     chosen_expiry = expiries[0]
-    expiry_date_param = (
-        chosen_expiry.get("date") or chosen_expiry.get("expiry_date") or chosen_expiry.get("expiry")
-    )
-    exp_display = chosen_expiry.get("expiry") or expiry_date_param
-    logging.info(f"Auto-selected current expiry: {exp_display} (date param: {expiry_date_param})")
+    exp_display = chosen_expiry.get("expiry") or chosen_expiry.get("date") or chosen_expiry.get("expiry_date")
+    logging.info(f"Auto-selected current expiry: {exp_display}")
 
-    resp2 = fyers.optionchain(data={
-        "symbol": underlying_symbol,
-        "strikecount": 10,
-        "timestamp": expiry_date_param,
-    })
-    if resp2.get("s") != "ok":
-        logging.warning(f"Option chain fetch failed for expiry {expiry_date_param}: {resp2}")
+    candidates = get_expiry_candidates(chosen_expiry)
+    resp2 = None
+    for cand in candidates:
+        r = fyers.optionchain(data={
+            "symbol": underlying_symbol,
+            "strikecount": 10,
+            "timestamp": cand,
+        })
+        if r.get("s") == "ok":
+            resp2 = r
+            logging.info(f"Option chain fetched successfully for expiry timestamp: {cand}")
+            break
+
+    if not resp2:
+        logging.warning(f"Option chain fetch failed for expiry candidates {candidates}")
         return None
 
     data2 = resp2.get("data", {})
@@ -867,7 +889,6 @@ def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "
 
 
 def run_option_chain_lookup(broker: FyersBroker, cfg: dict) -> Optional[Dict]:
-    """Option chain browser with auto-pick current expiry support."""
     auto_picked = auto_resolve_atm_option(broker, cfg)
     if auto_picked:
         confirm = input(
@@ -922,17 +943,21 @@ def run_option_chain_lookup(broker: FyersBroker, cfg: dict) -> Optional[Dict]:
         return None
     expiry_idx = int(choice) if choice else 0
     chosen_expiry = expiries[expiry_idx]
-    expiry_date_param = (
-        chosen_expiry.get("date") or chosen_expiry.get("expiry_date") or chosen_expiry.get("expiry")
-    )
 
-    resp2 = fyers.optionchain(data={
-        "symbol": underlying_symbol,
-        "strikecount": 10,
-        "timestamp": expiry_date_param,
-    })
-    if resp2.get("s") != "ok":
-        print(f"Option chain fetch failed: {resp2}")
+    candidates = get_expiry_candidates(chosen_expiry)
+    resp2 = None
+    for cand in candidates:
+        r = fyers.optionchain(data={
+            "symbol": underlying_symbol,
+            "strikecount": 10,
+            "timestamp": cand,
+        })
+        if r.get("s") == "ok":
+            resp2 = r
+            break
+
+    if not resp2:
+        print(f"Option chain fetch failed for expiry {chosen_expiry}")
         return None
 
     data2 = resp2.get("data", {})
@@ -982,7 +1007,6 @@ def run_option_chain_lookup(broker: FyersBroker, cfg: dict) -> Optional[Dict]:
     if not symbol:
         print(f"Selected option side {side} not available for strike {strike}.")
         return None
-    premium = chosen.get("ltp")
 
     lot_size_input = input(
         f"Confirm/enter current lot size [{SUGGESTED_LOT_SIZE}]: "
@@ -1004,7 +1028,6 @@ def main():
     broker.login()
     logging.info("Login successful.")
 
-    # Automatically resolve current expiry & ATM strike if auto_select_option is enabled
     if CONFIG["symbol"].get("auto_select_option"):
         auto_picked = auto_resolve_atm_option(broker, CONFIG)
         if auto_picked:
@@ -1017,7 +1040,6 @@ def main():
 
     print_startup_summary(broker, CONFIG)
 
-    # Start real-time Fyers WebSocket feed for spot index and tracking option contract
     spot_symbol = CONFIG["symbol"]["spot_symbol"]
     trade_symbol = CONFIG["symbol"]["trade_symbol"]
     if isinstance(broker, FyersBroker):
