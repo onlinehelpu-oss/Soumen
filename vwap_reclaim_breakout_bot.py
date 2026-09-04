@@ -6,47 +6,26 @@ Run directly in PyCharm: fill in CONFIG below, then run this file.
 pip install fyers-apiv3 pandas requests pytz numpy
 
 --------------------------------------------------------------------------
-STRATEGY
-  Signal candle (selected timeframe): green candle whose low dips below
-  VWAP but closes back above VWAP (a VWAP reclaim).
+STRATEGY (Entirely Option Candle Price Based)
+  Signal candle (selected timeframe option chart): green option candle
+  whose low dips below option VWAP, closes back above option VWAP, AND
+  close price (LTP) is >= 180 (configurable min_premium).
+
   Confirmation: only the immediate next candle gets a chance to break the
-  signal candle's high -- checked live via LTP polling, not on candle
-  close. No break within that window -> signal discarded.
-  Stop-loss = signal candle's low. Target = entry + RR x (entry - SL).
+  signal option candle's high -- checked live via option LTP polling, not
+  on candle close. No break within that window -> signal discarded.
+
+  Stop-loss = signal option candle's low.
+  Target = entry + RR x (entry - SL) [all calculated in option premium points].
+
   Only one open position at a time. Once opened, a position is monitored
   continuously -- including across restarts and into later sessions --
-  until SL or target is hit.
+  until SL or target is hit on option price.
 
 BROKER ARCHITECTURE (any-broker compatible)
   The strategy, sizing, and position-monitoring code never talk to Fyers
   directly -- they only call five methods: login(), get_historical_1m(),
-  get_ltp(), place_order(), get_positions(). FyersBroker below is one
-  implementation of that interface. To support a second broker, write a
-  new class with the same five methods (see ZerodhaBrokerStub near the
-  bottom) and point BROKER_CLASS at it -- nothing else in this file changes.
-
-LOGIN FLOW (same shape for any broker you plug in)
-  First run only: you're asked once, in the console, for that broker's app
-  credentials (for Fyers: App ID, Secret Key, Redirect URI). These are
-  saved locally to broker_credentials.json so you're never asked again.
-  Every day after that: most brokers reset the access token daily. Each
-  day you either (a) paste in an access token you generated yourself from
-  the broker's own dashboard, or (b) press Enter and let this script open
-  your browser, where you log in directly on the broker's own page (ID,
-  password, PIN/OTP -- entered there, never typed into or stored by this
-  script) and the redirect is captured automatically.
-
-SECURITY / COMPLIANCE NOTES (please actually read)
-  - This script never asks for or stores your PIN or OTP. Those are only
-    ever entered on the broker's own login page in your browser.
-  - Never commit broker_credentials.json or the AccessToken/ folder to any
-    public repo -- anyone with them can trade on your account.
-  - A static IP (VPS-hosted, or via a proxy service -- see PROXY config
-    below) is a separate SEBI-compliance requirement: you still need to
-    whitelist that IP yourself in your broker's API app settings.
-  - Not financial advice, no performance guarantee. Test with minimum
-    size / paper logic before scaling. Verify LOT_SIZE and PRODUCT_TYPE
-    (CNC is generally not valid for index options) before running live.
+  get_ltp(), place_order(), get_positions().
 --------------------------------------------------------------------------
 """
 
@@ -73,27 +52,25 @@ from fyers_apiv3.FyersWebsocket import data_ws
 # =========================================================================
 CONFIG = {
     "broker": {
-        # Redirect URI must exactly match what's registered on your app's
-        # page at myapi.fyers.in (or the equivalent for another broker).
-        # Only used the first time; asked once and then saved.
         "proxy": {
             "enabled": False,
-            "http": "",   # e.g. "http://user:pass@your-static-ip-host:port"
+            "http": "",
             "https": "",
         },
     },
 
     "symbol": {
-        # Tradable symbol candles are analysed on AND orders placed for.
+        # Tradable option contract symbol
         "trade_symbol": "NSE:NIFTY25JAN23500CE",
         "lot_size": 65,   # verify current exchange lot size before running
         "spot_symbol": "NSE:NIFTY50-INDEX",
-        "auto_select_option": True,  # Auto-resolve current expiry & ATM strike on real-time basis
+        "auto_select_option": True,  # Auto-resolve current expiry & ATM/min-premium contract
     },
 
     "strategy": {
-        "timeframe": "M15",   # M1, M3, M5, M15, M30, H1, H4, D1
+        "timeframe": "M15",    # M1, M3, M5, M15, M30, H1, H4, D1
         "risk_reward": 2.0,
+        "min_premium": 180.0,  # Minimum option candle close price (e.g. >= 180)
         "max_open_positions": 1,
     },
 
@@ -117,7 +94,6 @@ CONFIG = {
     "log_file": "algo_bot.log",
 }
 
-# Optionally set proxy for static-IP routing.
 if CONFIG["broker"]["proxy"]["enabled"]:
     if CONFIG["broker"]["proxy"]["http"]:
         os.environ["HTTP_PROXY"] = CONFIG["broker"]["proxy"]["http"]
@@ -484,28 +460,27 @@ def print_startup_summary(broker, cfg: dict):
     parsed = parse_option_symbol(trade_symbol)
 
     logging.info("=" * 60)
-    logging.info("TRACKING SUMMARY")
+    logging.info("TRACKING SUMMARY (OPTION PRICE BASED STRATEGY)")
     logging.info(f"  Underlying spot ({spot_symbol}): "
                  f"{spot_ltp if spot_ltp is not None else 'unavailable'}")
-    logging.info(f"  Tracking symbol: {trade_symbol}")
+    logging.info(f"  Option symbol  : {trade_symbol}")
     if parsed:
         logging.info(f"    Underlying : {parsed['underlying']}")
         logging.info(f"    Expiry     : {parsed['expiry_display']}")
         logging.info(f"    Strike     : {parsed['strike']}")
         logging.info(f"    Type       : {parsed['option_type']}")
-    else:
-        logging.info("    (Weekly or active custom contract format)")
-    logging.info(f"  Current premium (LTP): "
+    logging.info(f"  Option LTP   : "
                  f"{option_ltp if option_ltp is not None else 'unavailable'}")
-    logging.info(f"  Timeframe: {cfg['strategy']['timeframe']}  "
+    logging.info(f"  Timeframe    : {cfg['strategy']['timeframe']}  "
                  f"Risk:Reward: 1:{cfg['strategy']['risk_reward']}")
-    logging.info(f"  Sizing mode: {cfg['sizing']['mode']}")
-    logging.info(f"  Product type: {cfg['order']['product_type']}")
+    logging.info(f"  Min Premium  : {cfg['strategy'].get('min_premium', 180.0)} (Option Close >= 180)")
+    logging.info(f"  Sizing mode  : {cfg['sizing']['mode']}")
+    logging.info(f"  Product type : {cfg['order']['product_type']}")
     logging.info("=" * 60)
 
 
 # =========================================================================
-# STRATEGY
+# STRATEGY (OPTION CANDLE PRICE BASED)
 # =========================================================================
 TIMEFRAME_MINUTES = {
     "M1": 1, "M3": 3, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440,
@@ -522,17 +497,19 @@ class ArmedSignal:
 
 class VwapReclaimBreakoutStrategy:
 
-    def __init__(self, timeframe: str, risk_reward: float):
+    def __init__(self, timeframe: str, risk_reward: float, min_premium: float = 180.0):
         if timeframe not in TIMEFRAME_MINUTES:
             raise ValueError(f"Unsupported timeframe: {timeframe}")
         self.timeframe = timeframe
         self.timeframe_minutes = TIMEFRAME_MINUTES[timeframe]
         self.risk_reward = risk_reward
+        self.min_premium = min_premium
         self.armed: Optional[ArmedSignal] = None
         self._last_seen_candle_ts = None
 
     @staticmethod
     def compute_vwap_1m(df_1m: pd.DataFrame) -> pd.DataFrame:
+        """Computes VWAP on option 1m historical price data."""
         df = df_1m.copy()
         if df.empty:
             df["session_date"] = []
@@ -550,6 +527,7 @@ class VwapReclaimBreakoutStrategy:
         return df
 
     def build_candles(self, df_1m: pd.DataFrame) -> pd.DataFrame:
+        """Resamples option 1m candles into strategy timeframe candles with option VWAP."""
         if df_1m.empty:
             return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume", "vwap"])
         df_1m = self.compute_vwap_1m(df_1m)
@@ -568,11 +546,17 @@ class VwapReclaimBreakoutStrategy:
                               on="timestamp", direction="backward")
         return ohlc
 
-    @staticmethod
-    def _is_signal_candle(row) -> bool:
+    def _is_signal_candle(self, row) -> bool:
+        """Option signal candle: Green option candle whose low < option VWAP,
+        close > option VWAP, AND option close >= min_premium (e.g. 180)."""
         if pd.isna(row.get("vwap")):
             return False
-        return row["close"] > row["open"] and row["low"] < row["vwap"] and row["close"] > row["vwap"]
+        return (
+            row["close"] > row["open"]
+            and row["low"] < row["vwap"]
+            and row["close"] > row["vwap"]
+            and row["close"] >= self.min_premium
+        )
 
     def on_new_closed_candle(self, candle: pd.Series):
         ts = candle["timestamp"]
@@ -587,11 +571,16 @@ class VwapReclaimBreakoutStrategy:
             expires = ts + pd.Timedelta(minutes=self.timeframe_minutes)
             self.armed = ArmedSignal(high=candle["high"], low=candle["low"],
                                       armed_at=ts, expires_at=expires)
+            logging.info(f"ARMED OPTION SIGNAL: ts={ts} High={candle['high']:.2f} "
+                         f"Low={candle['low']:.2f} VWAP={candle['vwap']:.2f} "
+                         f"Close={candle['close']:.2f} (>= {self.min_premium})")
 
     def check_breakout(self, ltp: float, now_ts: pd.Timestamp):
+        """Checks if option live LTP breaks above the armed option signal candle's High."""
         if self.armed is None:
             return None
         if now_ts >= self.armed.expires_at:
+            logging.info(f"Armed signal expired at {now_ts}")
             self.armed = None
             return None
         if ltp > self.armed.high:
@@ -712,8 +701,8 @@ def handle_open_position(broker: FyersBroker, store: PositionStore, symbol: str)
         return
     target_symbol = pos.get("symbol") or symbol
     ltp = broker.get_ltp(target_symbol)
-    logging.info(f"Monitoring open position ({target_symbol}): entry={pos['entry']} sl={pos['sl']} "
-                 f"target={pos['target']} ltp={ltp}")
+    logging.info(f"Monitoring open option position ({target_symbol}): entry={pos['entry']:.2f} "
+                 f"sl={pos['sl']:.2f} target={pos['target']:.2f} option_ltp={ltp:.2f}")
 
     exit_reason = None
     if ltp <= pos["sl"]:
@@ -724,7 +713,7 @@ def handle_open_position(broker: FyersBroker, store: PositionStore, symbol: str)
     if exit_reason:
         order_id = broker.place_order(symbol=target_symbol, qty=pos["qty"], side="SELL",
                                        product_type=pos["product_type"], order_type="MARKET")
-        logging.info(f"Exit triggered ({exit_reason}) for {target_symbol} at ltp={ltp}, order_id={order_id}")
+        logging.info(f"Exit triggered ({exit_reason}) for {target_symbol} at option_ltp={ltp:.2f}, order_id={order_id}")
         store.close_position()
 
 
@@ -732,6 +721,7 @@ def handle_signal_and_entry(broker: FyersBroker, store: PositionStore,
                              strat: VwapReclaimBreakoutStrategy, cfg: dict, symbol: str):
     now_ist = datetime.now(IST)
 
+    # Fetch option 1m historical candles directly
     df_1m = broker.get_historical_1m(symbol, days_back=5)
     candles = strat.build_candles(df_1m)
     if candles.empty:
@@ -753,8 +743,8 @@ def handle_signal_and_entry(broker: FyersBroker, store: PositionStore,
     order_id = broker.place_order(symbol=symbol, qty=qty, side="BUY",
                                    product_type=cfg["order"]["product_type"],
                                    order_type="MARKET")
-    logging.info(f"ENTRY: symbol={symbol} qty={qty} entry~={result['entry']} "
-                 f"sl={result['sl']} target={result['target']} order_id={order_id}")
+    logging.info(f"ENTRY (OPTION): symbol={symbol} qty={qty} entry_premium~={result['entry']:.2f} "
+                 f"sl={result['sl']:.2f} target={result['target']:.2f} order_id={order_id}")
 
     store.open_position({
         "symbol": symbol, "qty": qty, "entry": result["entry"], "sl": result["sl"],
@@ -770,7 +760,6 @@ SUGGESTED_LOT_SIZE = 65
 
 
 def get_expiry_candidates(chosen_expiry: dict) -> list:
-    """Generates candidate values for option chain timestamp query."""
     candidates = []
     exp_val = chosen_expiry.get("expiry")
     if exp_val:
@@ -798,6 +787,7 @@ def get_expiry_candidates(chosen_expiry: dict) -> list:
 
 def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "CE") -> Optional[Dict]:
     underlying_symbol = cfg["symbol"]["spot_symbol"]
+    min_prem = cfg["strategy"].get("min_premium", 180.0)
     fyers = broker.fyers
 
     resp = fyers.optionchain(data={
@@ -835,7 +825,7 @@ def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "
     for cand in candidates:
         r = fyers.optionchain(data={
             "symbol": underlying_symbol,
-            "strikecount": 10,
+            "strikecount": 15,
             "timestamp": cand,
         })
         if r.get("s") == "ok":
@@ -866,24 +856,40 @@ def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "
 
     ref_spot = spot_ltp if spot_ltp is not None else 0.0
     atm_idx = min(range(len(rows_list)), key=lambda i: abs(rows_list[i][0] - ref_spot))
-    strike, sides = rows_list[atm_idx]
 
+    # Pick strike closest to or >= min_prem
+    chosen_strike, sides = rows_list[atm_idx]
     chosen = sides.get(option_type, {})
     symbol = chosen.get("symbol")
+    opt_ltp = chosen.get("ltp")
+
+    # If ATM LTP is less than min_prem, scan for nearest strike with LTP >= min_prem
+    if opt_ltp and opt_ltp < min_prem:
+        for strike_val, s_dict in rows_list:
+            cand_side = s_dict.get(option_type, {})
+            cand_ltp = cand_side.get("ltp")
+            if cand_ltp and cand_ltp >= min_prem:
+                chosen_strike, sides = strike_val, s_dict
+                chosen = cand_side
+                symbol = chosen.get("symbol")
+                opt_ltp = cand_ltp
+                break
+
     if not symbol:
-        logging.warning(f"Selected option side {option_type} not available for strike {strike}.")
+        logging.warning(f"Selected option side {option_type} not available.")
         return None
 
     lot_size = cfg["symbol"].get("lot_size", SUGGESTED_LOT_SIZE)
-    quantity = compute_quantity(cfg["sizing"], lot_size, spot_ltp or 100.0)
+    quantity = compute_quantity(cfg["sizing"], lot_size, opt_ltp or 180.0)
 
-    logging.info(f"AUTO-RESOLVED ATM CONTRACT: {symbol} (Strike: {strike} {option_type}, Spot: {spot_ltp})")
+    logging.info(f"AUTO-RESOLVED OPTION CONTRACT: {symbol} (Strike: {chosen_strike} {option_type}, "
+                 f"Premium LTP: {opt_ltp}, MinPremium: {min_prem}, Spot: {spot_ltp})")
     return {
         "trade_symbol": symbol,
         "lot_size": lot_size,
         "quantity": quantity,
         "expiry": exp_display,
-        "strike": strike,
+        "strike": chosen_strike,
         "option_type": option_type,
     }
 
@@ -1035,7 +1041,7 @@ def main():
             CONFIG["symbol"]["lot_size"] = auto_picked["lot_size"]
             CONFIG["sizing"]["mode"] = "quantity"
             CONFIG["sizing"]["quantity"] = auto_picked["quantity"]
-            logging.info(f"Auto-selected tracking contract: {auto_picked['trade_symbol']} "
+            logging.info(f"Auto-selected tracking option contract: {auto_picked['trade_symbol']} "
                          f"(qty={auto_picked['quantity']})")
 
     print_startup_summary(broker, CONFIG)
@@ -1049,6 +1055,7 @@ def main():
     strat = VwapReclaimBreakoutStrategy(
         timeframe=CONFIG["strategy"]["timeframe"],
         risk_reward=CONFIG["strategy"]["risk_reward"],
+        min_premium=CONFIG["strategy"].get("min_premium", 180.0),
     )
     symbol = CONFIG["symbol"]["trade_symbol"]
     monitor_interval = CONFIG["polling"]["position_monitor_seconds"]

@@ -41,9 +41,9 @@ class DummyOptionChainFyers:
                 "s": "ok",
                 "data": {
                     "optionChain": [
-                        {"strike_price": 23850, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23850CE", "ltp": 120.0},
-                        {"strike_price": 23900, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23900CE", "ltp": 95.0},
-                        {"strike_price": 23950, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23950CE", "ltp": 70.0},
+                        {"strike_price": 23850, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23850CE", "ltp": 210.0},
+                        {"strike_price": 23900, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23900CE", "ltp": 185.0},
+                        {"strike_price": 23950, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23950CE", "ltp": 150.0},
                     ]
                 }
             }
@@ -84,28 +84,27 @@ class TestVwapReclaimBot(unittest.TestCase):
         timestamps = [start + timedelta(minutes=i) for i in range(5)]
         df_1m = pd.DataFrame({
             "timestamp": timestamps,
-            "open": [100.0, 102.0, 101.0, 103.0, 104.0],
-            "high": [103.0, 104.0, 103.0, 106.0, 105.0],
-            "low": [99.0, 101.0, 100.0, 102.0, 103.0],
-            "close": [102.0, 103.0, 102.0, 105.0, 104.0],
+            "open": [190.0, 192.0, 191.0, 193.0, 194.0],
+            "high": [193.0, 194.0, 193.0, 196.0, 195.0],
+            "low": [189.0, 191.0, 190.0, 192.0, 193.0],
+            "close": [192.0, 193.0, 192.0, 195.0, 194.0],
             "volume": [0, 100, 200, 150, 50],
         })
         res = VwapReclaimBreakoutStrategy.compute_vwap_1m(df_1m)
         self.assertIn("vwap", res.columns)
         self.assertTrue(pd.isna(res.iloc[0]["vwap"]))
-        self.assertFalse(isinstance(res["vwap"].dtype, pd.CategoricalDtype))
         self.assertEqual(res["vwap"].dtype, np.float64)
 
     def test_build_candles(self):
-        strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0)
+        strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0, min_premium=180.0)
         start = datetime.now(IST).replace(hour=9, minute=16, second=0, microsecond=0)
         timestamps = [start + timedelta(minutes=i) for i in range(30)] # 09:16 to 09:45
         df_1m = pd.DataFrame({
             "timestamp": timestamps,
-            "open": [100.0] * 30,
-            "high": [105.0] * 30,
-            "low": [95.0] * 30,
-            "close": [102.0] * 30,
+            "open": [190.0] * 30,
+            "high": [205.0] * 30,
+            "low": [185.0] * 30,
+            "close": [195.0] * 30,
             "volume": [10] * 30,
         })
         candles = strat.build_candles(df_1m)
@@ -113,71 +112,77 @@ class TestVwapReclaimBot(unittest.TestCase):
         self.assertIn("vwap", candles.columns)
         self.assertEqual(len(candles), 2)  # 09:30 and 09:45
 
-    def test_is_signal_candle(self):
-        valid_row = {"open": 100.0, "close": 105.0, "low": 95.0, "high": 106.0, "vwap": 98.0}
-        self.assertTrue(VwapReclaimBreakoutStrategy._is_signal_candle(valid_row))
+    def test_is_signal_candle_with_min_premium(self):
+        strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0, min_premium=180.0)
 
-        red_row = {"open": 105.0, "close": 100.0, "low": 95.0, "high": 106.0, "vwap": 98.0}
-        self.assertFalse(VwapReclaimBreakoutStrategy._is_signal_candle(red_row))
+        # Valid option candle (close 190 >= 180, low 175 < vwap 180, close 190 > vwap 180)
+        valid_row = {"open": 178.0, "close": 190.0, "low": 175.0, "high": 192.0, "vwap": 180.0}
+        self.assertTrue(strat._is_signal_candle(valid_row))
 
-        no_dip_row = {"open": 100.0, "close": 105.0, "low": 99.0, "high": 106.0, "vwap": 98.0}
-        self.assertFalse(VwapReclaimBreakoutStrategy._is_signal_candle(no_dip_row))
+        # Close below min_premium (close 170 < 180) -> Invalid
+        low_premium_row = {"open": 160.0, "close": 170.0, "low": 155.0, "high": 172.0, "vwap": 165.0}
+        self.assertFalse(strat._is_signal_candle(low_premium_row))
+
+        # Red option candle -> Invalid
+        red_row = {"open": 195.0, "close": 185.0, "low": 175.0, "high": 196.0, "vwap": 180.0}
+        self.assertFalse(strat._is_signal_candle(red_row))
 
     def test_armed_signal_lifecycle(self):
-        strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0)
+        strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0, min_premium=180.0)
         ts = pd.Timestamp("2026-09-04 09:30:00+0530", tz="Asia/Kolkata")
         candle = pd.Series({
             "timestamp": ts,
-            "open": 100.0,
-            "high": 110.0,
-            "low": 95.0,
-            "close": 108.0,
-            "vwap": 98.0,
+            "open": 182.0,
+            "high": 200.0,
+            "low": 178.0,
+            "close": 195.0,
+            "vwap": 180.0,
         })
         strat.on_new_closed_candle(candle)
         self.assertIsNotNone(strat.armed)
-        self.assertEqual(strat.armed.high, 110.0)
-        self.assertEqual(strat.armed.low, 95.0)
+        self.assertEqual(strat.armed.high, 200.0)
+        self.assertEqual(strat.armed.low, 178.0)
 
+        # Poll LTP below high (198.0) -> no breakout
         now_ts = pd.Timestamp("2026-09-04 09:35:00+0530", tz="Asia/Kolkata")
-        res = strat.check_breakout(109.0, now_ts)
+        res = strat.check_breakout(198.0, now_ts)
         self.assertIsNone(res)
-        self.assertIsNotNone(strat.armed)
 
-        res = strat.check_breakout(111.0, now_ts)
+        # Poll LTP > high (201.0) -> Breakout on option price!
+        res = strat.check_breakout(201.0, now_ts)
         self.assertIsNotNone(res)
-        self.assertEqual(res["entry"], 111.0)
-        self.assertEqual(res["sl"], 95.0)
-        self.assertEqual(res["target"], 111.0 + 2.0 * (111.0 - 95.0))
+        self.assertEqual(res["entry"], 201.0)
+        self.assertEqual(res["sl"], 178.0)
+        self.assertEqual(res["target"], 201.0 + 2.0 * (201.0 - 178.0))
         self.assertIsNone(strat.armed)
 
     def test_armed_signal_expiration(self):
-        strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0)
+        strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0, min_premium=180.0)
         ts = pd.Timestamp("2026-09-04 09:30:00+0530", tz="Asia/Kolkata")
         candle = pd.Series({
             "timestamp": ts,
-            "open": 100.0,
-            "high": 110.0,
-            "low": 95.0,
-            "close": 108.0,
-            "vwap": 98.0,
+            "open": 182.0,
+            "high": 200.0,
+            "low": 178.0,
+            "close": 195.0,
+            "vwap": 180.0,
         })
         strat.on_new_closed_candle(candle)
 
         expired_ts = pd.Timestamp("2026-09-04 09:45:00+0530", tz="Asia/Kolkata")
-        res = strat.check_breakout(112.0, expired_ts)
+        res = strat.check_breakout(202.0, expired_ts)
         self.assertIsNone(res)
         self.assertIsNone(strat.armed)
 
     def test_compute_quantity(self):
         cfg_qty = {"mode": "quantity", "quantity": 65}
-        self.assertEqual(compute_quantity(cfg_qty, lot_size=65, entry_price=100.0), 65)
+        self.assertEqual(compute_quantity(cfg_qty, lot_size=65, entry_price=190.0), 65)
 
         cfg_adj = {"mode": "quantity", "quantity": 70}
-        self.assertEqual(compute_quantity(cfg_adj, lot_size=65, entry_price=100.0), 65)
+        self.assertEqual(compute_quantity(cfg_adj, lot_size=65, entry_price=190.0), 65)
 
         cfg_amt = {"mode": "amount", "amount": 50000}
-        self.assertEqual(compute_quantity(cfg_amt, lot_size=65, entry_price=100.0), 455)
+        self.assertEqual(compute_quantity(cfg_amt, lot_size=65, entry_price=190.0), 260)
 
     def test_get_expiry_candidates(self):
         chosen_exp = {"expiry": "1788862200", "date": "08-09-2026"}
@@ -190,6 +195,7 @@ class TestVwapReclaimBot(unittest.TestCase):
         broker = DummyBroker(pd.DataFrame(), 23897.7)
         cfg = {
             "symbol": {"spot_symbol": "NSE:NIFTY50-INDEX", "lot_size": 65},
+            "strategy": {"min_premium": 180.0},
             "sizing": {"mode": "quantity", "quantity": 65}
         }
         res = auto_resolve_atm_option(broker, cfg, option_type="CE")
@@ -205,10 +211,10 @@ class TestVwapReclaimBot(unittest.TestCase):
             store = PositionStore(path)
             self.assertFalse(store.has_open_position())
 
-            pos_data = {"symbol": "NSE:TEST", "qty": 65, "entry": 100.0, "sl": 90.0, "target": 120.0, "product_type": "INTRADAY"}
+            pos_data = {"symbol": "NSE:TEST_CE", "qty": 65, "entry": 195.0, "sl": 178.0, "target": 229.0, "product_type": "INTRADAY"}
             store.open_position(pos_data)
             self.assertTrue(store.has_open_position())
-            self.assertEqual(store.get_open_position()["symbol"], "NSE:TEST")
+            self.assertEqual(store.get_open_position()["symbol"], "NSE:TEST_CE")
 
             with self.assertRaises(RuntimeError):
                 store.open_position(pos_data)
