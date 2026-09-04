@@ -30,6 +30,7 @@
 
 - Broker Abstraction & Auth:
     * BaseBrokerClient interface supports any broker implementation (Fyers, Zerodha, Angel, IB, etc.).
+    * Automated browser login flow with optional local HTTP redirect auto-capture.
     * SourceAddressAdapter binds requests.Session to the configured static IP (PRIMARY_STATIC_IP).
     * Loads credentials from fyers_login_details.json or environment variables.
 """
@@ -46,7 +47,9 @@ import atexit
 import glob
 import hashlib
 import datetime
+import webbrowser
 from abc import ABC, abstractmethod
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs, quote
 from typing import Dict, Optional, Any
 from datetime import datetime as dt, timedelta
@@ -75,6 +78,27 @@ class SourceAddressAdapter(HTTPAdapter):
     def init_poolmanager(self, *args, **kwargs):
         kwargs['source_address'] = self.source_address
         return super().init_poolmanager(*args, **kwargs)
+
+
+class AuthCodeHandler(BaseHTTPRequestHandler):
+    """Local HTTP Server request handler to auto-capture auth_code from browser redirect."""
+    auth_code = None
+
+    def do_GET(self):
+        query = urlparse(self.path).query
+        params = parse_qs(query)
+        if "code" in params:
+            AuthCodeHandler.auth_code = params["code"][0]
+            self.send_response(200)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<html><body><h1>Login successful! You can close this tab and return to the Python app.</h1></body></html>")
+        else:
+            self.send_response(400)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        pass
 
 
 # ---------------------------- USER-CONFIGURED CONSTANTS ----------------------------
@@ -149,7 +173,7 @@ _real_print = print
 ALLOWED_SUBSTRINGS = (
     "ENTRY SIGNAL", "[signal:", "EXIT SIGNAL", "[exit:", "[CANDLE]", "[order]", "[auth]", "[ws]",
     "[blocked-entry]", "[entry-debug]", "[exit-debug]", "TARGET EXIT", "STOP-LOSS", "[ENTRY CONFIRMED]",
-    "[broker]"
+    "[broker]", "==================="
 )
 
 
@@ -410,22 +434,48 @@ def run_interactive_login() -> str:
             else:
                 access_token = None
             if access_token:
-                _real_print(f"API Key : {app_id}")
-                _real_print(f"Access Token (loaded from file) : {access_token}")
+                _real_print("\n=================== FYERS SESSION DASHBOARD ===================")
+                _real_print(" STATUS       : CONNECTED")
+                _real_print(f" App ID       : {app_id}")
+                _real_print(f" Redirect URI : {redirect_uri}")
+                if PRIMARY_STATIC_IP:
+                    _real_print(f" Static IP    : {PRIMARY_STATIC_IP}")
+                _real_print(f" Access Token : {access_token[:15]}... (Loaded from {TOKEN_PATH})")
+                _real_print("===============================================================\n")
                 return access_token
         except Exception:
             pass
 
     auth_url = build_auth_url(app_id, redirect_uri)
-    _real_print("\nLogin URL (open in browser, allow & complete login):")
-    _real_print(auth_url)
-
-    user_val = input("\nPaste the FULL redirect URL after login, or just the 'code=' value here: ").strip()
+    _real_print("\n================ FYERS AUTOMATED AUTHENTICATION ================")
+    _real_print("1. Opening FYERS login URL in your browser...")
+    _real_print(f"   {auth_url}")
     try:
-        auth_code = extract_code(user_val)
+        webbrowser.open(auth_url)
     except Exception as e:
-        _real_print(f"Could not extract code: {e}")
-        raise
+        _real_print(f"[auth] Could not auto-open browser: {e}")
+
+    auth_code = None
+    parsed_redirect = urlparse(redirect_uri)
+    is_local = parsed_redirect.hostname in ("localhost", "127.0.0.1", "0.0.0.0")
+
+    if is_local:
+        port = parsed_redirect.port or 8080
+        _real_print(f"2. Local redirect detected ({redirect_uri}). Listening on port {port} for auth code...")
+        try:
+            server = HTTPServer(("0.0.0.0", port), AuthCodeHandler)
+            server.timeout = 120
+            server.handle_request()
+            auth_code = AuthCodeHandler.auth_code
+            if auth_code:
+                _real_print("   [+] Auth code automatically captured from browser redirect!")
+        except Exception as e:
+            _real_print(f"   [-] Local server listener error: {e}")
+
+    if not auth_code:
+        _real_print("2. Authenticate with FYERS (Login + 2FA/PIN) in browser.")
+        user_val = input("\n3. Paste the FULL redirect URL after login, or just the 'code=' value here: ").strip()
+        auth_code = extract_code(user_val)
 
     token_resp = validate_authcode(app_id, secret_id, auth_code)
     access_token = token_resp.get("access_token")
@@ -455,10 +505,14 @@ def run_interactive_login() -> str:
     except Exception as e:
         _real_print(f"[auth] Could not store access_token into {CONFIG_FILE}: {e}")
 
-    _real_print("\nLogin successful.")
-    _real_print(f"API Key : {app_id}")
-    _real_print(f"Access Token : {access_token}")
-    _real_print(f"Saved to: {TOKEN_PATH}")
+    _real_print("\n=================== FYERS SESSION DASHBOARD ===================")
+    _real_print(" STATUS       : CONNECTED")
+    _real_print(f" App ID       : {app_id}")
+    _real_print(f" Redirect URI : {redirect_uri}")
+    if PRIMARY_STATIC_IP:
+        _real_print(f" Static IP    : {PRIMARY_STATIC_IP}")
+    _real_print(f" Access Token : {access_token[:15]}...")
+    _real_print("===============================================================\n")
     return access_token
 
 
