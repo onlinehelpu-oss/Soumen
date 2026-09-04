@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+symbol_states.json
+partial_candles.json
+trade_log.csv
+AccessToken/
+fyers_login_details.json
