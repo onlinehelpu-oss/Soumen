@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+broker_credentials.json
+position_state.json
+AccessToken/
+algo_bot.log
