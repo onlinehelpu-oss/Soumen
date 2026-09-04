@@ -64,6 +64,15 @@ import pytz
 try:
     from fyers_apiv3 import fyersModel
     from fyers_apiv3.FyersWebsocket import data_ws
+
+    # Monkey-patch fyers_apiv3 SDK bug in SymbolConversion.__init__ where client_id: is stripped
+    if hasattr(data_ws, "SymbolConversion"):
+        def _patched_symbol_conversion_init(self, access_token: str, data_type: str, log_path: str):
+            self.data_type = data_type
+            self.access_token = access_token # preserve full client_id:access_token required by FYERS symbol-token endpoint
+            self.log_path = log_path or ""
+            self.symbols_token_api = "https://api-t1.fyers.in/data/symbol-token"
+        data_ws.SymbolConversion.__init__ = _patched_symbol_conversion_init
 except Exception:
     fyersModel = None
     data_ws = None
@@ -295,12 +304,12 @@ def load_config():
             with open(CONFIG_FILE, "r") as f:
                 data = json.load(f)
             if isinstance(data, dict):
+                keys_map = {str(k).lower().strip().replace(" ", "_"): v for k, v in data.items() if isinstance(v, str)}
                 PRIMARY_STATIC_IP = (
-                    data.get("primary_ip") or
-                    data.get("primary_static_ip") or
-                    data.get("static_ip") or
-                    data.get("ip") or
-                    data.get("Primary IP") or
+                    keys_map.get("primary_ip") or
+                    keys_map.get("primary_static_ip") or
+                    keys_map.get("static_ip") or
+                    keys_map.get("ip") or
                     os.getenv("FYERS_PRIMARY_IP")
                 )
         except Exception:
