@@ -6,10 +6,17 @@ Run directly in PyCharm: fill in CONFIG below, then run this file.
 pip install fyers-apiv3 pandas requests pytz numpy
 
 --------------------------------------------------------------------------
-STRATEGY (Entirely Option Candle Price Based)
+STRATEGY (Entirely Option Candle Price Based + Dynamic Strike Shifting)
   Signal candle (selected timeframe option chart): green option candle
   whose low dips below option VWAP, closes back above option VWAP, AND
   close price (LTP) is between min_premium (180.0) and max_premium (220.0).
+
+  Dynamic Strike Shifting:
+  - While no trade position is open, the bot dynamically checks the option
+    premium. If option LTP drifts outside 180-220, the bot automatically
+    re-scans the live option chain for the current expiry and shifts
+    tracking to a new contract in the 180-220 premium range.
+  - When a trade opens, strike shifting is locked until the trade exits.
 
   Confirmation: only the immediate next candle gets a chance to break the
   signal option candle's high -- checked live via option LTP polling, not
@@ -259,6 +266,7 @@ class FyersBroker:
             if self.ws_socket:
                 try:
                     self.ws_socket.subscribe(symbols=[symbol], data_type="SymbolUpdate")
+                    logging.info(f"Subscribed new symbol {symbol} to WebSocket feed.")
                 except Exception as e:
                     logging.warning(f"Could not subscribe symbol {symbol} to WebSocket: {e}")
 
@@ -548,9 +556,6 @@ class VwapReclaimBreakoutStrategy:
         return ohlc
 
     def _is_signal_candle(self, row) -> bool:
-        """Option signal candle: Green option candle whose low < option VWAP,
-        close > option VWAP, AND option close is between min_premium (180.0)
-        and max_premium (220.0)."""
         if pd.isna(row.get("vwap")):
             return False
         return (
@@ -677,6 +682,49 @@ class PositionStore:
         data = self._read()
         data["open_position"] = None
         self._write(data)
+
+
+# =========================================================================
+# DYNAMIC STRIKE SHIFTING
+# =========================================================================
+def check_and_shift_strike(broker: FyersBroker, store: PositionStore,
+                           strat: VwapReclaimBreakoutStrategy, cfg: dict) -> str:
+    """Checks if current option contract LTP has drifted outside the 180-220
+    premium range when no position is open, and dynamically shifts tracking
+    to a new contract in the 180-220 range."""
+    current_symbol = cfg["symbol"]["trade_symbol"]
+    if store.has_open_position():
+        return current_symbol
+
+    min_prem = cfg["strategy"].get("min_premium", 180.0)
+    max_prem = cfg["strategy"].get("max_premium", 220.0)
+
+    try:
+        current_ltp = broker.get_ltp(current_symbol)
+    except Exception as e:
+        logging.warning(f"Could not fetch LTP for tracking symbol {current_symbol}: {e}")
+        current_ltp = None
+
+    if current_ltp is None or current_ltp < min_prem or current_ltp > max_prem:
+        logging.info(f"Current contract {current_symbol} LTP ({current_ltp}) is outside target range ({min_prem}-{max_prem}). "
+                     f"Re-scanning option chain for dynamic strike shift...")
+        auto_picked = auto_resolve_atm_option(broker, cfg)
+        if auto_picked and auto_picked["trade_symbol"] != current_symbol:
+            new_symbol = auto_picked["trade_symbol"]
+            logging.info(f"DYNAMIC STRIKE SHIFT: Shifting from {current_symbol} (LTP={current_ltp}) "
+                         f"to {new_symbol} (New LTP={broker.get_ltp(new_symbol):.2f})")
+            cfg["symbol"]["trade_symbol"] = new_symbol
+            cfg["symbol"]["lot_size"] = auto_picked["lot_size"]
+            cfg["sizing"]["mode"] = "quantity"
+            cfg["sizing"]["quantity"] = auto_picked["quantity"]
+
+            broker.subscribe_symbol(new_symbol)
+
+            strat.armed = None
+            strat._last_seen_candle_ts = None
+            return new_symbol
+
+    return current_symbol
 
 
 # =========================================================================
@@ -856,7 +904,6 @@ def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "
         logging.warning("No strike rows parsed from option chain.")
         return None
 
-    # Collect valid option candidates of side option_type
     valid_candidates = []
     for strike_val, s_dict in rows_list:
         side_row = s_dict.get(option_type, {})
@@ -873,7 +920,6 @@ def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "
         logging.warning(f"No valid option contracts found for side {option_type}.")
         return None
 
-    # Filter contracts whose option premium LTP is in range [180.0, 220.0]
     in_range = [c for c in valid_candidates if min_prem <= c["ltp"] <= max_prem]
     if in_range:
         best = min(in_range, key=lambda c: abs(c["ltp"] - target_prem))
@@ -1063,7 +1109,6 @@ def main():
         min_premium=CONFIG["strategy"].get("min_premium", 180.0),
         max_premium=CONFIG["strategy"].get("max_premium", 220.0),
     )
-    symbol = CONFIG["symbol"]["trade_symbol"]
     monitor_interval = CONFIG["polling"]["position_monitor_seconds"]
 
     while True:
@@ -1071,8 +1116,10 @@ def main():
             now_ist = datetime.now(IST)
 
             if store.has_open_position():
-                handle_open_position(broker, store, symbol)
+                handle_open_position(broker, store, CONFIG["symbol"]["trade_symbol"])
             elif in_market_hours(CONFIG, now_ist):
+                # Dynamically shift option strike if option premium drifts out of [180, 220] range
+                symbol = check_and_shift_strike(broker, store, strat, CONFIG)
                 handle_signal_and_entry(broker, store, strat, CONFIG, symbol)
 
             time.sleep(monitor_interval)

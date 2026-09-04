@@ -15,6 +15,7 @@ from vwap_reclaim_breakout_bot import (
     PositionStore,
     VwapReclaimBreakoutStrategy,
     auto_resolve_atm_option,
+    check_and_shift_strike,
     compute_quantity,
     get_expiry_candidates,
     parse_option_symbol,
@@ -43,7 +44,7 @@ class DummyOptionChainFyers:
                     "optionChain": [
                         {"strike_price": 23150, "option_type": "CE", "symbol": "NSE:NIFTY2690823150CE", "ltp": 826.1},
                         {"strike_price": 23850, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23850CE", "ltp": 250.0},
-                        {"strike_price": 23900, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23900CE", "ltp": 195.0}, # In range 180-220
+                        {"strike_price": 23900, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23900CE", "ltp": 195.0},
                         {"strike_price": 23950, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23950CE", "ltp": 150.0},
                     ]
                 }
@@ -57,6 +58,7 @@ class DummyBroker:
         self.fyers = DummyOptionChainFyers()
         self.placed_orders = []
         self.live_ltp = {}
+        self.subscribed_symbols = []
 
     def get_historical_1m(self, symbol: str, days_back: int) -> pd.DataFrame:
         return self.df_1m
@@ -65,6 +67,10 @@ class DummyBroker:
         if symbol in self.live_ltp and self.live_ltp[symbol] > 0:
             return self.live_ltp[symbol]
         return self.ltp
+
+    def subscribe_symbol(self, symbol: str):
+        if symbol not in self.subscribed_symbols:
+            self.subscribed_symbols.append(symbol)
 
     def place_order(self, symbol: str, qty: int, side: str, product_type: str,
                     order_type: str = "MARKET", limit_price: float = 0,
@@ -116,19 +122,15 @@ class TestVwapReclaimBot(unittest.TestCase):
     def test_is_signal_candle_with_premium_range(self):
         strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0, min_premium=180.0, max_premium=220.0)
 
-        # Valid option candle (close 195 in range [180, 220], low 175 < vwap 180, close 195 > vwap 180)
         valid_row = {"open": 178.0, "close": 195.0, "low": 175.0, "high": 200.0, "vwap": 180.0}
         self.assertTrue(strat._is_signal_candle(valid_row))
 
-        # Close below min_premium (close 170 < 180) -> Invalid
         too_low_row = {"open": 160.0, "close": 170.0, "low": 155.0, "high": 172.0, "vwap": 165.0}
         self.assertFalse(strat._is_signal_candle(too_low_row))
 
-        # Close above max_premium (close 230 > 220) -> Invalid
         too_high_row = {"open": 200.0, "close": 230.0, "low": 185.0, "high": 232.0, "vwap": 190.0}
         self.assertFalse(strat._is_signal_candle(too_high_row))
 
-        # Red option candle -> Invalid
         red_row = {"open": 210.0, "close": 195.0, "low": 175.0, "high": 212.0, "vwap": 180.0}
         self.assertFalse(strat._is_signal_candle(red_row))
 
@@ -148,12 +150,10 @@ class TestVwapReclaimBot(unittest.TestCase):
         self.assertEqual(strat.armed.high, 200.0)
         self.assertEqual(strat.armed.low, 178.0)
 
-        # Poll LTP below high (198.0) -> no breakout
         now_ts = pd.Timestamp("2026-09-04 09:35:00+0530", tz="Asia/Kolkata")
         res = strat.check_breakout(198.0, now_ts)
         self.assertIsNone(res)
 
-        # Poll LTP > high (201.0) -> Breakout on option price!
         res = strat.check_breakout(201.0, now_ts)
         self.assertIsNotNone(res)
         self.assertEqual(res["entry"], 201.0)
@@ -205,9 +205,38 @@ class TestVwapReclaimBot(unittest.TestCase):
         }
         res = auto_resolve_atm_option(broker, cfg, option_type="CE")
         self.assertIsNotNone(res)
-        # Should pick NSE:NIFTY26SEP23900CE because its LTP is 195.0 (in range 180-220)
         self.assertEqual(res["trade_symbol"], "NSE:NIFTY26SEP23900CE")
         self.assertEqual(res["strike"], 23900.0)
+
+    def test_check_and_shift_strike(self):
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
+            path = tf.name
+
+        try:
+            store = PositionStore(path)
+            broker = DummyBroker(pd.DataFrame(), 23897.7)
+            strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0)
+            cfg = {
+                "symbol": {"spot_symbol": "NSE:NIFTY50-INDEX", "trade_symbol": "NSE:OLD_CONTRACT", "lot_size": 65},
+                "strategy": {"min_premium": 180.0, "max_premium": 220.0},
+                "sizing": {"mode": "quantity", "quantity": 65}
+            }
+
+            # Old contract LTP = 150.0 (below 180.0) -> Trigger shift!
+            broker.live_ltp["NSE:OLD_CONTRACT"] = 150.0
+            new_sym = check_and_shift_strike(broker, store, strat, cfg)
+            self.assertEqual(new_sym, "NSE:NIFTY26SEP23900CE")
+            self.assertEqual(cfg["symbol"]["trade_symbol"], "NSE:NIFTY26SEP23900CE")
+            self.assertIn("NSE:NIFTY26SEP23900CE", broker.subscribed_symbols)
+
+            # While position is open -> Strike MUST NOT shift
+            store.open_position({"symbol": "NSE:NIFTY26SEP23900CE", "qty": 65, "entry": 195.0, "sl": 178.0, "target": 229.0, "product_type": "INTRADAY"})
+            broker.live_ltp["NSE:NIFTY26SEP23900CE"] = 140.0
+            shifted = check_and_shift_strike(broker, store, strat, cfg)
+            self.assertEqual(shifted, "NSE:NIFTY26SEP23900CE")  # Locked!
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
 
     def test_position_store(self):
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
