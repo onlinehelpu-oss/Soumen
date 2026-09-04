@@ -295,7 +295,14 @@ def load_config():
             with open(CONFIG_FILE, "r") as f:
                 data = json.load(f)
             if isinstance(data, dict):
-                PRIMARY_STATIC_IP = data.get("primary_ip") or data.get("primary_static_ip") or os.getenv("FYERS_PRIMARY_IP")
+                PRIMARY_STATIC_IP = (
+                    data.get("primary_ip") or
+                    data.get("primary_static_ip") or
+                    data.get("static_ip") or
+                    data.get("ip") or
+                    data.get("Primary IP") or
+                    os.getenv("FYERS_PRIMARY_IP")
+                )
         except Exception:
             pass
     if not PRIMARY_STATIC_IP:
@@ -1575,8 +1582,9 @@ def _recreate_fyers_and_ws():
         return False
 
     try:
+        ws_access_token = f"{client_id}:{ACCESS_TOKEN}" if ":" not in ACCESS_TOKEN else ACCESS_TOKEN
         new_socket = data_ws.FyersDataSocket(
-            access_token=ACCESS_TOKEN,
+            access_token=ws_access_token,
             log_path="",
             litemode=True,
             write_to_file=False,
@@ -1792,7 +1800,8 @@ def main():
             _real_print("[auth] Failed to obtain access token:", e)
             return
 
-        client_id = ACCESS_TOKEN.split(":")[0] if ":" in ACCESS_TOKEN else ACCESS_TOKEN
+        creds = load_or_prompt_creds()
+        client_id = creds.get("api_key") or (ACCESS_TOKEN.split(":")[0] if ":" in ACCESS_TOKEN else ACCESS_TOKEN)
         BROKER_CLIENT = FyersBrokerAdapter(
             client_id=client_id,
             access_token=ACCESS_TOKEN,
@@ -1805,8 +1814,9 @@ def main():
         warmup_all_full(BROKER_CLIENT)
 
         global FYERS_SOCKET
+        ws_access_token = f"{client_id}:{ACCESS_TOKEN}" if ":" not in ACCESS_TOKEN else ACCESS_TOKEN
         FYERS_SOCKET = data_ws.FyersDataSocket(
-            access_token=ACCESS_TOKEN,
+            access_token=ws_access_token,
             log_path="",
             litemode=True,
             write_to_file=False,
