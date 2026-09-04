@@ -173,7 +173,7 @@ _real_print = print
 ALLOWED_SUBSTRINGS = (
     "ENTRY SIGNAL", "[signal:", "EXIT SIGNAL", "[exit:", "[CANDLE]", "[order]", "[auth]", "[ws]",
     "[blocked-entry]", "[entry-debug]", "[exit-debug]", "TARGET EXIT", "STOP-LOSS", "[ENTRY CONFIRMED]",
-    "[broker]", "==================="
+    "[broker]", "===================", "[notice]", "[mode]"
 )
 
 
@@ -1762,7 +1762,13 @@ def main():
 
     if args.test_table or fyersModel is None:
         BROKER_CLIENT = None
-        _real_print("[mode] TEST TABLE mode (no live broker). Warmup synthetic data.")
+        if fyersModel is None and not args.test_table:
+            _real_print("\n[notice] 'fyers-apiv3' SDK package is not installed in this Python environment.")
+            _real_print("         The strategy is currently running in TEST / SIMULATION mode.")
+            _real_print("         To connect and trade LIVE with FYERS, please run:")
+            _real_print("             pip install fyers-apiv3\n")
+        else:
+            _real_print("[mode] TEST TABLE mode (no live broker). Warmup synthetic data.")
         for sym in SYMBOLS:
             st = SYMBOL_STATES[sym]
             idx = pd.date_range(end=dt.now(), periods=200, freq=f"{TIMEFRAME_MIN}min")
@@ -1793,6 +1799,7 @@ def main():
             primary_ip=PRIMARY_STATIC_IP
         )
 
+        _real_print(f"[mode] LIVE BROKER MODE — Connecting to FYERS API with App ID: {client_id}")
         _real_print("[auth] Broker client initialized. Running warmup history fetch (best-effort).")
         warmup_all(BROKER_CLIENT)
         warmup_all_full(BROKER_CLIENT)
