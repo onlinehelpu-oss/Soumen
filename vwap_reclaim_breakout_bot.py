@@ -55,6 +55,7 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, time as dtime, timedelta
@@ -65,6 +66,7 @@ import pandas as pd
 import pytz
 import requests
 from fyers_apiv3 import fyersModel
+from fyers_apiv3.FyersWebsocket import data_ws
 
 # =========================================================================
 # CONFIG -- edit these values directly
@@ -86,11 +88,12 @@ CONFIG = {
         # for -- an index future or a specific option contract. Strike/
         # expiry selection is NOT automated; update this yourself.
         "trade_symbol": "NSE:NIFTY25JAN23500CE",
-        "lot_size": 75,   # verify current exchange lot size before running
+        "lot_size": 65,   # verify current exchange lot size before running
         # Only used to display the underlying's live spot price at startup
         # and in logs -- has no effect on trading logic. Change to
         # "BSE:SENSEX-INDEX" if trade_symbol is a Sensex option.
         "spot_symbol": "NSE:NIFTY50-INDEX",
+        "auto_select_option": True,  # Auto-resolve current expiry & ATM strike on real-time basis
     },
 
     "strategy": {
@@ -101,7 +104,7 @@ CONFIG = {
 
     "sizing": {
         "mode": "quantity",   # "quantity" or "amount"
-        "quantity": 75,        # used when mode == "quantity"
+        "quantity": 65,        # used when mode == "quantity"
         "amount": 50000,        # used when mode == "amount"
     },
 
@@ -135,16 +138,7 @@ TOKENS_DIR = "AccessToken"
 def load_or_create_credentials(broker_name: str, required_fields: list) -> dict:
     """Generic, any-broker credential store keyed by broker name, so adding
     a second broker later never touches this function or this file's
-    layout -- it just registers its own required_fields.
-
-    required_fields: list of (key, prompt_text) tuples.
-
-    First run only, for THIS broker_name: asks for the listed fields via
-    the console and saves them under broker_credentials.json[broker_name].
-    Nothing else is ever asked here -- no PIN, no OTP. Those (if your
-    broker's flow needs them at all) are entered directly on the broker's
-    own login page in the browser, never typed into or stored by this
-    script."""
+    layout -- it just registers its own required_fields."""
     all_creds = {}
     if os.path.exists(CREDENTIALS_FILE):
         try:
@@ -199,11 +193,7 @@ ORDER_TYPE_MAP = {"MARKET": 2, "LIMIT": 1, "SL": 4, "SL-M": 3}
 
 
 class FyersBroker:
-    """Reference implementation of the broker interface -- see
-    ZerodhaBrokerStub below for how to plug in a second broker without
-    touching anything else in this file (strategy, sizing, position store,
-    main loop all talk only to these five methods: login, get_historical_1m,
-    get_ltp, place_order, get_positions)."""
+    """Reference implementation of the broker interface."""
 
     NAME = "fyers"
     REQUIRED_FIELDS = [
@@ -218,6 +208,9 @@ class FyersBroker:
         self.access_token = None
         self.fyers = None
         self.creds = None
+        self.ws_socket = None
+        self.live_ltp: Dict[str, float] = {}
+        self.subscribed_symbols: List[str] = []
 
     def login(self) -> str:
         self.creds = load_or_create_credentials(self.NAME, self.REQUIRED_FIELDS)
@@ -246,15 +239,59 @@ class FyersBroker:
         )
         return self.access_token
 
+    def start_websocket(self, symbols: List[str]):
+        """Starts real-time Fyers WebSocket connection for streaming ticks."""
+        if not self.creds or not self.access_token:
+            return
+
+        self.subscribed_symbols = list(set(symbols))
+        token_str = f"{self.creds['client_id']}:{self.access_token}"
+
+        def on_message(msg):
+            if isinstance(msg, dict) and "symbol" in msg and "ltp" in msg:
+                try:
+                    self.live_ltp[msg["symbol"]] = float(msg["ltp"])
+                except Exception:
+                    pass
+
+        def on_open():
+            if self.ws_socket and self.subscribed_symbols:
+                self.ws_socket.subscribe(symbols=self.subscribed_symbols, data_type="SymbolUpdate")
+
+        def on_error(msg):
+            logging.warning(f"WebSocket error: {msg}")
+
+        def on_close(msg):
+            logging.info(f"WebSocket connection closed: {msg}")
+
+        try:
+            self.ws_socket = data_ws.FyersDataSocket(
+                access_token=token_str,
+                log_path="",
+                litemode=True,
+                write_to_file=False,
+                reconnect=True,
+                on_connect=on_open,
+                on_message=on_message,
+                on_error=on_error,
+                on_close=on_close,
+            )
+            ws_thread = threading.Thread(target=self.ws_socket.connect, daemon=True)
+            ws_thread.start()
+            logging.info(f"Real-time WebSocket client started for symbols: {self.subscribed_symbols}")
+        except Exception as e:
+            logging.warning(f"Failed to start WebSocket: {e}")
+
+    def subscribe_symbol(self, symbol: str):
+        if symbol not in self.subscribed_symbols:
+            self.subscribed_symbols.append(symbol)
+            if self.ws_socket:
+                try:
+                    self.ws_socket.subscribe(symbols=[symbol], data_type="SymbolUpdate")
+                except Exception as e:
+                    logging.warning(f"Could not subscribe symbol {symbol} to WebSocket: {e}")
+
     def _official_login(self) -> str:
-        """Fyers' documented OAuth flow (myapi.fyers.in/docsv3). Opens your
-        default browser to the real Fyers login page -- you log in there
-        directly (ID, password, and whatever 2FA/PIN your account uses --
-        entered on Fyers' own page, never typed into this script or stored
-        by it). Fyers then redirects to redirect_uri with an auth_code,
-        which a tiny local HTTP server tries to capture automatically. If
-        that capture doesn't work (e.g. firewall/port issue), you're asked
-        to paste the redirect URL or code manually instead."""
         import webbrowser
         from http.server import BaseHTTPRequestHandler, HTTPServer
         from urllib.parse import urlparse, parse_qs
@@ -297,7 +334,7 @@ class FyersBroker:
                                       b"PyCharm.</body></html>")
 
                 def log_message(self, format, *args):
-                    pass  # silence default request logging
+                    pass
 
             try:
                 server = HTTPServer(("127.0.0.1", port), Handler)
@@ -348,11 +385,15 @@ class FyersBroker:
         return df
 
     def get_ltp(self, symbol: str) -> float:
+        if symbol in self.live_ltp and self.live_ltp[symbol] > 0:
+            return self.live_ltp[symbol]
         resp = self.fyers.quotes(data={"symbols": symbol})
         if resp.get("s") != "ok" or "d" not in resp or not resp["d"]:
             raise RuntimeError(f"Quote fetch failed for {symbol}: {resp}")
         try:
-            return float(resp["d"][0]["v"]["lp"])
+            val = float(resp["d"][0]["v"]["lp"])
+            self.live_ltp[symbol] = val
+            return val
         except (KeyError, IndexError, TypeError, ValueError) as e:
             raise RuntimeError(f"Failed to parse LTP for {symbol} from response {resp}: {e}")
 
@@ -378,13 +419,6 @@ class FyersBroker:
 
 
 class ZerodhaBrokerStub:
-    """Skeleton showing how to plug in a second broker. Implement these
-    same five methods using Kite Connect (kiteconnect SDK) -- Kite also
-    supports a browser-based login redirect the same way Fyers does, and
-    you'd reuse load_or_create_credentials()/load_cached_token()/
-    save_cached_token() exactly as FyersBroker does above. Once filled in,
-    set BROKER_CLASS = ZerodhaBrokerStub below and nothing else changes."""
-
     NAME = "zerodha"
     REQUIRED_FIELDS = [
         ("api_key", "Kite API Key: "),
@@ -413,8 +447,6 @@ class ZerodhaBrokerStub:
         raise NotImplementedError
 
 
-# Which broker class main() uses. Swap this to plug in a different broker
-# once you've implemented its five methods above.
 BROKER_CLASS = FyersBroker
 
 
@@ -428,10 +460,6 @@ _MONTHLY_OPTION_RE = re.compile(
 
 
 def parse_option_symbol(symbol: str) -> Optional[Dict]:
-    """Best-effort parse of a Fyers monthly-expiry option symbol, e.g.
-    'NSE:NIFTY25JAN23500CE' -> underlying/expiry/strike/type. Weekly-expiry
-    symbols use a different, harder-to-parse date encoding -- for those
-    this returns None and the raw symbol is shown instead."""
     m = _MONTHLY_OPTION_RE.match(symbol)
     if not m:
         return None
@@ -472,10 +500,7 @@ def print_startup_summary(broker, cfg: dict):
         logging.info(f"    Strike     : {parsed['strike']}")
         logging.info(f"    Type       : {parsed['option_type']}")
     else:
-        logging.info("    (Could not auto-parse strike/expiry -- looks like "
-                     "a weekly-expiry or non-standard symbol format. "
-                     "Double-check trade_symbol is the contract you intend "
-                     "to trade.)")
+        logging.info("    (Non-standard or weekly expiry symbol format)")
     logging.info(f"  Current premium (LTP): "
                  f"{option_ltp if option_ltp is not None else 'unavailable'}")
     logging.info(f"  Timeframe: {cfg['strategy']['timeframe']}  "
@@ -746,20 +771,113 @@ def handle_signal_and_entry(broker: FyersBroker, store: PositionStore,
 
 
 # =========================================================================
-# LIVE OPTION CHAIN LOOKUP (optional helper, run before trading starts)
+# LIVE OPTION CHAIN LOOKUP & AUTOMATIC EXPIRY / ATM RESOLUTION
 # =========================================================================
-# NSE revises index option lot sizes periodically (most recently to 65 for
-# Nifty, effective Jan 2026). This is a default suggestion only -- always
-# confirm the current lot size in your Fyers app / contract note before
-# trusting it for a real order.
 SUGGESTED_LOT_SIZE = 65
 
 
+def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "CE") -> Optional[Dict]:
+    """Automatically selects the current (nearest) expiry and ATM strike contract
+    on a real-time basis from Fyers option chain."""
+    underlying_symbol = cfg["symbol"]["spot_symbol"]
+    fyers = broker.fyers
+
+    resp = fyers.optionchain(data={
+        "symbol": underlying_symbol, "strikecount": 1, "timestamp": "",
+    })
+    if resp.get("s") != "ok":
+        logging.warning(f"Option chain fetch failed: {resp}")
+        return None
+
+    data = resp.get("data", {})
+    chain = data.get("optionChain", []) or data.get("optionsChain", [])
+    spot_ltp = None
+    for row in chain:
+        if row.get("option_type") in (None, "", "-"):
+            spot_ltp = row.get("ltp")
+            break
+
+    if spot_ltp is None or spot_ltp <= 0:
+        try:
+            spot_ltp = broker.get_ltp(underlying_symbol)
+        except Exception as e:
+            logging.warning(f"Could not fetch spot LTP for {underlying_symbol}: {e}")
+
+    expiries = data.get("expiryData", [])
+    if not expiries:
+        logging.warning(f"No expiries returned: {data}")
+        return None
+
+    # Automatically select current (nearest) expiry [0]
+    chosen_expiry = expiries[0]
+    expiry_date_param = (
+        chosen_expiry.get("date") or chosen_expiry.get("expiry_date") or chosen_expiry.get("expiry")
+    )
+    exp_display = chosen_expiry.get("expiry") or expiry_date_param
+    logging.info(f"Auto-selected current expiry: {exp_display} (date param: {expiry_date_param})")
+
+    resp2 = fyers.optionchain(data={
+        "symbol": underlying_symbol,
+        "strikecount": 10,
+        "timestamp": expiry_date_param,
+    })
+    if resp2.get("s") != "ok":
+        logging.warning(f"Option chain fetch failed for expiry {expiry_date_param}: {resp2}")
+        return None
+
+    data2 = resp2.get("data", {})
+    chain2 = data2.get("optionChain", []) or data2.get("optionsChain", [])
+    by_strike = {}
+    for row in chain2:
+        strike = row.get("strike_price")
+        if strike is None:
+            strike = row.get("strikePrice", row.get("strike"))
+        if strike is None:
+            continue
+        opt_type = row.get("option_type")
+        by_strike.setdefault(float(strike), {})[opt_type] = row
+
+    rows_list = sorted(by_strike.items())
+    if not rows_list:
+        logging.warning("No strike rows parsed from option chain.")
+        return None
+
+    ref_spot = spot_ltp if spot_ltp is not None else 0.0
+    atm_idx = min(range(len(rows_list)), key=lambda i: abs(rows_list[i][0] - ref_spot))
+    strike, sides = rows_list[atm_idx]
+
+    chosen = sides.get(option_type, {})
+    symbol = chosen.get("symbol")
+    if not symbol:
+        logging.warning(f"Selected option side {option_type} not available for strike {strike}.")
+        return None
+
+    lot_size = cfg["symbol"].get("lot_size", SUGGESTED_LOT_SIZE)
+    quantity = compute_quantity(cfg["sizing"], lot_size, spot_ltp or 100.0)
+
+    logging.info(f"AUTO-RESOLVED ATM CONTRACT: {symbol} (Strike: {strike} {option_type}, Spot: {spot_ltp})")
+    return {
+        "trade_symbol": symbol,
+        "lot_size": lot_size,
+        "quantity": quantity,
+        "expiry": exp_display,
+        "strike": strike,
+        "option_type": option_type,
+    }
+
+
 def run_option_chain_lookup(broker: FyersBroker, cfg: dict) -> Optional[Dict]:
-    """Interactive live option-chain browser. Lets you pick a real,
-    currently-listed expiry/strike instead of guessing a symbol string.
-    Returns {'trade_symbol', 'lot_size', 'quantity'} if you complete a
-    pick, or None if you cancel."""
+    """Option chain browser with auto-pick current expiry support."""
+    auto_picked = auto_resolve_atm_option(broker, cfg)
+    if auto_picked:
+        confirm = input(
+            f"\nAutomatically selected current expiry contract: {auto_picked['trade_symbol']} "
+            f"(Strike: {auto_picked['strike']} {auto_picked['option_type']}).\n"
+            f"Use this contract? (Y/n / 'm' for manual pick): "
+        ).strip().lower()
+        if confirm != "m" and confirm != "n":
+            return auto_picked
+
     underlying_symbol = cfg["symbol"]["spot_symbol"]
     fyers = broker.fyers
 
@@ -790,16 +908,15 @@ def run_option_chain_lookup(broker: FyersBroker, cfg: dict) -> Optional[Dict]:
         return None
 
     print(f"\nUnderlying: {underlying_symbol}  Spot LTP: {spot_ltp}")
-    print("\nAvailable expiries (nearest first -- [0] is the nearest weekly "
-          "expiry):")
+    print("\nAvailable expiries (nearest first -- [0] is the nearest weekly expiry):")
     for i, exp in enumerate(expiries):
         exp_str = exp.get("expiry") or exp.get("expiry_date") or exp.get("date")
         date_param = exp.get("date") or exp.get("expiry_date") or exp.get("expiry")
         print(f"  [{i}] {exp_str}  (date param: {date_param})")
 
     choice = input(
-        "\nPick an expiry number, or press Enter to auto-pick the nearest "
-        "(weekly) expiry, or type 'c' to cancel: "
+        "\nPick an expiry number, or press Enter to auto-pick current "
+        "(weekly) expiry [0], or type 'c' to cancel: "
     ).strip()
     if choice.lower() == "c":
         return None
@@ -808,14 +925,10 @@ def run_option_chain_lookup(broker: FyersBroker, cfg: dict) -> Optional[Dict]:
     expiry_date_param = (
         chosen_expiry.get("date") or chosen_expiry.get("expiry_date") or chosen_expiry.get("expiry")
     )
-    print(f"Using expiry: {chosen_expiry.get('expiry') or expiry_date_param}")
-
-    strike_count = input("How many strikes around ATM to show [10]: ").strip()
-    strike_count = int(strike_count) if strike_count else 10
 
     resp2 = fyers.optionchain(data={
         "symbol": underlying_symbol,
-        "strikecount": strike_count,
+        "strikecount": 10,
         "timestamp": expiry_date_param,
     })
     if resp2.get("s") != "ok":
@@ -834,17 +947,13 @@ def run_option_chain_lookup(broker: FyersBroker, cfg: dict) -> Optional[Dict]:
         opt_type = row.get("option_type")
         by_strike.setdefault(float(strike), {})[opt_type] = row
 
-    print(f"\n{'Strike':>10} | {'CE symbol':<28} {'CE LTP':>8} | "
-          f"{'PE symbol':<28} {'PE LTP':>8}")
-    print("-" * 90)
     rows_list = sorted(by_strike.items())
     if not rows_list:
         print("No strike rows parsed from option chain.")
         return None
 
     ref_spot = spot_ltp if spot_ltp is not None else 0.0
-    atm_idx = min(range(len(rows_list)),
-                  key=lambda i: abs(rows_list[i][0] - ref_spot))
+    atm_idx = min(range(len(rows_list)), key=lambda i: abs(rows_list[i][0] - ref_spot))
 
     for idx, (strike, sides) in enumerate(rows_list):
         ce = sides.get("CE", {})
@@ -874,10 +983,7 @@ def run_option_chain_lookup(broker: FyersBroker, cfg: dict) -> Optional[Dict]:
         print(f"Selected option side {side} not available for strike {strike}.")
         return None
     premium = chosen.get("ltp")
-    print(f"Using: {symbol}  (strike {strike} {side})")
 
-    print(f"\nSuggested lot size (verify this yourself before trusting it): "
-          f"{SUGGESTED_LOT_SIZE}")
     lot_size_input = input(
         f"Confirm/enter current lot size [{SUGGESTED_LOT_SIZE}]: "
     ).strip()
@@ -886,11 +992,6 @@ def run_option_chain_lookup(broker: FyersBroker, cfg: dict) -> Optional[Dict]:
     lots = input("How many lots do you want to trade [1]: ").strip()
     lots = int(lots) if lots else 1
     quantity = lots * lot_size
-
-    print("\n" + "=" * 60)
-    print(f"Selected: {symbol}  (premium LTP: {premium}, spot: {spot_ltp})")
-    print(f"quantity = {lots} lot(s) x {lot_size} = {quantity}")
-    print("=" * 60)
 
     return {"trade_symbol": symbol, "lot_size": lot_size, "quantity": quantity}
 
@@ -902,28 +1003,25 @@ def main():
     logging.info("Logging in...")
     broker.login()
     logging.info("Login successful.")
+
+    # Automatically resolve current expiry & ATM strike if auto_select_option is enabled
+    if CONFIG["symbol"].get("auto_select_option"):
+        auto_picked = auto_resolve_atm_option(broker, CONFIG)
+        if auto_picked:
+            CONFIG["symbol"]["trade_symbol"] = auto_picked["trade_symbol"]
+            CONFIG["symbol"]["lot_size"] = auto_picked["lot_size"]
+            CONFIG["sizing"]["mode"] = "quantity"
+            CONFIG["sizing"]["quantity"] = auto_picked["quantity"]
+            logging.info(f"Auto-selected tracking contract: {auto_picked['trade_symbol']} "
+                         f"(qty={auto_picked['quantity']})")
+
     print_startup_summary(broker, CONFIG)
 
-    do_lookup = input(
-        "\nLook up the live option chain and pick a strike/expiry now? "
-        "(y/N): "
-    ).strip().lower()
-    if do_lookup == "y":
-        picked = run_option_chain_lookup(broker, CONFIG)
-        if picked:
-            CONFIG["symbol"]["trade_symbol"] = picked["trade_symbol"]
-            CONFIG["symbol"]["lot_size"] = picked["lot_size"]
-            CONFIG["sizing"]["mode"] = "quantity"
-            CONFIG["sizing"]["quantity"] = picked["quantity"]
-            logging.info(f"Now tracking: {picked['trade_symbol']} "
-                         f"(qty={picked['quantity']})")
-            print_startup_summary(broker, CONFIG)
-        proceed = input(
-            "\nStart the trading bot with this now? (y/N): "
-        ).strip().lower()
-        if proceed != "y":
-            logging.info("Exiting without starting the trading loop.")
-            return
+    # Start real-time Fyers WebSocket feed for spot index and tracking option contract
+    spot_symbol = CONFIG["symbol"]["spot_symbol"]
+    trade_symbol = CONFIG["symbol"]["trade_symbol"]
+    if isinstance(broker, FyersBroker):
+        broker.start_websocket(symbols=[spot_symbol, trade_symbol])
 
     store = PositionStore(CONFIG["state_file"])
     strat = VwapReclaimBreakoutStrategy(
@@ -938,8 +1036,6 @@ def main():
             now_ist = datetime.now(IST)
 
             if store.has_open_position():
-                # Monitored every cycle regardless of market-hours gating,
-                # so a position opened today is still watched tomorrow.
                 handle_open_position(broker, store, symbol)
             elif in_market_hours(CONFIG, now_ist):
                 handle_signal_and_entry(broker, store, strat, CONFIG, symbol)

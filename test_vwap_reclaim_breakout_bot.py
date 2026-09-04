@@ -11,23 +11,57 @@ import pytz
 from vwap_reclaim_breakout_bot import (
     IST,
     ArmedSignal,
+    FyersBroker,
     PositionStore,
     VwapReclaimBreakoutStrategy,
+    auto_resolve_atm_option,
     compute_quantity,
     parse_option_symbol,
 )
+
+
+class DummyOptionChainFyers:
+    def optionchain(self, data: dict):
+        if not data.get("timestamp"):
+            return {
+                "s": "ok",
+                "data": {
+                    "optionChain": [
+                        {"option_type": "-", "ltp": 23897.7}
+                    ],
+                    "expiryData": [
+                        {"expiry": "08-SEP-2026", "date": "08-09-2026"},
+                        {"expiry": "15-SEP-2026", "date": "15-09-2026"},
+                    ]
+                }
+            }
+        else:
+            return {
+                "s": "ok",
+                "data": {
+                    "optionChain": [
+                        {"strike_price": 23850, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23850CE", "ltp": 120.0},
+                        {"strike_price": 23900, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23900CE", "ltp": 95.0},
+                        {"strike_price": 23950, "option_type": "CE", "symbol": "NSE:NIFTY26SEP23950CE", "ltp": 70.0},
+                    ]
+                }
+            }
 
 
 class DummyBroker:
     def __init__(self, df_1m: pd.DataFrame, ltp: float):
         self.df_1m = df_1m
         self.ltp = ltp
+        self.fyers = DummyOptionChainFyers()
         self.placed_orders = []
+        self.live_ltp = {}
 
     def get_historical_1m(self, symbol: str, days_back: int) -> pd.DataFrame:
         return self.df_1m
 
     def get_ltp(self, symbol: str) -> float:
+        if symbol in self.live_ltp and self.live_ltp[symbol] > 0:
+            return self.live_ltp[symbol]
         return self.ltp
 
     def place_order(self, symbol: str, qty: int, side: str, product_type: str,
@@ -79,15 +113,12 @@ class TestVwapReclaimBot(unittest.TestCase):
         self.assertEqual(len(candles), 2)  # 09:30 and 09:45
 
     def test_is_signal_candle(self):
-        # Green candle whose low < vwap and close > vwap
         valid_row = {"open": 100.0, "close": 105.0, "low": 95.0, "high": 106.0, "vwap": 98.0}
         self.assertTrue(VwapReclaimBreakoutStrategy._is_signal_candle(valid_row))
 
-        # Red candle -> Invalid
         red_row = {"open": 105.0, "close": 100.0, "low": 95.0, "high": 106.0, "vwap": 98.0}
         self.assertFalse(VwapReclaimBreakoutStrategy._is_signal_candle(red_row))
 
-        # Low above VWAP (no dip below VWAP) -> Invalid
         no_dip_row = {"open": 100.0, "close": 105.0, "low": 99.0, "high": 106.0, "vwap": 98.0}
         self.assertFalse(VwapReclaimBreakoutStrategy._is_signal_candle(no_dip_row))
 
@@ -107,19 +138,17 @@ class TestVwapReclaimBot(unittest.TestCase):
         self.assertEqual(strat.armed.high, 110.0)
         self.assertEqual(strat.armed.low, 95.0)
 
-        # Poll LTP below high -> no breakout
         now_ts = pd.Timestamp("2026-09-04 09:35:00+0530", tz="Asia/Kolkata")
         res = strat.check_breakout(109.0, now_ts)
         self.assertIsNone(res)
         self.assertIsNotNone(strat.armed)
 
-        # Poll LTP > high -> Breakout!
         res = strat.check_breakout(111.0, now_ts)
         self.assertIsNotNone(res)
         self.assertEqual(res["entry"], 111.0)
         self.assertEqual(res["sl"], 95.0)
         self.assertEqual(res["target"], 111.0 + 2.0 * (111.0 - 95.0))
-        self.assertIsNone(strat.armed)  # Disarmed after trigger
+        self.assertIsNone(strat.armed)
 
     def test_armed_signal_expiration(self):
         strat = VwapReclaimBreakoutStrategy(timeframe="M15", risk_reward=2.0)
@@ -134,25 +163,31 @@ class TestVwapReclaimBot(unittest.TestCase):
         })
         strat.on_new_closed_candle(candle)
 
-        # Poll at or after expires_at (09:45:00)
         expired_ts = pd.Timestamp("2026-09-04 09:45:00+0530", tz="Asia/Kolkata")
         res = strat.check_breakout(112.0, expired_ts)
         self.assertIsNone(res)
         self.assertIsNone(strat.armed)
 
     def test_compute_quantity(self):
-        # Quantity mode exact
-        cfg_qty = {"mode": "quantity", "quantity": 75}
-        self.assertEqual(compute_quantity(cfg_qty, lot_size=75, entry_price=100.0), 75)
+        cfg_qty = {"mode": "quantity", "quantity": 65}
+        self.assertEqual(compute_quantity(cfg_qty, lot_size=65, entry_price=100.0), 65)
 
-        # Quantity mode non-multiple auto-adjusts
         cfg_adj = {"mode": "quantity", "quantity": 70}
         self.assertEqual(compute_quantity(cfg_adj, lot_size=65, entry_price=100.0), 65)
 
-        # Amount mode
         cfg_amt = {"mode": "amount", "amount": 50000}
-        # 50000 / 100 = 500 units -> 500 / 65 = 7.69 -> 7 lots -> 7 * 65 = 455
         self.assertEqual(compute_quantity(cfg_amt, lot_size=65, entry_price=100.0), 455)
+
+    def test_auto_resolve_atm_option(self):
+        broker = DummyBroker(pd.DataFrame(), 23897.7)
+        cfg = {
+            "symbol": {"spot_symbol": "NSE:NIFTY50-INDEX", "lot_size": 65},
+            "sizing": {"mode": "quantity", "quantity": 65}
+        }
+        res = auto_resolve_atm_option(broker, cfg, option_type="CE")
+        self.assertIsNotNone(res)
+        self.assertEqual(res["trade_symbol"], "NSE:NIFTY26SEP23900CE")
+        self.assertEqual(res["strike"], 23900.0)
 
     def test_position_store(self):
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tf:
@@ -162,19 +197,17 @@ class TestVwapReclaimBot(unittest.TestCase):
             store = PositionStore(path)
             self.assertFalse(store.has_open_position())
 
-            pos_data = {"symbol": "NSE:TEST", "qty": 75, "entry": 100.0, "sl": 90.0, "target": 120.0, "product_type": "INTRADAY"}
+            pos_data = {"symbol": "NSE:TEST", "qty": 65, "entry": 100.0, "sl": 90.0, "target": 120.0, "product_type": "INTRADAY"}
             store.open_position(pos_data)
             self.assertTrue(store.has_open_position())
             self.assertEqual(store.get_open_position()["symbol"], "NSE:TEST")
 
-            # Duplicate open should fail
             with self.assertRaises(RuntimeError):
                 store.open_position(pos_data)
 
             store.close_position()
             self.assertFalse(store.has_open_position())
 
-            # Test corrupted file recoverability
             with open(path, "w") as f:
                 f.write("CORRUPTED_JSON")
             self.assertFalse(store.has_open_position())
