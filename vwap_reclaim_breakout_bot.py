@@ -441,7 +441,7 @@ BROKER_CLASS = FyersBroker
 
 
 # =========================================================================
-# SYMBOL PARSING / STARTUP SUMMARY
+# SYMBOL PARSING / STARTUP SUMMARY TABLE
 # =========================================================================
 _MONTHLY_OPTION_RE = re.compile(
     r"^(?P<exch>NSE|BSE):(?P<underlying>[A-Z]+)(?P<yy>\d{2})"
@@ -462,29 +462,49 @@ def parse_option_symbol(symbol: str) -> Optional[Dict]:
 
 
 def print_startup_summary(broker, tracking_dict: Dict[str, Dict]):
-    logging.info("=" * 60)
-    logging.info("MULTI-INDEX TRACKING SUMMARY")
-    logging.info(f"  SL_MODE         : {SL_MODE}")
-    logging.info(f"  LOT_MULTIPLIER  : {LOT_MULTIPLIER}")
-    logging.info(f"  DAILY_MAX_LOSS  : {DAILY_MAX_LOSS}")
-    for spot_sym, info in tracking_dict.items():
-        opt_sym = info.get("trade_symbol")
-        try:
-            spot_ltp = broker.get_ltp(spot_sym)
-        except Exception:
-            spot_ltp = "unavailable"
-        try:
-            opt_ltp = broker.get_ltp(opt_sym) if opt_sym else "unavailable"
-        except Exception:
-            opt_ltp = "unavailable"
+    header = (
+        f"{'Index':<8} | {'Spot Symbol':<18} | {'Spot LTP':>10} | "
+        f"{'Option Contract':<24} | {'Opt LTP':>9} | {'Target Range':<12} | "
+        f"{'Lot Size':<9} | {'Qty':>6}"
+    )
+    divider = "-" * len(header)
+    double_divider = "=" * len(header)
 
-        logging.info(f"  Index: {spot_sym} ({info.get('name')})")
-        logging.info(f"    Spot LTP      : {spot_ltp}")
-        logging.info(f"    Option Contract: {opt_sym}")
-        logging.info(f"    Option LTP    : {opt_ltp}")
-        logging.info(f"    Premium Range : {info.get('min_premium')}-{info.get('max_premium')}")
-        logging.info(f"    Lot Size      : {info.get('lot_size')} x {LOT_MULTIPLIER} = {info.get('quantity')}")
-    logging.info("=" * 60)
+    logging.info(double_divider)
+    logging.info("MULTI-INDEX TRACKING SUMMARY TABLE")
+    logging.info(double_divider)
+    logging.info(header)
+    logging.info(divider)
+
+    for spot_sym, info in tracking_dict.items():
+        opt_sym = info.get("trade_symbol", "-")
+        index_name = info.get("name", spot_sym)
+        try:
+            spot_ltp_val = broker.get_ltp(spot_sym)
+            spot_ltp_str = f"{spot_ltp_val:.2f}"
+        except Exception:
+            spot_ltp_str = "N/A"
+
+        try:
+            opt_ltp_val = broker.get_ltp(opt_sym) if opt_sym else None
+            opt_ltp_str = f"{opt_ltp_val:.2f}" if opt_ltp_val is not None else "N/A"
+        except Exception:
+            opt_ltp_str = "N/A"
+
+        range_str = f"{info.get('min_premium', 0):.0f}-{info.get('max_premium', 0):.0f}"
+        lot_str = f"{info.get('lot_size', 0)}x{LOT_MULTIPLIER}"
+        qty_val = info.get("quantity", 0)
+
+        row_str = (
+            f"{index_name:<8} | {spot_sym:<18} | {spot_ltp_str:>10} | "
+            f"{opt_sym:<24} | {opt_ltp_str:>9} | {range_str:<12} | "
+            f"{lot_str:<9} | {qty_val:>6}"
+        )
+        logging.info(row_str)
+
+    logging.info(double_divider)
+    logging.info(f"SL_MODE: {SL_MODE}  |  LOT_MULTIPLIER: {LOT_MULTIPLIER}  |  DAILY_MAX_LOSS: {DAILY_MAX_LOSS:.1f}")
+    logging.info(double_divider)
 
 
 # =========================================================================
@@ -878,7 +898,6 @@ def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, spot_symbol: str, op
 
     chosen_expiry = expiries[0]
     exp_display = chosen_expiry.get("expiry") or chosen_expiry.get("date") or chosen_expiry.get("expiry_date")
-    logging.info(f"[{info['name']}] Auto-selected current expiry: {exp_display}")
 
     candidates = get_expiry_candidates(chosen_expiry)
     resp2 = None
@@ -890,7 +909,6 @@ def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, spot_symbol: str, op
         })
         if r.get("s") == "ok":
             resp2 = r
-            logging.info(f"[{info['name']}] Option chain fetched successfully for expiry timestamp: {cand}")
             break
 
     if not resp2:
@@ -943,8 +961,6 @@ def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, spot_symbol: str, op
     lot_size = info.get("lot_size", 65)
     quantity = compute_quantity(cfg["sizing"], lot_size, opt_ltp or target_prem, lot_multiplier=LOT_MULTIPLIER)
 
-    logging.info(f"[{info['name']}] AUTO-RESOLVED OPTION CONTRACT: {symbol} (Strike: {chosen_strike} {option_type}, "
-                 f"Premium LTP: {opt_ltp:.2f}, Target Range: {min_prem}-{max_prem}, Spot: {spot_ltp})")
     return {
         "trade_symbol": symbol,
         "lot_size": lot_size,
