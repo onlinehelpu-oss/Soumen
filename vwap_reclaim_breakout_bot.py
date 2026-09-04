@@ -9,7 +9,7 @@ pip install fyers-apiv3 pandas requests pytz numpy
 STRATEGY (Entirely Option Candle Price Based)
   Signal candle (selected timeframe option chart): green option candle
   whose low dips below option VWAP, closes back above option VWAP, AND
-  close price (LTP) is >= 180 (configurable min_premium).
+  close price (LTP) is between min_premium (180.0) and max_premium (220.0).
 
   Confirmation: only the immediate next candle gets a chance to break the
   signal option candle's high -- checked live via option LTP polling, not
@@ -64,13 +64,14 @@ CONFIG = {
         "trade_symbol": "NSE:NIFTY25JAN23500CE",
         "lot_size": 65,   # verify current exchange lot size before running
         "spot_symbol": "NSE:NIFTY50-INDEX",
-        "auto_select_option": True,  # Auto-resolve current expiry & ATM/min-premium contract
+        "auto_select_option": True,  # Auto-resolve current expiry & contract in 180-220 premium range
     },
 
     "strategy": {
         "timeframe": "M15",    # M1, M3, M5, M15, M30, H1, H4, D1
         "risk_reward": 2.0,
         "min_premium": 180.0,  # Minimum option candle close price (e.g. >= 180)
+        "max_premium": 220.0,  # Maximum option candle close price (e.g. <= 220)
         "max_open_positions": 1,
     },
 
@@ -473,7 +474,8 @@ def print_startup_summary(broker, cfg: dict):
                  f"{option_ltp if option_ltp is not None else 'unavailable'}")
     logging.info(f"  Timeframe    : {cfg['strategy']['timeframe']}  "
                  f"Risk:Reward: 1:{cfg['strategy']['risk_reward']}")
-    logging.info(f"  Min Premium  : {cfg['strategy'].get('min_premium', 180.0)} (Option Close >= 180)")
+    logging.info(f"  Min Premium  : {cfg['strategy'].get('min_premium', 180.0)}")
+    logging.info(f"  Max Premium  : {cfg['strategy'].get('max_premium', 220.0)}")
     logging.info(f"  Sizing mode  : {cfg['sizing']['mode']}")
     logging.info(f"  Product type : {cfg['order']['product_type']}")
     logging.info("=" * 60)
@@ -497,19 +499,19 @@ class ArmedSignal:
 
 class VwapReclaimBreakoutStrategy:
 
-    def __init__(self, timeframe: str, risk_reward: float, min_premium: float = 180.0):
+    def __init__(self, timeframe: str, risk_reward: float, min_premium: float = 180.0, max_premium: float = 220.0):
         if timeframe not in TIMEFRAME_MINUTES:
             raise ValueError(f"Unsupported timeframe: {timeframe}")
         self.timeframe = timeframe
         self.timeframe_minutes = TIMEFRAME_MINUTES[timeframe]
         self.risk_reward = risk_reward
         self.min_premium = min_premium
+        self.max_premium = max_premium
         self.armed: Optional[ArmedSignal] = None
         self._last_seen_candle_ts = None
 
     @staticmethod
     def compute_vwap_1m(df_1m: pd.DataFrame) -> pd.DataFrame:
-        """Computes VWAP on option 1m historical price data."""
         df = df_1m.copy()
         if df.empty:
             df["session_date"] = []
@@ -527,7 +529,6 @@ class VwapReclaimBreakoutStrategy:
         return df
 
     def build_candles(self, df_1m: pd.DataFrame) -> pd.DataFrame:
-        """Resamples option 1m candles into strategy timeframe candles with option VWAP."""
         if df_1m.empty:
             return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume", "vwap"])
         df_1m = self.compute_vwap_1m(df_1m)
@@ -548,14 +549,15 @@ class VwapReclaimBreakoutStrategy:
 
     def _is_signal_candle(self, row) -> bool:
         """Option signal candle: Green option candle whose low < option VWAP,
-        close > option VWAP, AND option close >= min_premium (e.g. 180)."""
+        close > option VWAP, AND option close is between min_premium (180.0)
+        and max_premium (220.0)."""
         if pd.isna(row.get("vwap")):
             return False
         return (
             row["close"] > row["open"]
             and row["low"] < row["vwap"]
             and row["close"] > row["vwap"]
-            and row["close"] >= self.min_premium
+            and (self.min_premium <= row["close"] <= self.max_premium)
         )
 
     def on_new_closed_candle(self, candle: pd.Series):
@@ -573,10 +575,9 @@ class VwapReclaimBreakoutStrategy:
                                       armed_at=ts, expires_at=expires)
             logging.info(f"ARMED OPTION SIGNAL: ts={ts} High={candle['high']:.2f} "
                          f"Low={candle['low']:.2f} VWAP={candle['vwap']:.2f} "
-                         f"Close={candle['close']:.2f} (>= {self.min_premium})")
+                         f"Close={candle['close']:.2f} (in range {self.min_premium}-{self.max_premium})")
 
     def check_breakout(self, ltp: float, now_ts: pd.Timestamp):
-        """Checks if option live LTP breaks above the armed option signal candle's High."""
         if self.armed is None:
             return None
         if now_ts >= self.armed.expires_at:
@@ -721,7 +722,6 @@ def handle_signal_and_entry(broker: FyersBroker, store: PositionStore,
                              strat: VwapReclaimBreakoutStrategy, cfg: dict, symbol: str):
     now_ist = datetime.now(IST)
 
-    # Fetch option 1m historical candles directly
     df_1m = broker.get_historical_1m(symbol, days_back=5)
     candles = strat.build_candles(df_1m)
     if candles.empty:
@@ -754,7 +754,7 @@ def handle_signal_and_entry(broker: FyersBroker, store: PositionStore,
 
 
 # =========================================================================
-# LIVE OPTION CHAIN LOOKUP & AUTOMATIC EXPIRY / ATM RESOLUTION
+# LIVE OPTION CHAIN LOOKUP & AUTOMATIC EXPIRY / PREMIUM RANGE RESOLUTION
 # =========================================================================
 SUGGESTED_LOT_SIZE = 65
 
@@ -788,6 +788,8 @@ def get_expiry_candidates(chosen_expiry: dict) -> list:
 def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "CE") -> Optional[Dict]:
     underlying_symbol = cfg["symbol"]["spot_symbol"]
     min_prem = cfg["strategy"].get("min_premium", 180.0)
+    max_prem = cfg["strategy"].get("max_premium", 220.0)
+    target_prem = (min_prem + max_prem) / 2.0
     fyers = broker.fyers
 
     resp = fyers.optionchain(data={
@@ -825,7 +827,7 @@ def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "
     for cand in candidates:
         r = fyers.optionchain(data={
             "symbol": underlying_symbol,
-            "strikecount": 15,
+            "strikecount": 30,
             "timestamp": cand,
         })
         if r.get("s") == "ok":
@@ -854,36 +856,39 @@ def auto_resolve_atm_option(broker: FyersBroker, cfg: dict, option_type: str = "
         logging.warning("No strike rows parsed from option chain.")
         return None
 
-    ref_spot = spot_ltp if spot_ltp is not None else 0.0
-    atm_idx = min(range(len(rows_list)), key=lambda i: abs(rows_list[i][0] - ref_spot))
+    # Collect valid option candidates of side option_type
+    valid_candidates = []
+    for strike_val, s_dict in rows_list:
+        side_row = s_dict.get(option_type, {})
+        sym = side_row.get("symbol")
+        ltp_val = side_row.get("ltp")
+        if sym and ltp_val is not None and float(ltp_val) > 0:
+            valid_candidates.append({
+                "strike": strike_val,
+                "symbol": sym,
+                "ltp": float(ltp_val),
+            })
 
-    # Pick strike closest to or >= min_prem
-    chosen_strike, sides = rows_list[atm_idx]
-    chosen = sides.get(option_type, {})
-    symbol = chosen.get("symbol")
-    opt_ltp = chosen.get("ltp")
-
-    # If ATM LTP is less than min_prem, scan for nearest strike with LTP >= min_prem
-    if opt_ltp and opt_ltp < min_prem:
-        for strike_val, s_dict in rows_list:
-            cand_side = s_dict.get(option_type, {})
-            cand_ltp = cand_side.get("ltp")
-            if cand_ltp and cand_ltp >= min_prem:
-                chosen_strike, sides = strike_val, s_dict
-                chosen = cand_side
-                symbol = chosen.get("symbol")
-                opt_ltp = cand_ltp
-                break
-
-    if not symbol:
-        logging.warning(f"Selected option side {option_type} not available.")
+    if not valid_candidates:
+        logging.warning(f"No valid option contracts found for side {option_type}.")
         return None
 
+    # Filter contracts whose option premium LTP is in range [180.0, 220.0]
+    in_range = [c for c in valid_candidates if min_prem <= c["ltp"] <= max_prem]
+    if in_range:
+        best = min(in_range, key=lambda c: abs(c["ltp"] - target_prem))
+    else:
+        best = min(valid_candidates, key=lambda c: abs(c["ltp"] - target_prem))
+
+    chosen_strike = best["strike"]
+    symbol = best["symbol"]
+    opt_ltp = best["ltp"]
+
     lot_size = cfg["symbol"].get("lot_size", SUGGESTED_LOT_SIZE)
-    quantity = compute_quantity(cfg["sizing"], lot_size, opt_ltp or 180.0)
+    quantity = compute_quantity(cfg["sizing"], lot_size, opt_ltp or 200.0)
 
     logging.info(f"AUTO-RESOLVED OPTION CONTRACT: {symbol} (Strike: {chosen_strike} {option_type}, "
-                 f"Premium LTP: {opt_ltp}, MinPremium: {min_prem}, Spot: {spot_ltp})")
+                 f"Premium LTP: {opt_ltp:.2f}, Target Range: {min_prem}-{max_prem}, Spot: {spot_ltp})")
     return {
         "trade_symbol": symbol,
         "lot_size": lot_size,
@@ -1056,6 +1061,7 @@ def main():
         timeframe=CONFIG["strategy"]["timeframe"],
         risk_reward=CONFIG["strategy"]["risk_reward"],
         min_premium=CONFIG["strategy"].get("min_premium", 180.0),
+        max_premium=CONFIG["strategy"].get("max_premium", 220.0),
     )
     symbol = CONFIG["symbol"]["trade_symbol"]
     monitor_interval = CONFIG["polling"]["position_monitor_seconds"]
