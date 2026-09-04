@@ -60,23 +60,7 @@ import pandas as pd
 import numpy as np
 import pytz
 
-# Try to import Fyers packages - run in test mode if missing
-try:
-    from fyers_apiv3 import fyersModel
-    from fyers_apiv3.FyersWebsocket import data_ws
-
-    # Monkey-patch fyers_apiv3 SDK bug in SymbolConversion.__init__ where client_id: is stripped
-    if hasattr(data_ws, "SymbolConversion"):
-        def _patched_symbol_conversion_init(self, access_token: str, data_type: str, log_path: str):
-            self.data_type = data_type
-            self.access_token = access_token # preserve full client_id:access_token required by FYERS symbol-token endpoint
-            self.log_path = log_path or ""
-            self.symbols_token_api = "https://api-t1.fyers.in/data/symbol-token"
-        data_ws.SymbolConversion.__init__ = _patched_symbol_conversion_init
-except Exception:
-    fyersModel = None
-    data_ws = None
-
+PRIMARY_STATIC_IP = None
 
 class SourceAddressAdapter(HTTPAdapter):
     """Binds requests HTTP/HTTPS socket connections to a specific local source IP address."""
@@ -87,6 +71,93 @@ class SourceAddressAdapter(HTTPAdapter):
     def init_poolmanager(self, *args, **kwargs):
         kwargs['source_address'] = self.source_address
         return super().init_poolmanager(*args, **kwargs)
+
+
+# Try to import Fyers packages - run in test mode if missing
+try:
+    from fyers_apiv3 import fyersModel
+    from fyers_apiv3.FyersWebsocket import data_ws
+    from pkg_resources import resource_filename
+
+    # Monkey-patch fyers_apiv3 SDK bug in SymbolConversion where client_id: is stripped
+    if hasattr(data_ws, "SymbolConversion"):
+        def _patched_symbol_conversion_init(self, access_token: str, data_type: str, log_path: str):
+            self.data_type = data_type
+            self.access_token = access_token  # preserve full client_id:access_token required by FYERS symbol-token endpoint
+            self.log_path = log_path or ""
+            self.symbols_token_api = "https://api-t1.fyers.in/data/symbol-token"
+
+        def _patched_symbol_to_hsmtoken(self, symbols: list):
+            try:
+                data = {"symbols": symbols}
+                session = requests.Session()
+                if PRIMARY_STATIC_IP:
+                    try:
+                        adapter = SourceAddressAdapter(PRIMARY_STATIC_IP)
+                        session.mount("http://", adapter)
+                        session.mount("https://", adapter)
+                    except Exception:
+                        pass
+                response = session.post(
+                    url=self.symbols_token_api,
+                    headers={
+                        "Authorization": self.access_token,
+                        "Content-Type": "application/json",
+                    },
+                    json=data,
+                    timeout=15
+                )
+                response_data = response.json()
+                datadict = {}
+                file_path = resource_filename('fyers_apiv3.FyersWebsocket', 'map.json')
+                with open(file_path, "r") as file:
+                    mapper = json.load(file)
+                index_dict = mapper["index_dict"]
+                exch_seg_dict = mapper["exch_seg_dict"]
+                wrong_symbol = []
+                dp_index_flag = False
+
+                if response_data.get('s') == "ok":
+                    for symbol, fytoken in response_data.get("validSymbol", {}).items():
+                        ex_sg = fytoken[:4]
+                        if ex_sg not in exch_seg_dict:
+                            continue
+                        segment = exch_seg_dict[ex_sg]
+                        symbol_split = symbol.split("-")
+                        update_dict = True
+                        if len(symbol_split) > 1 and symbol_split[-1] == "INDEX" and self.data_type != "DepthUpdate":
+                            if symbol in index_dict:
+                                exch_token = index_dict[symbol]
+                            else:
+                                exch_token = symbol.split(":")[1].split("-")[0]
+                            hsm_symbol = "if" + "|" + segment + "|" + exch_token
+                        elif self.data_type == "DepthUpdate" and symbol_split[-1] != "INDEX":
+                            exch_token = fytoken[10:]
+                            hsm_symbol = "dp" + "|" + segment + "|" + exch_token
+                        elif self.data_type == "SymbolUpdate":
+                            exch_token = fytoken[10:]
+                            hsm_symbol = "sf" + "|" + segment + "|" + exch_token
+                        elif self.data_type == "DepthUpdate" and symbol_split[-1] == "INDEX":
+                            update_dict = False
+                            dp_index_flag = True
+
+                        if update_dict:
+                            datadict[hsm_symbol] = symbol
+                    if response_data.get("invalidSymbol"):
+                        wrong_symbol = response_data.get("invalidSymbol")
+                    return (datadict, wrong_symbol, dp_index_flag, "")
+                elif response_data.get('s') == "error":
+                    return ({}, [], dp_index_flag, response_data.get("message", "Symbol token conversion error"))
+            except Exception as e:
+                if hasattr(self, "data_logger") and self.data_logger:
+                    self.data_logger.exception(e)
+                return ({}, [], False, str(e))
+
+        data_ws.SymbolConversion.__init__ = _patched_symbol_conversion_init
+        data_ws.SymbolConversion.symbol_to_hsmtoken = _patched_symbol_to_hsmtoken
+except Exception:
+    fyersModel = None
+    data_ws = None
 
 
 class AuthCodeHandler(BaseHTTPRequestHandler):
@@ -175,7 +246,6 @@ QTY_MAP: Dict[str, int] = {}
 # Re-auth guard to avoid infinite recursion
 REAUTH_ATTEMPTS = 0
 MAX_REAUTH_ATTEMPTS = 3
-PRIMARY_STATIC_IP = None
 
 # ---------- small print filter to avoid noisy console spam ----------
 _real_print = print
