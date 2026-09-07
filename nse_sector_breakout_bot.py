@@ -837,7 +837,4 @@ if __name__ == "__main__":
     print("=" * 80)
 
     bot = NSEBreakoutBotRunner()
-    bot.initialize_bot()
-    bot.run_premarket_phase()
-    qualified = bot.finalize_universe_at_0929()
-    print(f"\nFinal Qualified Tracking Universe: {qualified}\n")
+    bot.start()
