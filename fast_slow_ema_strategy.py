@@ -1184,11 +1184,23 @@ def _extract_net_qty_map(positions_resp: dict) -> Dict[str, float]:
     return out
 
 
-def reconcile_positions_once():
+def sync_broker_positions():
     """
-    Compares bot tracked positions against broker net positions.
-    If actual quantity has dropped (Target Hit, Stoploss Hit, or MANUAL EXIT from FYERS app),
-    the bot INSTANTLY cancels the remaining target / stop loss / GTT orders for that symbol!
+    AUTOMATIC POSITION-SYNCING ENGINE:
+    Continuously syncs the bot's internal tracking with FYERS actual net positions (`get_positions()`).
+
+    1. INDIVIDUAL MANUAL EXIT: If you manually close 1 position in FYERS app (or 1 position hits Target/SL):
+       - FYERS netQty for that specific symbol drops to 0.
+       - The bot detects 0 netQty for that symbol, cancels ONLY that symbol's remaining target/SL orders,
+         and resets that symbol to "watch" so it can scan for fresh signals.
+       - Other running positions are NEVER touched and continue to be monitored seamlessly.
+
+    2. MASS MANUAL EXIT: If you close ALL positions in FYERS app:
+       - Every symbol's netQty drops to 0.
+       - The bot cancels remaining target/SL orders for all symbols and resets all to "watch".
+
+    3. MULTI-DAY CNC CARRYING: Carried CNC/MARGIN positions across days stay protected. The re-arm watchdog
+       (`verify_and_rearm_legs`) re-places DAY target/SL orders each morning while the position is held.
     """
     if BROKER_CLIENT is None:
         return
@@ -1272,12 +1284,16 @@ def reconcile_positions_once():
                     st.target_order_id = res.get("tgt_id")
 
 
+def reconcile_positions_once():
+    sync_broker_positions()
+
+
 def _reconcile_loop():
     while True:
         try:
             RECONCILE_WAKE.wait(timeout=RECONCILE_INTERVAL_SECONDS)
             RECONCILE_WAKE.clear()
-            reconcile_positions_once()
+            sync_broker_positions()
         except Exception as e:
             _real_print(f"[reconcile] loop error: {e}")
 
@@ -2388,6 +2404,10 @@ def main():
     load_state_from_disk()
 
     if not args.test_table and BROKER_CLIENT is not None:
+        try:
+            sync_broker_positions()
+        except Exception as e:
+            _real_print(f"[sync] startup position sync failed: {e}")
         try:
             verify_and_rearm_legs()
         except Exception as e:
