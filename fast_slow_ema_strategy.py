@@ -187,7 +187,8 @@ RISK_REWARD_RATIO = 1.0
 ENTRY_FAST_EMA = 9
 MIN_RANGE_PCT = 0.0
 REQUIRE_GREEN_SIGNAL = True
-TICK_SIZE = 0.05
+# Using 0.10 grid ensures compliance with both 0.05 and 0.10 tick size rules across FYERS symbols
+TICK_SIZE = 0.10
 
 
 def round_to_tick(price: float, tick: float = TICK_SIZE) -> float:
@@ -344,15 +345,17 @@ class FyersBrokerAdapter(BaseBrokerClient):
     def place_stoploss_order(self, symbol: str, qty: int, trigger_price: float, product_type: str) -> dict:
         if self.model is None:
             return {"s": "error", "message": "Fyers model not initialized"}
-        limit_price = round_to_tick(trigger_price * 0.99)
+        # Set limitPrice equal to triggerPrice (or 0.5% below triggerPrice rounded to 0.10) to comply with exchange tick rules
+        sl_trigger = round_to_tick(trigger_price)
+        sl_limit = round_to_tick(sl_trigger)
         return self.place_order(
             symbol=symbol,
             qty=qty,
             side=-1,
             product_type=product_type,
             order_type=4,  # SL-L (Stop-Limit)
-            limit_price=limit_price,
-            stop_price=trigger_price,
+            limit_price=sl_limit,
+            stop_price=sl_trigger,
         )
 
     def place_gtt_oco(self, symbol: str, qty: int, target_price: float, stop_price: float, product_type: str) -> dict:
@@ -400,30 +403,42 @@ class FyersBrokerAdapter(BaseBrokerClient):
             except Exception as e:
                 _real_print(f"[gtt] SDK place_gtt exception: {e}")
 
-        # 2. Fallback to direct REST endpoint POST https://api-t1.fyers.in/api/v3/gtt
-        try:
-            url = "https://api-t1.fyers.in/api/v3/gtt"
-            headers = {
-                "Authorization": f"{self.client_id}:{self.access_token}" if ":" not in self.access_token else self.access_token,
-                "Content-Type": "application/json"
-            }
-            session = requests.Session()
-            if PROXY_URL:
-                session.proxies = {"http": PROXY_URL, "https": PROXY_URL}
-            elif PRIMARY_STATIC_IP:
-                try:
-                    adapter = SourceAddressAdapter(PRIMARY_STATIC_IP)
-                    session.mount("http://", adapter)
-                    session.mount("https://", adapter)
-                except Exception:
-                    pass
-            r = session.post(url, headers=headers, json=payload, timeout=15)
-            res = r.json()
-            if isinstance(res, dict) and res.get("s") == "ok":
-                return res
-            return res
-        except Exception as e:
-            return {"s": "error", "message": f"GTT REST POST failed: {e}"}
+        # 2. Fallback to direct REST endpoints (trying api.fyers.in and api-t1.fyers.in)
+        session = requests.Session()
+        if PROXY_URL:
+            session.proxies = {"http": PROXY_URL, "https": PROXY_URL}
+        elif PRIMARY_STATIC_IP:
+            try:
+                adapter = SourceAddressAdapter(PRIMARY_STATIC_IP)
+                session.mount("http://", adapter)
+                session.mount("https://", adapter)
+            except Exception:
+                pass
+
+        headers = {
+            "Authorization": f"{self.client_id}:{self.access_token}" if ":" not in self.access_token else self.access_token,
+            "Content-Type": "application/json"
+        }
+
+        last_err = ""
+        for host in ("api.fyers.in", "api-t1.fyers.in"):
+            try:
+                url = f"https://{host}/api/v3/gtt"
+                r = session.post(url, headers=headers, json=payload, timeout=15)
+                if r.status_code == 200 and "json" in r.headers.get("Content-Type", "").lower():
+                    try:
+                        res = r.json()
+                        if isinstance(res, dict) and res.get("s") == "ok":
+                            return res
+                        last_err = str(res)
+                    except Exception:
+                        last_err = f"Non-JSON response from {host}"
+                else:
+                    last_err = f"HTTP {r.status_code} from {host}"
+            except Exception as e:
+                last_err = str(e)
+
+        return {"s": "error", "message": f"GTT REST POST failed: {last_err}"}
 
     def cancel_gtt(self, gtt_id: str) -> dict:
         if self.model is not None and hasattr(self.model, "cancel_gtt"):
@@ -433,17 +448,43 @@ class FyersBrokerAdapter(BaseBrokerClient):
                     return res
             except Exception:
                 pass
-        try:
-            url = "https://api-t1.fyers.in/api/v3/gtt"
-            headers = {
-                "Authorization": f"{self.client_id}:{self.access_token}" if ":" not in self.access_token else self.access_token,
-                "Content-Type": "application/json"
-            }
-            payload = {"id": gtt_id}
-            r = requests.delete(url, headers=headers, json=payload, timeout=15)
-            return r.json()
-        except Exception as e:
-            return {"s": "error", "message": str(e)}
+
+        session = requests.Session()
+        if PROXY_URL:
+            session.proxies = {"http": PROXY_URL, "https": PROXY_URL}
+        elif PRIMARY_STATIC_IP:
+            try:
+                adapter = SourceAddressAdapter(PRIMARY_STATIC_IP)
+                session.mount("http://", adapter)
+                session.mount("https://", adapter)
+            except Exception:
+                pass
+
+        headers = {
+            "Authorization": f"{self.client_id}:{self.access_token}" if ":" not in self.access_token else self.access_token,
+            "Content-Type": "application/json"
+        }
+        payload = {"id": gtt_id}
+
+        last_err = ""
+        for host in ("api.fyers.in", "api-t1.fyers.in"):
+            try:
+                url = f"https://{host}/api/v3/gtt"
+                r = session.delete(url, headers=headers, json=payload, timeout=15)
+                if r.status_code == 200:
+                    try:
+                        res = r.json()
+                        if isinstance(res, dict) and res.get("s") == "ok":
+                            return res
+                        last_err = str(res)
+                    except Exception:
+                        last_err = f"JSON parse error on {host}: {r.text[:100]}"
+                else:
+                    last_err = f"HTTP {r.status_code} from {host}: {r.text[:100]}"
+            except Exception as e:
+                last_err = str(e)
+
+        return {"s": "error", "message": f"GTT REST DELETE failed: {last_err}"}
 
     def cancel_order(self, order_id: str) -> dict:
         if self.model is None:
