@@ -732,6 +732,7 @@ class SymbolState:
         self.signal_expiry = None
         self.signal_notified = False
         self.entry_price = 0.0
+        self.entry_ts = 0.0  # UNIX timestamp when market entry filled
         self.qty = 0
         self.stop_price = 0.0
         self.target_price = 0.0
@@ -1160,20 +1161,23 @@ def _extract_net_qty_map(positions_resp: dict) -> Dict[str, float]:
         return out
     for key in ("netPositions", "net_positions", "positions"):
         items = positions_resp.get(key)
-        if isinstance(items, list):
-            for item in items:
-                try:
-                    if not isinstance(item, dict):
+        if items is not None:
+            if isinstance(items, dict):
+                items = [items]
+            if isinstance(items, list):
+                for item in items:
+                    try:
+                        if not isinstance(item, dict):
+                            continue
+                        sym = item.get("symbol") or item.get("Symbol")
+                        qty = item.get("netQty")
+                        if qty is None:
+                            qty = item.get("qty")
+                        if sym is not None and qty is not None:
+                            out[sym] = out.get(sym, 0.0) + float(qty)
+                    except Exception:
                         continue
-                    sym = item.get("symbol") or item.get("Symbol")
-                    qty = item.get("netQty")
-                    if qty is None:
-                        qty = item.get("qty")
-                    if sym is not None and qty is not None:
-                        out[sym] = out.get(sym, 0.0) + float(qty)
-                except Exception:
-                    continue
-            break
+                break
     return out
 
 
@@ -1206,6 +1210,12 @@ def reconcile_positions_once():
             continue
 
         if actual_qty <= 0:
+            # Entry Grace Period: ignore 0 net qty for 5 seconds post-entry to allow FYERS position propagation
+            time_since_entry = time.time() - getattr(st, "entry_ts", 0.0)
+            if time_since_entry < 5.0:
+                _real_print(f"[reconcile] {symbol}: 0 net qty detected within entry grace period ({time_since_entry:.1f}s < 5s); waiting for broker position propagation.")
+                continue
+
             _real_print(
                 f"[reconcile] {symbol}: broker shows 0 net qty vs tracked {st.qty} "
                 f"-- position closed (Target Hit, Stoploss Hit, or Manual Exit in FYERS App). "
@@ -1647,6 +1657,7 @@ def on_tick(tick: dict):
                             resp = place_market_order(symbol, qty, side=1)
                             if isinstance(resp, dict) and resp.get("s") == "ok":
                                 state.entry_price = ltp
+                                state.entry_ts = time.time()
                                 state.qty = qty
 
                                 if SL_MODE == "signal_low":
