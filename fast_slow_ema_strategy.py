@@ -238,6 +238,9 @@ COOLDOWN_CANDLES = 1
 TIMEZONE = "Asia/Kolkata"
 IST = pytz.timezone(TIMEZONE)
 
+# Intraday entry cut-off time (3:00 PM IST) to prevent fresh entries after FYERS system square-off
+LAST_ENTRY_TIME = dt.strptime("15:00", "%H:%M").time()
+
 CONFIG_FILE = "fyers_login_details.json"
 TOKENS_DIR = "AccessToken"
 TODAY = str(datetime.date.today())
@@ -1580,6 +1583,19 @@ def on_tick(tick: dict):
 
     # ENTRY: strict next candle
     if state.status == "entry_pending" and state.signal_candle is not None:
+        tick_time = (
+            ts.time()
+            if isinstance(ts, dt)
+            else pd.to_datetime(ts).time()
+        )
+        if tick_time > LAST_ENTRY_TIME:
+            _real_print(
+                f"[blocked-entry] {symbol} time {tick_time.strftime('%H:%M')} > LAST_ENTRY_TIME (15:00); cancelling pending signal."
+            )
+            state.status = "watch"
+            state.signal_candle = None
+            state.signal_close_ts = None
+            return
         try:
             tick_ts = (
                 ts
@@ -1753,6 +1769,17 @@ def evaluate_on_new_candle(st: SymbolState):
     vwap = float(curr.get("vwap", float("nan")))
 
     if st.status == "watch" and len(df) > 1:
+        try:
+            candle_time = (
+                last_ts.time()
+                if isinstance(last_ts, dt)
+                else pd.to_datetime(last_ts).time()
+            )
+            if candle_time > LAST_ENTRY_TIME:
+                return
+        except Exception:
+            pass
+
         prev = df.iloc[-2]
         prev_close = float(prev["close"])
         prev_vwap = float(prev.get("vwap", float("nan")))
