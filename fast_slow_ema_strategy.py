@@ -187,8 +187,7 @@ RISK_REWARD_RATIO = 1.0
 ENTRY_FAST_EMA = 9
 MIN_RANGE_PCT = 0.0
 REQUIRE_GREEN_SIGNAL = True
-# Using 0.10 grid ensures compliance with both 0.05 and 0.10 tick size rules across FYERS symbols
-TICK_SIZE = 0.10
+TICK_SIZE = 0.05
 
 
 def round_to_tick(price: float, tick: float = TICK_SIZE) -> float:
@@ -222,7 +221,7 @@ LOG_FILE = "trade_log.csv"
 STATE_DUMP = "symbol_states.json"
 PARTIAL_CANDLES_FILE = "partial_candles.json"
 
-PRODUCT_TYPE = "CNC"
+PRODUCT_TYPE = "INTRADAY"
 ALLOC_DEFAULT = 1000.0
 ALLOC_MAP = {}
 
@@ -345,9 +344,9 @@ class FyersBrokerAdapter(BaseBrokerClient):
     def place_stoploss_order(self, symbol: str, qty: int, trigger_price: float, product_type: str) -> dict:
         if self.model is None:
             return {"s": "error", "message": "Fyers model not initialized"}
-        # Set limitPrice equal to triggerPrice (or 0.5% below triggerPrice rounded to 0.10) to comply with exchange tick rules
-        sl_trigger = round_to_tick(trigger_price)
-        sl_limit = round_to_tick(sl_trigger)
+        # For SELL Stoploss SL-L, limitPrice must be strictly LESS than stopPrice on a valid 0.05 tick grid
+        sl_trigger = round_to_tick(trigger_price, 0.05)
+        sl_limit = round_to_tick(sl_trigger - 0.20, 0.05)
         return self.place_order(
             symbol=symbol,
             qty=qty,
@@ -403,42 +402,7 @@ class FyersBrokerAdapter(BaseBrokerClient):
             except Exception as e:
                 _real_print(f"[gtt] SDK place_gtt exception: {e}")
 
-        # 2. Fallback to direct REST endpoints (trying api.fyers.in and api-t1.fyers.in)
-        session = requests.Session()
-        if PROXY_URL:
-            session.proxies = {"http": PROXY_URL, "https": PROXY_URL}
-        elif PRIMARY_STATIC_IP:
-            try:
-                adapter = SourceAddressAdapter(PRIMARY_STATIC_IP)
-                session.mount("http://", adapter)
-                session.mount("https://", adapter)
-            except Exception:
-                pass
-
-        headers = {
-            "Authorization": f"{self.client_id}:{self.access_token}" if ":" not in self.access_token else self.access_token,
-            "Content-Type": "application/json"
-        }
-
-        last_err = ""
-        for host in ("api.fyers.in", "api-t1.fyers.in"):
-            try:
-                url = f"https://{host}/api/v3/gtt"
-                r = session.post(url, headers=headers, json=payload, timeout=15)
-                if r.status_code == 200 and "json" in r.headers.get("Content-Type", "").lower():
-                    try:
-                        res = r.json()
-                        if isinstance(res, dict) and res.get("s") == "ok":
-                            return res
-                        last_err = str(res)
-                    except Exception:
-                        last_err = f"Non-JSON response from {host}"
-                else:
-                    last_err = f"HTTP {r.status_code} from {host}"
-            except Exception as e:
-                last_err = str(e)
-
-        return {"s": "error", "message": f"GTT REST POST failed: {last_err}"}
+        return {"s": "error", "message": "Fyers SDK model does not expose place_gtt method"}
 
     def cancel_gtt(self, gtt_id: str) -> dict:
         if self.model is not None and hasattr(self.model, "cancel_gtt"):
@@ -446,45 +410,10 @@ class FyersBrokerAdapter(BaseBrokerClient):
                 res = self.model.cancel_gtt(id=gtt_id)
                 if isinstance(res, dict) and res.get("s") == "ok":
                     return res
-            except Exception:
-                pass
-
-        session = requests.Session()
-        if PROXY_URL:
-            session.proxies = {"http": PROXY_URL, "https": PROXY_URL}
-        elif PRIMARY_STATIC_IP:
-            try:
-                adapter = SourceAddressAdapter(PRIMARY_STATIC_IP)
-                session.mount("http://", adapter)
-                session.mount("https://", adapter)
-            except Exception:
-                pass
-
-        headers = {
-            "Authorization": f"{self.client_id}:{self.access_token}" if ":" not in self.access_token else self.access_token,
-            "Content-Type": "application/json"
-        }
-        payload = {"id": gtt_id}
-
-        last_err = ""
-        for host in ("api.fyers.in", "api-t1.fyers.in"):
-            try:
-                url = f"https://{host}/api/v3/gtt"
-                r = session.delete(url, headers=headers, json=payload, timeout=15)
-                if r.status_code == 200:
-                    try:
-                        res = r.json()
-                        if isinstance(res, dict) and res.get("s") == "ok":
-                            return res
-                        last_err = str(res)
-                    except Exception:
-                        last_err = f"JSON parse error on {host}: {r.text[:100]}"
-                else:
-                    last_err = f"HTTP {r.status_code} from {host}: {r.text[:100]}"
+                return res
             except Exception as e:
-                last_err = str(e)
-
-        return {"s": "error", "message": f"GTT REST DELETE failed: {last_err}"}
+                return {"s": "error", "message": str(e)}
+        return {"s": "error", "message": "Fyers SDK model does not expose cancel_gtt method"}
 
     def cancel_order(self, order_id: str) -> dict:
         if self.model is None:
@@ -806,8 +735,10 @@ class SymbolState:
         self.qty = 0
         self.stop_price = 0.0
         self.target_price = 0.0
-        self.gtt_order_id = None  # Holds GTT OCO order ID or SL-L order ID
-        self.target_order_id = None  # Holds regular Target LIMIT order ID (if not GTT OCO)
+        self.order_mode = None  # "gtt_oco" or "regular_simultaneous"
+        self.gtt_order_id = None  # Holds GTT OCO order ID if order_mode == "gtt_oco"
+        self.sl_order_id = None  # Holds regular SL order ID if order_mode == "regular_simultaneous"
+        self.target_order_id = None  # Holds regular Target order ID if order_mode == "regular_simultaneous"
         self.last_candle_ts = None
         self.last_eval_candle = None
         self.cooldown_until = None
@@ -1109,21 +1040,21 @@ def place_simultaneous_exit_protection(symbol: str, qty: int, target_price: floa
 
     _real_print(f"[order] Placing SIMULTANEOUS Target @ {target_price:.2f} & Stoploss @ {stop_price:.2f} for {symbol}...")
 
-    # Attempt GTT OCO first
-    gtt_res = None
-    try:
-        gtt_res = BROKER_CLIENT.place_gtt_oco(
-            symbol=symbol, qty=qty, target_price=target_price, stop_price=stop_price, product_type=PRODUCT_TYPE
-        )
-        log_trade_event(symbol, "GTT_OCO_PLACE", qty, target_price, gtt_res)
-        if isinstance(gtt_res, dict) and gtt_res.get("s") == "ok":
-            gtt_id = gtt_res.get("id") or gtt_res.get("orderid") or gtt_res.get("order_id")
-            _real_print(f"[order] GTT OCO Order placed successfully! ID={gtt_id}")
-            return {"s": "ok", "mode": "gtt_oco", "gtt_id": gtt_id}
-        else:
-            _real_print(f"[order] GTT OCO attempt returned non-ok: {gtt_res}. Falling back to simultaneous regular orders.")
-    except Exception as e:
-        _real_print(f"[order] GTT OCO exception: {e}. Falling back to simultaneous regular orders.")
+    # Attempt GTT OCO first if SDK supports place_gtt
+    if hasattr(getattr(BROKER_CLIENT, "model", None), "place_gtt"):
+        try:
+            gtt_res = BROKER_CLIENT.place_gtt_oco(
+                symbol=symbol, qty=qty, target_price=target_price, stop_price=stop_price, product_type=PRODUCT_TYPE
+            )
+            log_trade_event(symbol, "GTT_OCO_PLACE", qty, target_price, gtt_res)
+            if isinstance(gtt_res, dict) and gtt_res.get("s") == "ok":
+                gtt_id = gtt_res.get("id") or gtt_res.get("orderid") or gtt_res.get("order_id")
+                _real_print(f"[order] GTT OCO Order placed successfully! ID={gtt_id}")
+                return {"s": "ok", "mode": "gtt_oco", "gtt_id": gtt_id}
+            else:
+                _real_print(f"[order] GTT OCO attempt returned non-ok: {gtt_res}. Falling back to simultaneous regular orders.")
+        except Exception as e:
+            _real_print(f"[order] GTT OCO exception: {e}. Falling back to simultaneous regular orders.")
 
     # Fallback: Simultaneous Regular Orders (Target LIMIT + Stoploss SL-L)
     sl_id = None
@@ -1280,20 +1211,24 @@ def reconcile_positions_once():
                 f"-- position closed (Target Hit, Stoploss Hit, or Manual Exit in FYERS App). "
                 f"Cancelling this symbol's remaining bot-placed orders..."
             )
-            if st.gtt_order_id:
+            if st.order_mode == "gtt_oco" and st.gtt_order_id:
                 cancel_resp = cancel_gtt_order(st.gtt_order_id)
-                if cancel_resp.get("s") != "ok":
-                    cancel_resp = cancel_regular_order(st.gtt_order_id)
-                _real_print(f"[reconcile] {symbol}: cancel order {st.gtt_order_id} -> {cancel_resp}")
-            if st.target_order_id:
-                cancel_resp = cancel_regular_order(st.target_order_id)
-                _real_print(f"[reconcile] {symbol}: cancel target order {st.target_order_id} -> {cancel_resp}")
+                _real_print(f"[reconcile] {symbol}: cancel GTT OCO order {st.gtt_order_id} -> {cancel_resp}")
+            else:
+                if st.sl_order_id:
+                    cancel_resp = cancel_regular_order(st.sl_order_id)
+                    _real_print(f"[reconcile] {symbol}: cancel stoploss order {st.sl_order_id} -> {cancel_resp}")
+                if st.target_order_id:
+                    cancel_resp = cancel_regular_order(st.target_order_id)
+                    _real_print(f"[reconcile] {symbol}: cancel target order {st.target_order_id} -> {cancel_resp}")
             st.status = "watch"
             st.qty = 0
             st.entry_price = 0.0
             st.stop_price = 0.0
             st.target_price = 0.0
+            st.order_mode = None
             st.gtt_order_id = None
+            st.sl_order_id = None
             st.target_order_id = None
         else:
             _real_print(
@@ -1302,8 +1237,10 @@ def reconcile_positions_once():
             )
             if st.gtt_order_id:
                 cancel_gtt_order(st.gtt_order_id)
-                cancel_regular_order(st.gtt_order_id)
                 st.gtt_order_id = None
+            if st.sl_order_id:
+                cancel_regular_order(st.sl_order_id)
+                st.sl_order_id = None
             if st.target_order_id:
                 cancel_regular_order(st.target_order_id)
                 st.target_order_id = None
@@ -1311,9 +1248,14 @@ def reconcile_positions_once():
             if st.qty > 0:
                 res = place_simultaneous_exit_protection(symbol, st.qty, st.target_price, st.stop_price)
                 if res.get("mode") == "gtt_oco":
+                    st.order_mode = "gtt_oco"
                     st.gtt_order_id = res.get("gtt_id")
+                    st.sl_order_id = None
+                    st.target_order_id = None
                 else:
-                    st.gtt_order_id = res.get("sl_id")
+                    st.order_mode = "regular_simultaneous"
+                    st.gtt_order_id = None
+                    st.sl_order_id = res.get("sl_id")
                     st.target_order_id = res.get("tgt_id")
 
 
@@ -1385,28 +1327,31 @@ def verify_and_rearm_legs():
         if actual_qty != st.qty:
             continue
 
-        # If in GTT OCO mode (st.gtt_order_id set, st.target_order_id is None), GTT OCO order
-        # is held in broker's GTT book (not standard order book). Do not re-arm standard order.
-        if st.gtt_order_id and st.target_order_id is None:
+        # If in GTT OCO mode, GTT OCO order is held in broker's GTT book (not standard order book).
+        if st.order_mode == "gtt_oco" and st.gtt_order_id:
             continue
 
         # --- Regular Stoploss leg ---
         if st.stop_price > 0:
             sl_open = (
-                st.gtt_order_id is not None
-                and order_status_map.get(str(st.gtt_order_id)) in OPEN_ORDER_STATUS_CODES
+                st.sl_order_id is not None
+                and order_status_map.get(str(st.sl_order_id)) in OPEN_ORDER_STATUS_CODES
             )
             if not sl_open:
                 _real_print(
-                    f"[rearm] {symbol}: stoploss order (id={st.gtt_order_id}) is missing or expired "
+                    f"[rearm] {symbol}: stoploss order (id={st.sl_order_id}) is missing or expired "
                     f"but the position is still fully held ({st.qty}) -- re-arming target & stoploss."
                 )
                 res = place_simultaneous_exit_protection(symbol, st.qty, st.target_price, st.stop_price)
                 if res.get("mode") == "gtt_oco":
+                    st.order_mode = "gtt_oco"
                     st.gtt_order_id = res.get("gtt_id")
+                    st.sl_order_id = None
                     st.target_order_id = None
                 else:
-                    st.gtt_order_id = res.get("sl_id")
+                    st.order_mode = "regular_simultaneous"
+                    st.gtt_order_id = None
+                    st.sl_order_id = res.get("sl_id")
                     st.target_order_id = res.get("tgt_id")
 
         # --- Regular Target leg ---
@@ -1743,10 +1688,14 @@ def on_tick(tick: dict):
                                 )
 
                                 if exit_res.get("mode") == "gtt_oco":
+                                    state.order_mode = "gtt_oco"
                                     state.gtt_order_id = exit_res.get("gtt_id")
+                                    state.sl_order_id = None
                                     state.target_order_id = None
                                 else:
-                                    state.gtt_order_id = exit_res.get("sl_id")
+                                    state.order_mode = "regular_simultaneous"
+                                    state.gtt_order_id = None
+                                    state.sl_order_id = exit_res.get("sl_id")
                                     state.target_order_id = exit_res.get("tgt_id")
 
                                 state.status = "position"
@@ -2106,7 +2055,9 @@ def _serialize_state():
             "entry_price": getattr(st, "entry_price", None),
             "stop_price": getattr(st, "stop_price", None),
             "target_price": getattr(st, "target_price", None),
+            "order_mode": getattr(st, "order_mode", None),
             "gtt_order_id": getattr(st, "gtt_order_id", None),
+            "sl_order_id": getattr(st, "sl_order_id", None),
             "target_order_id": getattr(st, "target_order_id", None),
             "last_candle_ts": (
                 getattr(st, "last_candle_ts", None).isoformat()
@@ -2146,7 +2097,9 @@ def load_state_from_disk():
             st.entry_price = info.get("entry_price", st.entry_price)
             st.stop_price = info.get("stop_price", st.stop_price)
             st.target_price = info.get("target_price", st.target_price)
+            st.order_mode = info.get("order_mode", st.order_mode)
             st.gtt_order_id = info.get("gtt_order_id", st.gtt_order_id)
+            st.sl_order_id = info.get("sl_order_id", st.sl_order_id)
             st.target_order_id = info.get("target_order_id", st.target_order_id)
             st.signal_notified = info.get("signal_notified", False)
 
@@ -2268,13 +2221,13 @@ def main():
         except Exception:
             _real_print("[warn] Failed to parse --qty-map JSON; ignoring.")
 
-    ALLOWED_PRODUCT = {"CNC", "Intraday"}
+    ALLOWED_PRODUCT = {"CNC", "INTRADAY", "Intraday"}
     ALLOWED_SL = {"signal_low", "swing_low"}
     ALLOWED_POS = {"alloc", "qty"}
 
     if PRODUCT_TYPE not in ALLOWED_PRODUCT:
-        _real_print(f"[warn] Invalid PRODUCT_TYPE '{PRODUCT_TYPE}'. Falling back to 'CNC'.")
-        PRODUCT_TYPE = "CNC"
+        _real_print(f"[warn] Invalid PRODUCT_TYPE '{PRODUCT_TYPE}'. Falling back to 'INTRADAY'.")
+        PRODUCT_TYPE = "INTRADAY"
     if SL_MODE not in ALLOWED_SL:
         _real_print(f"[warn] Invalid SL_MODE '{SL_MODE}'. Falling back to 'signal_low'.")
         SL_MODE = "signal_low"
