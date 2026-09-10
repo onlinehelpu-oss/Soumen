@@ -55,6 +55,7 @@ WHAT CHANGED
 - Custom Timeframe Support: ANY positive integer timeframe_minutes (e.g. 1, 2, 3, 5, 7, 10, 15, 45, 90, 240, ...)
   is fully supported via per-session 1-minute candle resampling from market open (09:15 IST).
 - Custom EMA Support: ANY positive integer EMA periods are supported with dynamic historical lookback scaling.
+- Batch LTP Fetching & Rate Limit Protection: Single batch quote per cycle eliminates HTTP 429 "request limit reached" errors.
 
 ------------------------------------------------------------------------
 FULLY CONFIGURABLE TIMEFRAME & EMA PERIODS
@@ -535,7 +536,7 @@ def get_fyers_access_token(force_refresh: bool = False) -> str:
 
 
 # ============================================================================
-# 4. FYERS BROKER IMPLEMENTATION WITH DYNAMIC PER-SESSION RESAMPLING
+# 4. FYERS BROKER IMPLEMENTATION WITH DYNAMIC PER-SESSION RESAMPLING & RATE LIMITING
 # ============================================================================
 SYMBOL_MASTER_URL = "https://public.fyers.in/sym_details/NSE_FO.csv"
 SYMBOL_MASTER_COLUMNS = [
@@ -696,6 +697,9 @@ class FyersBroker(BaseBroker):
         return int(row.iloc[0]["minimum_lot_size"])
 
     def get_ltp(self, symbol: str) -> float:
+        res = self.get_ltp_bulk([symbol])
+        if symbol in res:
+            return res[symbol]
         resp = self.fyers.quotes({"symbols": symbol})
         if resp.get("s") != "ok" or not resp.get("d"):
             raise RuntimeError(f"Quote fetch failed for {symbol}: {resp}")
@@ -703,24 +707,30 @@ class FyersBroker(BaseBroker):
         return float(d["lp"])
 
     def get_ltp_bulk(self, symbols: list) -> dict:
+        if not symbols:
+            return {}
         result = {}
         chunk_size = 50
         for i in range(0, len(symbols), chunk_size):
             chunk = symbols[i:i + chunk_size]
-            try:
-                resp = self.fyers.quotes({"symbols": ",".join(chunk)})
-            except Exception as e:
-                print(f"[WARN] Bulk quote call failed: {e}")
-                continue
-            if resp.get("s") != "ok" or not resp.get("d"):
-                continue
-            for entry in resp["d"]:
+            for attempt in range(1, 4):
                 try:
-                    sym = entry.get("n") or entry.get("v", {}).get("symbol")
-                    lp = entry.get("v", {}).get("lp")
-                    if sym and lp is not None and float(lp) > 0:
-                        result[sym] = float(lp)
-                except Exception:
+                    resp = self.fyers.quotes({"symbols": ",".join(chunk)})
+                    if resp.get("code") == 429 or "request limit reached" in str(resp.get("message", "")).lower():
+                        time.sleep(0.5 * attempt)
+                        continue
+                    if resp.get("s") == "ok" and resp.get("d"):
+                        for entry in resp["d"]:
+                            try:
+                                sym = entry.get("n") or entry.get("v", {}).get("symbol")
+                                lp = entry.get("v", {}).get("lp")
+                                if sym and lp is not None and float(lp) > 0:
+                                    result[sym] = float(lp)
+                            except Exception:
+                                continue
+                        break
+                except Exception as e:
+                    time.sleep(0.5 * attempt)
                     continue
         return result
 
@@ -1129,11 +1139,14 @@ class OptionSelector:
                       f"Premium range: {min(premiums_only):.2f} to {max(premiums_only):.2f}. Closest: {closest_to_band}")
         return best
 
-    def should_reselect(self, current: SelectedOption) -> bool:
-        try:
-            ltp = self.broker.get_ltp(current.contract.symbol)
-        except Exception:
-            return False
+    def should_reselect(self, current: SelectedOption, current_ltp: Optional[float] = None) -> bool:
+        if current_ltp is not None and current_ltp > 0:
+            ltp = current_ltp
+        else:
+            try:
+                ltp = self.broker.get_ltp(current.contract.symbol)
+            except Exception:
+                return False
         low_bound = self.band_low - self.reselect_tolerance
         high_bound = self.band_high + self.reselect_tolerance
         return not (low_bound <= ltp <= high_bound)
@@ -1277,30 +1290,33 @@ class SideRunner:
         self._select_contract()
         return self.selected is not None
 
-    def _maybe_reselect(self) -> None:
+    def _maybe_reselect(self, current_ltp: Optional[float] = None) -> None:
         if self.position_mgr.has_open_position():
             return
         if self.selected is None:
             self._select_contract()
             return
-        if self.selector.should_reselect(self.selected):
+        if self.selector.should_reselect(self.selected, current_ltp=current_ltp):
             print(f"[{self.option_type}] {self.selected.contract.symbol} drifted out of band, reselecting...")
             self._select_contract()
 
-    def tick(self) -> None:
-        self._maybe_reselect()
+    def tick(self, ltp_map: Optional[dict] = None) -> None:
+        symbol = self.selected.contract.symbol if self.selected else None
+        ltp = ltp_map.get(symbol, 0.0) if (ltp_map and symbol) else 0.0
+
+        self._maybe_reselect(current_ltp=ltp)
         if self.selected is None or self.engine is None:
             return
 
         symbol = self.selected.contract.symbol
         now = datetime.now()
 
-        # Fetch LTP for state evaluation
-        try:
-            ltp = self.broker.get_ltp(symbol)
-        except Exception as e:
-            print(f"[{self.option_type}] LTP fetch failed: {e}")
-            ltp = 0.0
+        if ltp <= 0:
+            try:
+                ltp = self.broker.get_ltp(symbol)
+            except Exception as e:
+                print(f"[{self.option_type}] LTP fetch failed: {e}")
+                ltp = 0.0
 
         # Poll active position with live LTP for fail-safe triggers
         if self.position_mgr.has_open_position():
@@ -1400,30 +1416,36 @@ def print_startup_summary(broker: BaseBroker, cfg: dict, s: dict, runners: list)
     print(line + "\n")
 
 
-def print_live_status(broker: BaseBroker, spot_symbol: Optional[str], runners: list) -> None:
+def print_live_status(broker: BaseBroker, spot_symbol: Optional[str], runners: list, ltp_map: Optional[dict] = None) -> None:
     now_str = datetime.now().strftime("%H:%M:%S")
 
+    spot_str = "N/A"
     if spot_symbol:
-        try:
-            spot_ltp = broker.get_ltp(spot_symbol)
-            spot_str = f"{spot_ltp:.2f}"
-        except Exception as e:
-            spot_str = f"N/A ({e})"
-    else:
-        spot_str = "N/A"
+        if ltp_map and spot_symbol in ltp_map:
+            spot_str = f"{ltp_map[spot_symbol]:.2f}"
+        else:
+            try:
+                spot_ltp = broker.get_ltp(spot_symbol)
+                spot_str = f"{spot_ltp:.2f}"
+            except Exception as e:
+                spot_str = f"N/A ({e})"
 
     parts = [f"[{now_str}] SPOT {spot_symbol or '?'} = {spot_str}"]
     for r in runners:
         if r.selected is None:
             parts.append(f"{r.option_type}: scanning for in-band contract")
             continue
-        try:
-            ltp = broker.get_ltp(r.selected.contract.symbol)
-        except Exception:
-            ltp = r.selected.ltp
+        sym = r.selected.contract.symbol
+        if ltp_map and sym in ltp_map:
+            ltp = ltp_map[sym]
+        else:
+            try:
+                ltp = broker.get_ltp(sym)
+            except Exception:
+                ltp = r.selected.ltp
         in_pos = " [IN POSITION]" if r.position_mgr.has_open_position() else ""
         parts.append(f"{r.option_type} strike {r.selected.contract.strike:.0f} "
-                     f"({r.selected.contract.symbol}) = {ltp:.2f}{in_pos}")
+                     f"({sym}) = {ltp:.2f}{in_pos}")
     print("  |  ".join(parts))
 
 
@@ -1497,9 +1519,19 @@ def main():
             squared_off_today = True
 
         if not squared_off_today:
+            # Gather symbols for a single batch quote request
+            symbols_to_quote = []
+            if spot_symbol:
+                symbols_to_quote.append(spot_symbol)
+            for r in runners:
+                if r.selected is not None:
+                    symbols_to_quote.append(r.selected.contract.symbol)
+
+            ltp_map = broker.get_ltp_bulk(symbols_to_quote) if symbols_to_quote else {}
+
             for r in runners:
                 try:
-                    r.tick()
+                    r.tick(ltp_map)
                 except Exception as e:
                     print(f"[ERROR] {r.option_type} runner tick failed: {e}")
 
@@ -1507,7 +1539,7 @@ def main():
         if this_status_bar_open != last_status_bar_open:
             last_status_bar_open = this_status_bar_open
             try:
-                print_live_status(broker, spot_symbol, runners)
+                print_live_status(broker, spot_symbol, runners, ltp_map if 'ltp_map' in locals() else None)
             except Exception as e:
                 print(f"[ERROR] Status line failed: {e}")
 
