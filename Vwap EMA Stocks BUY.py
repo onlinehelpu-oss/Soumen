@@ -63,15 +63,16 @@ class SourceAddressAdapter(HTTPAdapter):
 
 
 _static_ip_patches_applied = False
+_local_bind_supported = False
 _orig_socket_create_connection = None
 _orig_session_init = None
 
 def apply_static_ip_binding(ip_address: Optional[str]):
     """
     Globally configures requests.Session and socket source binding to the whitelisted PRIMARY_STATIC_IP.
-    Safely guarded against recursion and socket errors.
+    Safely guarded against recursion, unnecessary socket creation, and socket errors.
     """
-    global PRIMARY_STATIC_IP, _static_ip_patches_applied, _orig_socket_create_connection, _orig_session_init
+    global PRIMARY_STATIC_IP, _static_ip_patches_applied, _local_bind_supported, _orig_socket_create_connection, _orig_session_init
     if not ip_address:
         return
     PRIMARY_STATIC_IP = ip_address.strip()
@@ -80,19 +81,22 @@ def apply_static_ip_binding(ip_address: Optional[str]):
         return
     _static_ip_patches_applied = True
 
+    # Test local binding capability once at initialization
+    try:
+        s_test = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s_test.bind((PRIMARY_STATIC_IP, 0))
+        s_test.close()
+        _local_bind_supported = True
+        _real_print(f"[network] Local interface source address binding verified for {PRIMARY_STATIC_IP}.")
+    except Exception:
+        _local_bind_supported = False
+
     # 1. Patch socket.create_connection safely
     _orig_socket_create_connection = socket.create_connection
 
     def _patched_socket_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None):
-        if PRIMARY_STATIC_IP and not source_address:
-            try:
-                # Only bind local source_address if the IP is assigned to a local interface
-                s_test = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s_test.bind((PRIMARY_STATIC_IP, 0))
-                s_test.close()
-                source_address = (PRIMARY_STATIC_IP, 0)
-            except Exception:
-                pass
+        if PRIMARY_STATIC_IP and _local_bind_supported and not source_address:
+            source_address = (PRIMARY_STATIC_IP, 0)
         return _orig_socket_create_connection(address, timeout=timeout, source_address=source_address)
 
     socket.create_connection = _patched_socket_create_connection
@@ -103,14 +107,8 @@ def apply_static_ip_binding(ip_address: Optional[str]):
         _orig_urllib3_create_connection = urllib3_cn.create_connection
 
         def _patched_urllib3_create_connection(address, timeout=socket._GLOBAL_DEFAULT_TIMEOUT, source_address=None, socket_options=None):
-            if PRIMARY_STATIC_IP and not source_address:
-                try:
-                    s_test = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s_test.bind((PRIMARY_STATIC_IP, 0))
-                    s_test.close()
-                    source_address = (PRIMARY_STATIC_IP, 0)
-                except Exception:
-                    pass
+            if PRIMARY_STATIC_IP and _local_bind_supported and not source_address:
+                source_address = (PRIMARY_STATIC_IP, 0)
             return _orig_urllib3_create_connection(address, timeout=timeout, source_address=source_address, socket_options=socket_options)
 
         urllib3_cn.create_connection = _patched_urllib3_create_connection
