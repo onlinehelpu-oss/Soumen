@@ -122,7 +122,7 @@ def apply_static_ip_binding(ip_address: Optional[str]):
         _orig_session_init(self, *args, **kwargs)
         if PROXY_URL:
             self.proxies = {"http": PROXY_URL, "https": PROXY_URL}
-        elif PRIMARY_STATIC_IP:
+        elif PRIMARY_STATIC_IP and _local_bind_supported:
             try:
                 adapter = SourceAddressAdapter(PRIMARY_STATIC_IP)
                 self.mount("http://", adapter)
@@ -563,25 +563,43 @@ def load_config():
     if not PROXY_URL:
         PROXY_URL = os.getenv("FYERS_PROXY_URL")
 
-    # Parse raw_ip if it contains proxy details like host:port or http://host:port
+    # Normalize and parse proxy credentials and URLs
+    if PROXY_URL:
+        p_str = str(PROXY_URL).strip()
+        if not (p_str.startswith("http://") or p_str.startswith("https://") or p_str.startswith("socks5://")):
+            p_str = f"http://{p_str}"
+        parsed_p = urlparse(p_str)
+        if parsed_p.hostname and not parsed_p.port:
+            port_num = 443 if parsed_p.scheme == "https" else 80
+            p_str = p_str.replace(parsed_p.netloc, f"{parsed_p.netloc}:{port_num}")
+            parsed_p = urlparse(p_str)
+        PROXY_URL = p_str
+        PRIMARY_STATIC_IP = PRIMARY_STATIC_IP or parsed_p.hostname
+
     if raw_ip:
         raw_ip_str = str(raw_ip).strip()
         if raw_ip_str.startswith("http://") or raw_ip_str.startswith("https://") or raw_ip_str.startswith("socks5://"):
-            PROXY_URL = PROXY_URL or raw_ip_str
-            parsed = urlparse(raw_ip_str)
-            PRIMARY_STATIC_IP = parsed.hostname
+            parsed_raw = urlparse(raw_ip_str)
+            PRIMARY_STATIC_IP = PRIMARY_STATIC_IP or parsed_raw.hostname
+            if not PROXY_URL:
+                if parsed_raw.hostname and not parsed_raw.port:
+                    port_num = 443 if parsed_raw.scheme == "https" else 80
+                    PROXY_URL = raw_ip_str.replace(parsed_raw.netloc, f"{parsed_raw.netloc}:{port_num}")
+                else:
+                    PROXY_URL = raw_ip_str
         elif ":" in raw_ip_str:
             parts = raw_ip_str.split(":")
-            PRIMARY_STATIC_IP = parts[0]
+            PRIMARY_STATIC_IP = PRIMARY_STATIC_IP or parts[0]
             if len(parts) > 1 and parts[1].isdigit():
                 PROXY_URL = PROXY_URL or f"http://{raw_ip_str}"
         else:
-            PRIMARY_STATIC_IP = raw_ip_str
+            PRIMARY_STATIC_IP = PRIMARY_STATIC_IP or raw_ip_str
             if proxy_port:
+                port_val = int(proxy_port)
                 if proxy_user and proxy_pass:
-                    PROXY_URL = PROXY_URL or f"http://{proxy_user}:{proxy_pass}@{PRIMARY_STATIC_IP}:{proxy_port}"
+                    PROXY_URL = PROXY_URL or f"http://{proxy_user}:{proxy_pass}@{PRIMARY_STATIC_IP}:{port_val}"
                 else:
-                    PROXY_URL = PROXY_URL or f"http://{PRIMARY_STATIC_IP}:{proxy_port}"
+                    PROXY_URL = PROXY_URL or f"http://{PRIMARY_STATIC_IP}:{port_val}"
 
     env_force_ipv4 = os.getenv("FYERS_FORCE_IPV4")
     if env_force_ipv4 is not None:
