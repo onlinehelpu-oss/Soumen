@@ -122,7 +122,9 @@ def apply_static_ip_binding(ip_address: Optional[str]):
 
     def _patched_session_init(self, *args, **kwargs):
         _orig_session_init(self, *args, **kwargs)
-        if PRIMARY_STATIC_IP:
+        if PROXY_URL:
+            self.proxies = {"http": PROXY_URL, "https": PROXY_URL}
+        elif PRIMARY_STATIC_IP:
             try:
                 adapter = SourceAddressAdapter(PRIMARY_STATIC_IP)
                 self.mount("http://", adapter)
@@ -523,6 +525,11 @@ def load_settings_file(path: str = SETTINGS_FILE) -> dict:
 
 def load_config():
     global PRIMARY_STATIC_IP, PROXY_URL, FORCE_IPV4
+    raw_ip = None
+    proxy_port = None
+    proxy_user = None
+    proxy_pass = None
+
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
@@ -530,8 +537,8 @@ def load_config():
             if isinstance(data, dict):
                 if "fyers" in data and isinstance(data["fyers"], dict):
                     data = data["fyers"]
-                keys_map = {str(k).lower().strip().replace(" ", "_"): v for k, v in data.items() if isinstance(v, str)}
-                PRIMARY_STATIC_IP = (
+                keys_map = {str(k).lower().strip().replace(" ", "_"): str(v).strip() for k, v in data.items() if v is not None}
+                raw_ip = (
                         keys_map.get("primary_ip") or
                         keys_map.get("primary_static_ip") or
                         keys_map.get("static_ip") or
@@ -544,14 +551,40 @@ def load_config():
                         keys_map.get("static_ip_proxy_url") or
                         os.getenv("FYERS_PROXY_URL")
                 )
+                proxy_port = keys_map.get("proxy_port") or keys_map.get("port")
+                proxy_user = keys_map.get("proxy_user") or keys_map.get("proxy_username")
+                proxy_pass = keys_map.get("proxy_pass") or keys_map.get("proxy_password")
+
                 if "force_ipv4" in data and isinstance(data["force_ipv4"], bool):
                     FORCE_IPV4 = data["force_ipv4"]
         except Exception:
             pass
-    if not PRIMARY_STATIC_IP:
-        PRIMARY_STATIC_IP = os.getenv("FYERS_PRIMARY_IP")
+
+    if not raw_ip:
+        raw_ip = os.getenv("FYERS_PRIMARY_IP")
     if not PROXY_URL:
         PROXY_URL = os.getenv("FYERS_PROXY_URL")
+
+    # Parse raw_ip if it contains proxy details like host:port or http://host:port
+    if raw_ip:
+        raw_ip_str = str(raw_ip).strip()
+        if raw_ip_str.startswith("http://") or raw_ip_str.startswith("https://") or raw_ip_str.startswith("socks5://"):
+            PROXY_URL = PROXY_URL or raw_ip_str
+            parsed = urlparse(raw_ip_str)
+            PRIMARY_STATIC_IP = parsed.hostname
+        elif ":" in raw_ip_str:
+            parts = raw_ip_str.split(":")
+            PRIMARY_STATIC_IP = parts[0]
+            if len(parts) > 1 and parts[1].isdigit():
+                PROXY_URL = PROXY_URL or f"http://{raw_ip_str}"
+        else:
+            PRIMARY_STATIC_IP = raw_ip_str
+            if proxy_port:
+                if proxy_user and proxy_pass:
+                    PROXY_URL = PROXY_URL or f"http://{proxy_user}:{proxy_pass}@{PRIMARY_STATIC_IP}:{proxy_port}"
+                else:
+                    PROXY_URL = PROXY_URL or f"http://{PRIMARY_STATIC_IP}:{proxy_port}"
+
     env_force_ipv4 = os.getenv("FYERS_FORCE_IPV4")
     if env_force_ipv4 is not None:
         FORCE_IPV4 = env_force_ipv4.strip().lower() not in ("0", "false", "no")
@@ -562,7 +595,9 @@ def load_config():
     if PROXY_URL:
         os.environ["HTTP_PROXY"] = PROXY_URL
         os.environ["HTTPS_PROXY"] = PROXY_URL
-        _real_print(f"[broker] Routing outbound requests via static-IP proxy tunnel.")
+        os.environ["http_proxy"] = PROXY_URL
+        os.environ["https_proxy"] = PROXY_URL
+        _real_print(f"[broker] Routing outbound requests via static-IP proxy tunnel ({PROXY_URL}).")
 
 
 def apply_ipv4_preference():
@@ -669,9 +704,21 @@ def verify_outbound_ip_matches_whitelist(expected_ip: Optional[str], context: st
         return
     if actual_ip.strip() != str(expected_ip).strip():
         _real_print(
-            f"[broker] WARNING: outbound IP mismatch{f' ({context})' if context else ''}! "
-            f"Actual={actual_ip}  Expected/whitelisted={expected_ip}. "
-            f"Orders WILL be rejected by FYERS ('-50 whitelisted IP') until this matches."
+            f"\n[broker] ********************************************************************************\n"
+            f"[broker] *** FYERS IP WHITELIST WARNING{f' ({context})' if context else ''} ***\n"
+            f"[broker] Actual Outbound IP   : {actual_ip}\n"
+            f"[broker] Expected Whitelisted : {expected_ip}\n"
+            f"[broker] Orders WILL be rejected by FYERS ('code: -50, Whitelisted IP error')\n"
+            f"[broker] unless your current outbound IP matches FYERS API whitelist.\n"
+            f"[broker]\n"
+            f"[broker] TO FIX THIS:\n"
+            f"[broker] Option 1 (If using a Static IP Proxy/VPN):\n"
+            f"[broker]   Add your proxy URL or port to fyers_login_details.json:\n"
+            f"[broker]   \"proxy_url\": \"http://{expected_ip}:PORT\" or \"primary_ip\": \"{expected_ip}:PORT\"\n"
+            f"[broker] Option 2 (If trading directly from your local connection):\n"
+            f"[broker]   Add your current IP ({actual_ip}) to the whitelisted IPs\n"
+            f"[broker]   in FYERS API Dashboard (https://myapi.fyers.in).\n"
+            f"[broker] ********************************************************************************\n"
         )
     else:
         _real_print(f"[broker] Outbound IP verified OK{f' ({context})' if context else ''}: {actual_ip} matches whitelisted IP.")
