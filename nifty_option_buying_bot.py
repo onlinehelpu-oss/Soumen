@@ -878,7 +878,7 @@ def next_bar_open_time(timeframe_minutes: int, now: datetime = None) -> datetime
 # ============================================================================
 @dataclass
 class StrategyConfig:
-    timeframe_minutes: int = 5
+    timeframe_minutes: int = 1
     ema_main_period: int = 34
     ema_fast_period: int = 13
     ema_slow_period: int = 21
