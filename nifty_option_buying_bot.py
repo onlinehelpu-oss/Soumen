@@ -7,64 +7,17 @@ applied to the OPTION'S OWN premium candles instead of the underlying.
 Everything (broker interface, Fyers implementation + auto TOTP login,
 EMA-ribbon/signal-candle/breakout strategy engine, strike selector,
 position manager, main loop) lives in this one file so you can just open
-it in PyCharm, hit Run, and go. The only thing that stays OUTSIDE this
-file is your config.json (App ID / Secret / Redirect URL / TOTP secret /
-PIN + strategy settings) - keeping credentials out of source is the one
-exception worth keeping separate.
+it in PyCharm, edit strategy parameters at the top of this file, hit Run, and go.
+
+Credentials (App ID / Secret / Redirect URL / TOTP secret / PIN) are stored in
+broker_credentials.json or config.json so you don't leak sensitive data.
 
 ------------------------------------------------------------------------
-ONE-TIME SETUP
+STRATEGY CONFIGURATION (EDIT PARAMETERS HERE DIRECTLY IN PYCHARM)
 ------------------------------------------------------------------------
-1. pip install fyers-apiv3 pandas numpy pyotp requests python-dateutil
-2. In the SAME folder as this file, create "config.json" (see the
-   CONFIG_TEMPLATE dict below for every field it needs / an example).
-3. Run this file. By default it will ASK you to log in each day: it
-   opens a Fyers login URL, you log in normally in your browser (that's
-   where Fyers' own 2FA happens - this is not bypassed), then you paste
-   the redirected URL back into the console. App ID / Secret / Redirect
-   URL stay stored in config.json permanently - this one paste-back is
-   the only thing you do daily. The resulting access token is then
-   cached for the rest of the day, so this only happens once per day.
-   (An experimental fully-automated TOTP login also exists - set
-   "auto_totp_login": true in config.json to try it - but Fyers' internal
-   login endpoint behind it changes without notice and is unreliable
-   right now, which is why manual paste-back is the default.)
-
-------------------------------------------------------------------------
-WHAT WAS KEPT FROM THE ORIGINAL EA (buy-only)
-------------------------------------------------------------------------
-- Main/Fast/Slow EMA ribbon, bullish stack required at entry (Fast>Slow>Main)
-- Signal candle: green candle, low pokes below Main EMA, closes back above it
-- Only the IMMEDIATE next candle can trigger entry (break of signal high);
-  otherwise the setup is invalidated
-- Origin filter: prior-close lookback + Williams-fractal method, with the
-  "fresh cross" chop filter (only re-arms after a genuine new dip below
-  Main EMA), consumed only on an actual fill
-- Candle-size filter (ignore abnormally large signal candles)
-- SL = signal candle low. Target = SL-distance x risk:reward ratio
-
-WHAT CHANGED
-------------------------------------------------------------------------
-- Sell/short side removed completely - long CE / long PE only
-- Strategy runs on the OPTION's own OHLC, not the underlying
-- Strike selection: tracks whichever CE / PE (independently) has live
-  premium inside your band (default 180-200), closest to the midpoint
-- Lot size & expiry are NEVER hardcoded - both are re-read live from the
-  exchange symbol master on every trade. You only configure how many
-  LOTS to trade (num_lots); the lot SIZE always comes from the exchange.
-- Custom Timeframe Support: ANY positive integer timeframe_minutes (e.g. 1, 2, 3, 5, 7, 10, 15, 45, 90, 240, ...)
-  is fully supported via per-session 1-minute candle resampling from market open (09:15 IST).
-- Custom EMA Support: ANY positive integer EMA periods are supported with dynamic historical lookback scaling.
-- Batch LTP Fetching & Rate Limit Protection: Single batch quote per cycle eliminates HTTP 429 "request limit reached" errors.
-
-------------------------------------------------------------------------
-FULLY CONFIGURABLE TIMEFRAME & EMA PERIODS
-------------------------------------------------------------------------
-- timeframe_minutes: ANY positive integer (1, 2, 3, 4, 5, 7, 10, 14, 15, 30, 45, 90, 240, etc.).
-  If Fyers API does not natively support the resolution, 1m candles are fetched and resampled per-session
-  starting from market open (09:15 IST).
-- EMA periods: ANY positive integer (e.g. fast=13, slow=21, main=34 or fast=5, slow=20, main=50).
-  Historical candle lookbacks automatically scale to ensure high precision EMA calculation.
+You can change timeframe_minutes, EMA periods, premium bands, lot sizes, etc.
+directly in the CONFIG_TEMPLATE dictionary below! Any edits you make here
+will automatically sync and be used immediately when you hit Run.
 """
 
 import base64
@@ -85,7 +38,7 @@ import requests
 from fyers_apiv3 import fyersModel
 
 # ============================================================================
-# 0. CONFIG LOADING
+# 0. CONFIG LOADING & STRATEGY PARAMETERS
 # ============================================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
@@ -94,8 +47,7 @@ TOKEN_CACHE_PATH = os.path.join(DATA_DIR, "token_cache.json")
 SYMBOL_MASTER_CACHE_PATH = os.path.join(DATA_DIR, "symbol_master_cache.csv")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# If config.json doesn't exist yet, this template is written out for you
-# once and the script exits so you can fill in the real values.
+# You can edit strategy parameters directly in this dict inside PyCharm!
 CONFIG_TEMPLATE = {
     "broker": "fyers",
     "fyers": {
@@ -110,8 +62,8 @@ CONFIG_TEMPLATE = {
     "strategy": {
         "underlying": "NIFTY",
         "spot_symbol": "NSE:NIFTY50-INDEX",
-        # timeframe_minutes: ANY positive integer works (1, 2, 3, 5, 7, 10, 15, 45,
-        # 90, 240, ...). Automatic resampling is applied for non-standard resolutions.
+        # timeframe_minutes: ANY positive integer (1, 2, 3, 5, 7, 10, 15, 45, 90, 240, ...).
+        # Change this value anytime right here in PyCharm and click Run!
         "timeframe_minutes": 1,
         # EMA periods: ANY positive integers (fast < slow < main recommended).
         "ema_main_period": 34,
@@ -143,18 +95,26 @@ def load_config() -> dict:
     if not os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH, "w") as f:
             json.dump(CONFIG_TEMPLATE, f, indent=2)
-        raise FileNotFoundError(
-            f"config.json didn't exist, so a template was created at:\n{CONFIG_PATH}\n"
-            f"Fill in your App ID / Secret ID / Redirect URL / fy_id / totp_secret / "
-            f"PIN, then run this file again."
-        )
-
-    mtime = datetime.fromtimestamp(os.path.getmtime(CONFIG_PATH)).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[CONFIG] Reading strategy/broker settings from: {CONFIG_PATH}")
-    print(f"[CONFIG] That file was last saved: {mtime}")
+        print(f"[CONFIG] Initialized new config.json at {CONFIG_PATH}")
+        return CONFIG_TEMPLATE
 
     with open(CONFIG_PATH, "r") as f:
-        cfg = json.load(f)
+        try:
+            cfg = json.load(f)
+        except Exception:
+            cfg = CONFIG_TEMPLATE
+
+    # Always allow strategy parameters in this Python file (CONFIG_TEMPLATE) to drive execution!
+    # Merge CONFIG_TEMPLATE["strategy"] so any strategy parameter edited in PyCharm is immediately active.
+    cfg["strategy"] = {**cfg.get("strategy", {}), **CONFIG_TEMPLATE["strategy"]}
+
+    # Update config.json on disk so disk state stays synchronized
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
+
+    mtime = datetime.fromtimestamp(os.path.getmtime(CONFIG_PATH)).strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[CONFIG] Reading strategy settings from code & config.json ({mtime})")
+    print(f"[CONFIG] Effective timeframe_minutes = {cfg['strategy']['timeframe_minutes']}")
 
     _warn_if_template_values_untouched(cfg)
     return cfg
@@ -185,8 +145,8 @@ def _warn_if_template_values_untouched(cfg: dict) -> None:
 
     placeholder_hits = [key for key in keys_to_check if fy.get(key) == template_fy.get(key)]
     if placeholder_hits:
-        print(f"[WARN] config.json still has placeholder value(s) for: {', '.join(placeholder_hits)}. "
-              f"If this wasn't intentional, edit {CONFIG_PATH} directly.")
+        print(f"[WARN] Placeholder credentials detected for: {', '.join(placeholder_hits)}. "
+              f"If using manual browser login, app_id and redirect_uri must match your Fyers App.")
 
 
 CONFIG: Optional[dict] = None
