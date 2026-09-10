@@ -114,7 +114,6 @@ def load_config() -> dict:
 
     mtime = datetime.fromtimestamp(os.path.getmtime(CONFIG_PATH)).strftime("%Y-%m-%d %H:%M:%S")
     print(f"[CONFIG] Reading strategy settings from code & config.json ({mtime})")
-    print(f"[CONFIG] Effective timeframe_minutes = {cfg['strategy']['timeframe_minutes']}")
 
     _warn_if_template_values_untouched(cfg)
     return cfg
