@@ -1197,7 +1197,7 @@ class PositionManager:
 # ============================================================================
 # 9. MAIN LOOP & SIDE RUNNER
 # ============================================================================
-POLL_SECONDS = 5
+POLL_SECONDS = 1
 
 SPOT_SYMBOL_MAP = {
     "NIFTY": "NSE:NIFTY50-INDEX",
