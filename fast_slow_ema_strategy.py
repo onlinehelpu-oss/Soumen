@@ -12,22 +12,22 @@
         - Only allowed on the VERY NEXT candle.
         - During that next candle, if any tick LTP > signal_high -> market BUY.
 
-- SIMULTANEOUS TARGET & STOPLOSS AT ENTRY (GTT OCO / Dual-Order):
-    * Target and Stop Loss orders are placed AT THE SAME TIME immediately when
-      the market BUY entry order fills.
-    * GTT OCO (One-Cancels-the-Other) mode sends leg1 (Target Limit) and leg2
-      (Stop Loss SL-L) in a single request (type: 2) to FYERS GTT API v3.
-    * If GTT OCO is not supported by the account/broker, it falls back to placing
-      both Target Limit and SL-L orders simultaneously as resting regular orders.
+- SIMULTANEOUS STOPLOSS & TARGET EXIT PROTECTION:
+    * Placed immediately upon entry execution.
+    * Attempts FYERS GTT OCO placement (type 2, leg1=Target Limit, leg2=Stop Loss SL-L)
+      or falls back to placing both resting Target Limit Sell and Stop Loss SL-L
+      Sell orders simultaneously.
+    * For Stop Loss SL-L orders, limitPrice is set strictly below stopPrice
+      (sl_trigger - 0.20, rounded to 0.05 tick size) to avoid FYERS error -50.
 
-- AUTOMATIC CANCELLATION & POSITION RECONCILIATION:
-    * Broker-side GTT OCO automatically cancels leg2 when leg1 fills (target hit),
-      and vice-versa (stoploss hit).
-    * In addition, the bot's instant position reconciler (woken up in real-time by
-      Order WebSocket pushes and polling every RECONCILE_INTERVAL_SECONDS) continuously
-      monitors broker net positions. If a position closes due to Target Hit, Stoploss
-      Hit, or MANUAL EXIT from the FYERS app/web terminal, the bot instantly cancels
-      the other remaining order leg for that specific symbol.
+- AUTOMATIC ORDER CANCELLATION & POSITION RECONCILIATION:
+    * Hooked into Order WebSocket updates (on_order_update) for sub-100ms response time
+      and backed up by 20-second polling loops (sync_broker_positions).
+    * If a position closes (Target hit, Stop Loss triggered, or manually closed in
+      the FYERS app), the bot detects net quantity = 0 for that symbol and
+      instantly cancels the remaining open protection order leg.
+    * Closing one position manually in FYERS will only cancel that symbol's orders,
+      leaving all other active positions intact.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ import webbrowser
 from abc import ABC, abstractmethod
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 from datetime import datetime as dt, timedelta
 
 import requests
@@ -56,8 +56,9 @@ import numpy as np
 import pytz
 
 PRIMARY_STATIC_IP = None
-PROXY_URL = None
-FORCE_IPV4 = True
+PROXY_URL = None  # e.g. "https://user:pass@dc-mum-007.staticip.in" -- set via fyers_login_details.json
+FORCE_IPV4 = True  # Prefer IPv4 for ALL outbound HTTP calls.
+
 
 class SourceAddressAdapter(HTTPAdapter):
     """Binds requests HTTP/HTTPS socket connections to a specific local source IP address."""
@@ -71,13 +72,14 @@ class SourceAddressAdapter(HTTPAdapter):
         return super().init_poolmanager(*args, **kwargs)
 
 
-# Try to import Fyers packages
+# Try to import Fyers packages - run in test mode if missing
 try:
     from fyers_apiv3 import fyersModel
     from fyers_apiv3.FyersWebsocket import data_ws
     from fyers_apiv3.FyersWebsocket import order_ws
     from pkg_resources import resource_filename
 
+    # Monkey-patch fyers_apiv3 SDK bug in SymbolConversion where client_id: is stripped
     if hasattr(data_ws, "SymbolConversion"):
         def _patched_symbol_conversion_init(self, access_token: str, data_type: str, log_path: str):
             self.data_type = data_type
@@ -96,31 +98,15 @@ try:
                         session.mount("https://", adapter)
                     except Exception:
                         pass
-                try:
-                    response = session.post(
-                        url=self.symbols_token_api,
-                        headers={
-                            "Authorization": self.access_token,
-                            "Content-Type": "application/json",
-                        },
-                        json=data,
-                        timeout=15
-                    )
-                except Exception as net_err:
-                    # If local socket bind fails (e.g. WinError 10049 because primary_ip is not bound to local NIC), retry without SourceAddressAdapter
-                    if PRIMARY_STATIC_IP:
-                        session = requests.Session()
-                        response = session.post(
-                            url=self.symbols_token_api,
-                            headers={
-                                "Authorization": self.access_token,
-                                "Content-Type": "application/json",
-                            },
-                            json=data,
-                            timeout=15
-                        )
-                    else:
-                        raise net_err
+                response = session.post(
+                    url=self.symbols_token_api,
+                    headers={
+                        "Authorization": self.access_token,
+                        "Content-Type": "application/json",
+                    },
+                    json=data,
+                    timeout=15
+                )
                 response_data = response.json()
                 datadict = {}
                 file_path = resource_filename('fyers_apiv3.FyersWebsocket', 'map.json')
@@ -176,6 +162,7 @@ except Exception:
 
 
 class AuthCodeHandler(BaseHTTPRequestHandler):
+    """Local HTTP Server request handler to auto-capture auth_code from browser redirect."""
     auth_code = None
 
     def do_GET(self):
@@ -198,15 +185,19 @@ class AuthCodeHandler(BaseHTTPRequestHandler):
 
 
 # ---------------------------- USER-CONFIGURED CONSTANTS ----------------------------
-TIMEFRAME_MIN = 5
-RISK_REWARD_RATIO = 1.0
+TIMEFRAME_MIN = 5  # Any TF in minutes (1,2,3,5,10,15,30,60,...)
+
+RISK_REWARD_RATIO = 1.0  # Target = entry + (entry - stop) * this ratio. 1.0 = 1:1, 2.0 = 1:2, etc.
 ENTRY_FAST_EMA = 9
+
 MIN_RANGE_PCT = 0.0
 REQUIRE_GREEN_SIGNAL = True
 TICK_SIZE = 0.05
+LAST_ENTRY_TIME = "15:00"  # No new entries after 3:00 PM IST
 
 
 def round_to_tick(price: float, tick: float = TICK_SIZE) -> float:
+    """Round `price` onto the exchange's tick grid."""
     try:
         price = float(price)
     except (TypeError, ValueError):
@@ -237,11 +228,13 @@ LOG_FILE = "trade_log.csv"
 STATE_DUMP = "symbol_states.json"
 PARTIAL_CANDLES_FILE = "partial_candles.json"
 
+# Default product type: "CNC" (delivery) or "Intraday"
 PRODUCT_TYPE = "CNC"
+
 ALLOC_DEFAULT = 1000.0
 ALLOC_MAP = {}
 
-SL_MODE = "signal_low"
+SL_MODE = "signal_low"  # "signal_low" or "swing_low"
 SWING_LOOKBACK = 5
 
 MAX_CONCURRENT_POS = 3
@@ -253,9 +246,6 @@ COOLDOWN_CANDLES = 1
 
 TIMEZONE = "Asia/Kolkata"
 IST = pytz.timezone(TIMEZONE)
-
-# Intraday entry cut-off time (3:00 PM IST) to prevent fresh entries after FYERS system square-off
-LAST_ENTRY_TIME = dt.strptime("15:00", "%H:%M").time()
 
 CONFIG_FILE = "fyers_login_details.json"
 TOKENS_DIR = "AccessToken"
@@ -275,7 +265,8 @@ _real_print = print
 ALLOWED_SUBSTRINGS = (
     "ENTRY SIGNAL", "[signal:", "[CANDLE]", "[order]", "[auth]", "[ws]",
     "[blocked-entry]", "[entry-debug]", "[reconcile]", "[ENTRY CONFIRMED]",
-    "[broker]", "===================", "[notice]", "[mode]", "[cooldown]", "[gtt]"
+    "[broker]", "===================", "[notice]", "[mode]", "[cooldown]",
+    "[gtt]", "[sync]"
 )
 
 
@@ -292,6 +283,7 @@ def print(*args, **kwargs):
 
 # ---------------------------- BROKER ABSTRACTION LAYER ----------------------------
 class BaseBrokerClient(ABC):
+    """Generic Broker Abstract Base Class allowing seamless multi-broker integration."""
 
     @abstractmethod
     def place_order(self, symbol: str, qty: int, side: int, product_type: str,
@@ -303,8 +295,7 @@ class BaseBrokerClient(ABC):
         pass
 
     @abstractmethod
-    def place_gtt_oco(self, symbol: str, qty: int, target_price: float, stop_price: float, product_type: str) -> dict:
-        """Places simultaneous Target and Stop Loss using GTT OCO (One-Cancels-the-Other)."""
+    def place_gtt_oco(self, symbol: str, qty: int, target_price: float, stop_trigger: float, product_type: str) -> dict:
         pass
 
     @abstractmethod
@@ -329,7 +320,7 @@ class BaseBrokerClient(ABC):
 
 
 class FyersBrokerAdapter(BaseBrokerClient):
-    """Fyers v3 Broker Implementation supporting GTT OCO & Regular Order placement."""
+    """Fyers v3 Broker Implementation with Static IP socket binding support."""
 
     def __init__(self, client_id: str, access_token: str, primary_ip: Optional[str] = None):
         self.client_id = client_id
@@ -361,11 +352,11 @@ class FyersBrokerAdapter(BaseBrokerClient):
         return self.model.place_order(data=data)
 
     def place_stoploss_order(self, symbol: str, qty: int, trigger_price: float, product_type: str) -> dict:
+        """Place SELL Stop Loss SL-L (Stop-Limit) order ensuring limitPrice < stopPrice."""
         if self.model is None:
             return {"s": "error", "message": "Fyers model not initialized"}
-        # For SELL Stoploss SL-L, limitPrice must be strictly LESS than stopPrice on a valid 0.05 tick grid
-        sl_trigger = round_to_tick(trigger_price, 0.05)
-        sl_limit = round_to_tick(sl_trigger - 0.20, 0.05)
+        sl_trigger = round_to_tick(trigger_price)
+        sl_limit = round_to_tick(sl_trigger - 0.20)  # Must be strictly less than trigger for SELL
         return self.place_order(
             symbol=symbol,
             qty=qty,
@@ -376,25 +367,16 @@ class FyersBrokerAdapter(BaseBrokerClient):
             stop_price=sl_trigger,
         )
 
-    def place_gtt_oco(self, symbol: str, qty: int, target_price: float, stop_price: float, product_type: str) -> dict:
-        """
-        Places simultaneous Target (leg1) and Stop Loss (leg2) via FYERS GTT OCO API v3.
-        Ref: https://myapi.fyers.in/docsv3#tag/GTT-Orders
-        Payload shape:
-          type: 2 (OCO GTT Order)
-          side: -1 (SELL)
-          symbol: symbol string
-          productType: product_type
-          orderInfo:
-            leg1: { price: target_price, triggerPrice: target_price, qty: qty }
-            leg2: { price: round_to_tick(stop_price*0.99), triggerPrice: stop_price, qty: qty }
-        """
+    def place_gtt_oco(self, symbol: str, qty: int, target_price: float, stop_trigger: float, product_type: str) -> dict:
+        """Place FYERS GTT OCO Order (type: 2 OCO) with Leg1=Target and Leg2=Stoploss."""
+        if self.model is None or not hasattr(self.model, "place_gtt"):
+            return {"s": "error", "message": "GTT method not supported by this SDK version"}
         tgt_price = round_to_tick(target_price)
-        sl_trigger = round_to_tick(stop_price)
-        sl_limit = round_to_tick(stop_price * 0.99)
+        sl_trigger = round_to_tick(stop_trigger)
+        sl_limit = round_to_tick(sl_trigger - 0.20)
 
-        payload = {
-            "type": 2,
+        data = {
+            "type": 2,  # 2 = OCO GTT
             "side": -1,
             "symbol": symbol,
             "productType": product_type,
@@ -402,37 +384,29 @@ class FyersBrokerAdapter(BaseBrokerClient):
                 "leg1": {
                     "price": tgt_price,
                     "triggerPrice": tgt_price,
-                    "qty": qty,
+                    "qty": qty
                 },
                 "leg2": {
                     "price": sl_limit,
                     "triggerPrice": sl_trigger,
-                    "qty": qty,
+                    "qty": qty
                 }
             }
         }
-
-        # 1. Try SDK's place_gtt if present
-        if self.model is not None and hasattr(self.model, "place_gtt"):
-            try:
-                res = self.model.place_gtt(data=payload)
-                if isinstance(res, dict) and res.get("s") == "ok":
-                    return res
-            except Exception as e:
-                _real_print(f"[gtt] SDK place_gtt exception: {e}")
-
-        return {"s": "error", "message": "Fyers SDK model does not expose place_gtt method"}
+        try:
+            return self.model.place_gtt(data=data)
+        except Exception as e:
+            return {"s": "error", "message": str(e)}
 
     def cancel_gtt(self, gtt_id: str) -> dict:
-        if self.model is not None and hasattr(self.model, "cancel_gtt"):
-            try:
-                res = self.model.cancel_gtt(id=gtt_id)
-                if isinstance(res, dict) and res.get("s") == "ok":
-                    return res
-                return res
-            except Exception as e:
-                return {"s": "error", "message": str(e)}
-        return {"s": "error", "message": "Fyers SDK model does not expose cancel_gtt method"}
+        if self.model is None:
+            return {"s": "error", "message": "Fyers model not initialized"}
+        try:
+            if hasattr(self.model, "cancel_gtt"):
+                return self.model.cancel_gtt(data={"id": gtt_id})
+            return {"s": "error", "message": "cancel_gtt not supported"}
+        except Exception as e:
+            return {"s": "error", "message": str(e)}
 
     def cancel_order(self, order_id: str) -> dict:
         if self.model is None:
@@ -469,7 +443,7 @@ class FyersBrokerAdapter(BaseBrokerClient):
             return {"s": "error", "message": str(e)}
 
 
-# ---------------------------- SETTINGS & CONFIG LOADER ----------------------------
+# ---------------------------- CONFIG & SETTINGS LOADER ----------------------------
 def load_settings_file(path: str = SETTINGS_FILE) -> dict:
     try:
         if not os.path.exists(path):
@@ -668,7 +642,7 @@ def _print_session_dashboard(app_id: str, redirect_uri: str, access_token: str):
     _real_print(f" App ID       : {app_id}")
     _real_print(f" Redirect URI : {redirect_uri}")
     if PRIMARY_STATIC_IP:
-        _real_print(f" Static IP    : {PRIMARY_STATIC_IP} (applies to symbol-lookup calls only)")
+        _real_print(f" Static IP    : {PRIMARY_STATIC_IP}")
     _real_print(f" Access Token : {access_token[:15]}...")
     _real_print("===============================================================\n")
 
@@ -751,17 +725,17 @@ class SymbolState:
         self.signal_expiry = None
         self.signal_notified = False
         self.entry_price = 0.0
-        self.entry_ts = 0.0  # UNIX timestamp when market entry filled
         self.qty = 0
         self.stop_price = 0.0
         self.target_price = 0.0
-        self.order_mode = None  # "gtt_oco" or "regular_simultaneous"
-        self.gtt_order_id = None  # Holds GTT OCO order ID if order_mode == "gtt_oco"
-        self.sl_order_id = None  # Holds regular SL order ID if order_mode == "regular_simultaneous"
-        self.target_order_id = None  # Holds regular Target order ID if order_mode == "regular_simultaneous"
+        self.gtt_order_id = None
+        self.sl_order_id = None
+        self.target_order_id = None
+        self.order_mode = "regular_simultaneous"  # "gtt_oco" or "regular_simultaneous"
         self.last_candle_ts = None
         self.last_eval_candle = None
         self.cooldown_until = None
+        self.entry_ts = 0.0  # Unix timestamp of entry execution
 
     def __repr__(self):
         return f"<State {self.symbol} {self.status} qty={self.qty} sl={self.stop_price} tgt={self.target_price}>"
@@ -769,10 +743,8 @@ class SymbolState:
 
 SYMBOL_STATES: Dict[str, SymbolState] = {s: SymbolState(s) for s in SYMBOLS}
 
-# ---------------------------- LOGGING UTIL ----------------------------
 if not os.path.exists(LOG_FILE):
     import csv
-
     with open(LOG_FILE, "w", newline="") as f:
         csv.writer(f).writerow(["ts", "symbol", "action", "qty", "price", "response"])
 
@@ -973,7 +945,7 @@ class CandleManager:
 
 CANDLE_MANAGER: Optional[CandleManager] = None
 
-# ---------------------------- ORDER HELPERS ----------------------------
+# ---------------------------- ORDER & RECONCILIATION HELPERS ----------------------------
 BROKER_CLIENT: Optional[BaseBrokerClient] = None
 FYERS_SOCKET = None
 ORDER_SOCKET = None
@@ -1044,66 +1016,8 @@ def place_market_order(symbol: str, qty: int, side: int) -> dict:
     return err
 
 
-def place_simultaneous_exit_protection(symbol: str, qty: int, target_price: float, stop_price: float) -> dict:
-    """
-    Places Target and Stop Loss AT THE SAME TIME when taking entry.
-    1. Attempts to place via FYERS GTT OCO (One-Cancels-the-Other).
-       In GTT OCO, when leg1 (Target) fills, FYERS automatically cancels leg2 (Stoploss).
-       When leg2 (Stoploss) triggers/fills, FYERS automatically cancels leg1 (Target).
-    2. If GTT OCO is not supported or fails, it places both Target Limit and Stoploss SL-L
-       orders simultaneously as resting broker orders.
-    """
-    if BROKER_CLIENT is None:
-        err = {"s": "error", "message": "no broker client for exit protection"}
-        log_trade_event(symbol, "EXIT_PROTECT_FAIL", qty, target_price, err)
-        return err
-
-    _real_print(f"[order] Placing SIMULTANEOUS Target @ {target_price:.2f} & Stoploss @ {stop_price:.2f} for {symbol}...")
-
-    # Attempt GTT OCO first if SDK supports place_gtt
-    if hasattr(getattr(BROKER_CLIENT, "model", None), "place_gtt"):
-        try:
-            gtt_res = BROKER_CLIENT.place_gtt_oco(
-                symbol=symbol, qty=qty, target_price=target_price, stop_price=stop_price, product_type=PRODUCT_TYPE
-            )
-            log_trade_event(symbol, "GTT_OCO_PLACE", qty, target_price, gtt_res)
-            if isinstance(gtt_res, dict) and gtt_res.get("s") == "ok":
-                gtt_id = gtt_res.get("id") or gtt_res.get("orderid") or gtt_res.get("order_id")
-                _real_print(f"[order] GTT OCO Order placed successfully! ID={gtt_id}")
-                return {"s": "ok", "mode": "gtt_oco", "gtt_id": gtt_id}
-            else:
-                _real_print(f"[order] GTT OCO attempt returned non-ok: {gtt_res}. Falling back to simultaneous regular orders.")
-        except Exception as e:
-            _real_print(f"[order] GTT OCO exception: {e}. Falling back to simultaneous regular orders.")
-
-    # Fallback: Simultaneous Regular Orders (Target LIMIT + Stoploss SL-L)
-    sl_id = None
-    tgt_id = None
-
-    # Place SL
-    sl_resp = place_gtt_stoploss(symbol, qty, stop_price)
-    if isinstance(sl_resp, dict) and sl_resp.get("s") == "ok":
-        sl_id = sl_resp.get("id") or sl_resp.get("orderid") or sl_resp.get("order_id")
-    else:
-        _real_print(f"[order] Simultaneous Stoploss regular order failed for {symbol}: {sl_resp}")
-
-    # Place Target (at the same time)
-    if target_price > 0:
-        tgt_resp = place_target_limit_order(symbol, qty, target_price)
-        if isinstance(tgt_resp, dict) and tgt_resp.get("s") == "ok":
-            tgt_id = tgt_resp.get("id") or tgt_resp.get("orderid") or tgt_resp.get("order_id")
-        else:
-            _real_print(f"[order] Simultaneous Target regular order failed for {symbol}: {tgt_resp}")
-
-    return {
-        "s": "ok" if (sl_id or tgt_id) else "error",
-        "mode": "regular_simultaneous",
-        "sl_id": sl_id,
-        "tgt_id": tgt_id
-    }
-
-
-def place_gtt_stoploss(symbol: str, qty: int, trigger_price: float) -> dict:
+def place_stoploss_order(symbol: str, qty: int, trigger_price: float) -> dict:
+    """Place protective Stop Loss SL-L Sell order."""
     if BROKER_CLIENT is None:
         err = {"s": "error", "message": "no broker client for stoploss order"}
         log_trade_event(symbol, "SL_FAIL", qty, trigger_price, err)
@@ -1121,7 +1035,7 @@ def place_gtt_stoploss(symbol: str, qty: int, trigger_price: float) -> dict:
             time.sleep(1 * attempt)
         except Exception as e:
             last_resp = {"s": "error", "message": str(e)}
-            _real_print(f"[order] Stoploss order attempt {attempt} for {symbol} raised an exception: {e}")
+            _real_print(f"[order] Stoploss order attempt {attempt} for {symbol} raised exception: {e}")
             time.sleep(1 * attempt)
     err = last_resp if isinstance(last_resp, dict) else {"s": "error", "message": "stoploss order failed after retries"}
     log_trade_event(symbol, "SL_FAIL", qty, trigger_price, err)
@@ -1129,6 +1043,7 @@ def place_gtt_stoploss(symbol: str, qty: int, trigger_price: float) -> dict:
 
 
 def place_target_limit_order(symbol: str, qty: int, limit_price: float) -> dict:
+    """Place resting Target LIMIT Sell order."""
     _real_print(f"[order] Placing target LIMIT sell for {qty} of {symbol} @ {limit_price:.2f}")
     if BROKER_CLIENT is None:
         err = {"s": "error", "message": "no broker client"}
@@ -1149,27 +1064,73 @@ def place_target_limit_order(symbol: str, qty: int, limit_price: float) -> dict:
             time.sleep(1 * attempt)
         except Exception as e:
             last_resp = {"s": "error", "message": str(e)}
-            _real_print(f"[order] Target order attempt {attempt} for {symbol} raised an exception: {e}")
+            _real_print(f"[order] Target order attempt {attempt} for {symbol} raised exception: {e}")
             time.sleep(1 * attempt)
     err = last_resp if isinstance(last_resp, dict) else {"s": "error", "message": "target order failed after retries"}
     log_trade_event(symbol, "TARGET_SELL", qty, limit_price, err)
     return err
 
 
-def cancel_gtt_order(gtt_id: str) -> dict:
+def place_simultaneous_exit_protection(st: SymbolState) -> bool:
+    """Places both Target and Stop Loss exit orders SIMULTANEOUSLY at entry time.
+    Attempts GTT OCO order placement first; falls back to simultaneous regular
+    orders if GTT is unsupported."""
     if BROKER_CLIENT is None:
-        return {"s": "error", "message": "no broker client"}
+        return False
+
+    symbol = st.symbol
+    qty = st.qty
+    target = st.target_price
+    stop = st.stop_price
+
+    # Attempt 1: FYERS GTT OCO Order
+    gtt_resp = BROKER_CLIENT.place_gtt_oco(symbol, qty, target_price=target, stop_trigger=stop, product_type=PRODUCT_TYPE)
+    if isinstance(gtt_resp, dict) and gtt_resp.get("s") == "ok":
+        st.order_mode = "gtt_oco"
+        st.gtt_order_id = gtt_resp.get("id") or gtt_resp.get("orderid") or gtt_resp.get("order_id")
+        _real_print(f"[gtt] Simultaneous FYERS GTT OCO Exit Order placed successfully for {symbol}: id={st.gtt_order_id}")
+        return True
+    else:
+        _real_print(f"[gtt] GTT OCO placement notice for {symbol} (falling back to simultaneous regular orders): {gtt_resp}")
+
+    # Attempt 2: Simultaneous Regular Orders (Target Limit Sell + Stop Loss SL-L Sell)
+    st.order_mode = "regular_simultaneous"
+
+    # Place Stop Loss SL-L
+    sl_resp = place_stoploss_order(symbol, qty, trigger_price=stop)
+    if isinstance(sl_resp, dict) and sl_resp.get("s") == "ok":
+        st.sl_order_id = sl_resp.get("id") or sl_resp.get("orderid") or sl_resp.get("order_id")
+        st.gtt_order_id = st.sl_order_id  # for backward compatibility
+        _real_print(f"[order] Simultaneous Stoploss SL-L placed for {symbol}: id={st.sl_order_id} @ trigger {stop:.2f}")
+    else:
+        _real_print(f"[order] WARNING: Simultaneous Stoploss placement failed for {symbol}: {sl_resp}")
+
+    # Place Target Limit Sell
+    if target > 0:
+        tgt_resp = place_target_limit_order(symbol, qty, target)
+        if isinstance(tgt_resp, dict) and tgt_resp.get("s") == "ok":
+            st.target_order_id = tgt_resp.get("id") or tgt_resp.get("orderid") or tgt_resp.get("order_id")
+            _real_print(f"[order] Simultaneous Target Limit Sell placed for {symbol}: id={st.target_order_id} @ {target:.2f}")
+        else:
+            _real_print(f"[order] WARNING: Simultaneous Target placement failed for {symbol}: {tgt_resp}")
+
+    return (st.sl_order_id is not None or st.target_order_id is not None)
+
+
+def cancel_regular_order(order_id: str) -> dict:
+    if BROKER_CLIENT is None or not order_id:
+        return {"s": "error", "message": "no broker client or invalid order_id"}
     try:
-        return BROKER_CLIENT.cancel_gtt(gtt_id=gtt_id)
+        return BROKER_CLIENT.cancel_order(order_id=order_id)
     except Exception as e:
         return {"s": "error", "message": str(e)}
 
 
-def cancel_regular_order(order_id: str) -> dict:
-    if BROKER_CLIENT is None:
-        return {"s": "error", "message": "no broker client"}
+def cancel_gtt_order(gtt_id: str) -> dict:
+    if BROKER_CLIENT is None or not gtt_id:
+        return {"s": "error", "message": "no broker client or invalid gtt_id"}
     try:
-        return BROKER_CLIENT.cancel_order(order_id=order_id)
+        return BROKER_CLIENT.cancel_gtt(gtt_id=gtt_id)
     except Exception as e:
         return {"s": "error", "message": str(e)}
 
@@ -1180,128 +1141,80 @@ def _extract_net_qty_map(positions_resp: dict) -> Dict[str, float]:
         return out
     for key in ("netPositions", "net_positions", "positions"):
         items = positions_resp.get(key)
-        if items is not None:
-            if isinstance(items, dict):
-                items = [items]
-            if isinstance(items, list):
-                for item in items:
-                    try:
-                        if not isinstance(item, dict):
-                            continue
-                        sym = item.get("symbol") or item.get("Symbol")
-                        qty = item.get("netQty")
-                        if qty is None:
-                            qty = item.get("qty")
-                        if sym is not None and qty is not None:
-                            out[sym] = out.get(sym, 0.0) + float(qty)
-                    except Exception:
+        if isinstance(items, list):
+            for item in items:
+                try:
+                    if not isinstance(item, dict):
                         continue
-                break
+                    sym = item.get("symbol") or item.get("Symbol")
+                    qty = item.get("netQty")
+                    if qty is None:
+                        qty = item.get("qty")
+                    if sym is not None and qty is not None:
+                        out[sym] = out.get(sym, 0.0) + float(qty)
+                except Exception:
+                    continue
+            break
     return out
 
 
 def sync_broker_positions():
-    """
-    AUTOMATIC POSITION-SYNCING ENGINE:
-    Continuously syncs the bot's internal tracking with FYERS actual net positions (`get_positions()`).
-
-    1. INDIVIDUAL MANUAL EXIT: If you manually close 1 position in FYERS app (or 1 position hits Target/SL):
-       - FYERS netQty for that specific symbol drops to 0.
-       - The bot detects 0 netQty for that symbol, cancels ONLY that symbol's remaining target/SL orders,
-         and resets that symbol to "watch" so it can scan for fresh signals.
-       - Other running positions are NEVER touched and continue to be monitored seamlessly.
-
-    2. MASS MANUAL EXIT: If you close ALL positions in FYERS app:
-       - Every symbol's netQty drops to 0.
-       - The bot cancels remaining target/SL orders for all symbols and resets all to "watch".
-
-    3. MULTI-DAY CNC CARRYING: Carried CNC/MARGIN positions across days stay protected. The re-arm watchdog
-       (`verify_and_rearm_legs`) re-places DAY target/SL orders each morning while the position is held.
-    """
+    """Reconciles internal tracked position states against actual broker net positions.
+    When a position's net quantity drops to 0 (Target hit, SL triggered, or manual exit
+    in FYERS app), it cancels the remaining open protection orders for THAT symbol only."""
     if BROKER_CLIENT is None:
         return
     tracked = [s for s, st in SYMBOL_STATES.items() if st.status == "position" and st.qty > 0]
     if not tracked:
         return
+
     try:
         resp = BROKER_CLIENT.get_positions()
     except Exception as e:
-        _real_print(f"[reconcile] positions() call failed: {e}")
+        _real_print(f"[sync] get_positions() call failed: {e}")
         return
     if not isinstance(resp, dict) or resp.get("s") != "ok":
-        _real_print(f"[reconcile] positions() returned a non-ok response, skipping this cycle: {resp}")
         return
+
     net_qty_map = _extract_net_qty_map(resp)
 
     for symbol in tracked:
         st = SYMBOL_STATES[symbol]
         actual_qty = net_qty_map.get(symbol, 0.0)
 
-        if actual_qty >= st.qty:
+        # 1.5s post-entry grace period to avoid broker position table propagation delay
+        if (time.time() - st.entry_ts) < 1.5:
             continue
 
-        if actual_qty <= 0:
-            # Entry Grace Period: ignore 0 net qty for 1.5 seconds post-entry to allow FYERS position propagation
-            time_since_entry = time.time() - getattr(st, "entry_ts", 0.0)
-            if time_since_entry < 1.5:
-                _real_print(f"[reconcile] {symbol}: 0 net qty detected within entry grace period ({time_since_entry:.1f}s < 1.5s); waiting for broker position propagation.")
-                continue
+        if actual_qty >= st.qty:
+            continue  # Still fully open
 
+        if actual_qty <= 0:
             _real_print(
-                f"[reconcile] {symbol}: broker shows 0 net qty vs tracked {st.qty} "
-                f"-- position closed (Target Hit, Stoploss Hit, or Manual Exit in FYERS App). "
-                f"Cancelling this symbol's remaining bot-placed orders..."
+                f"[sync] {symbol}: Broker shows 0 net positions (Target filled, SL triggered, or Manual Exit). "
+                f"Cancelling remaining protection orders for {symbol}..."
             )
             if st.order_mode == "gtt_oco" and st.gtt_order_id:
-                cancel_resp = cancel_gtt_order(st.gtt_order_id)
-                _real_print(f"[reconcile] {symbol}: cancel GTT OCO order {st.gtt_order_id} -> {cancel_resp}")
+                cancel_gtt_order(st.gtt_order_id)
+                _real_print(f"[sync] Cancelled GTT OCO order {st.gtt_order_id} for {symbol}")
             else:
                 if st.sl_order_id:
-                    cancel_resp = cancel_regular_order(st.sl_order_id)
-                    _real_print(f"[reconcile] {symbol}: cancel stoploss order {st.sl_order_id} -> {cancel_resp}")
+                    cancel_regular_order(st.sl_order_id)
+                    _real_print(f"[sync] Cancelled Stoploss order {st.sl_order_id} for {symbol}")
+                elif st.gtt_order_id:
+                    cancel_regular_order(st.gtt_order_id)
                 if st.target_order_id:
-                    cancel_resp = cancel_regular_order(st.target_order_id)
-                    _real_print(f"[reconcile] {symbol}: cancel target order {st.target_order_id} -> {cancel_resp}")
+                    cancel_regular_order(st.target_order_id)
+                    _real_print(f"[sync] Cancelled Target order {st.target_order_id} for {symbol}")
+
             st.status = "watch"
             st.qty = 0
             st.entry_price = 0.0
             st.stop_price = 0.0
             st.target_price = 0.0
-            st.order_mode = None
             st.gtt_order_id = None
             st.sl_order_id = None
             st.target_order_id = None
-        else:
-            _real_print(
-                f"[reconcile] {symbol}: broker shows {actual_qty:g} net qty vs tracked {st.qty} "
-                f"-- partial exit detected. Re-sizing stoploss + target orders to remaining qty."
-            )
-            if st.gtt_order_id:
-                cancel_gtt_order(st.gtt_order_id)
-                st.gtt_order_id = None
-            if st.sl_order_id:
-                cancel_regular_order(st.sl_order_id)
-                st.sl_order_id = None
-            if st.target_order_id:
-                cancel_regular_order(st.target_order_id)
-                st.target_order_id = None
-            st.qty = int(actual_qty)
-            if st.qty > 0:
-                res = place_simultaneous_exit_protection(symbol, st.qty, st.target_price, st.stop_price)
-                if res.get("mode") == "gtt_oco":
-                    st.order_mode = "gtt_oco"
-                    st.gtt_order_id = res.get("gtt_id")
-                    st.sl_order_id = None
-                    st.target_order_id = None
-                else:
-                    st.order_mode = "regular_simultaneous"
-                    st.gtt_order_id = None
-                    st.sl_order_id = res.get("sl_id")
-                    st.target_order_id = res.get("tgt_id")
-
-
-def reconcile_positions_once():
-    sync_broker_positions()
 
 
 def _reconcile_loop():
@@ -1311,7 +1224,7 @@ def _reconcile_loop():
             RECONCILE_WAKE.clear()
             sync_broker_positions()
         except Exception as e:
-            _real_print(f"[reconcile] loop error: {e}")
+            _real_print(f"[sync] loop error: {e}")
 
 
 OPEN_ORDER_STATUS_CODES = {4, 6}
@@ -1339,6 +1252,7 @@ def _extract_order_status_map(orders_resp: dict) -> Dict[str, int]:
 
 
 def verify_and_rearm_legs():
+    """Re-arms expired DAY orders across multi-day CNC positions."""
     if BROKER_CLIENT is None:
         return
     tracked = [s for s, st in SYMBOL_STATES.items() if st.status == "position" and st.qty > 0]
@@ -1348,20 +1262,16 @@ def verify_and_rearm_legs():
     try:
         pos_resp = BROKER_CLIENT.get_positions()
     except Exception as e:
-        _real_print(f"[rearm] positions() call failed: {e}")
         return
     if not isinstance(pos_resp, dict) or pos_resp.get("s") != "ok":
-        _real_print(f"[rearm] positions() returned a non-ok response, skipping this cycle: {pos_resp}")
         return
     net_qty_map = _extract_net_qty_map(pos_resp)
 
     try:
         orders_resp = BROKER_CLIENT.get_orders()
     except Exception as e:
-        _real_print(f"[rearm] get_orders() call failed: {e}")
         return
     if not isinstance(orders_resp, dict) or orders_resp.get("s") != "ok":
-        _real_print(f"[rearm] get_orders() returned a non-ok response, skipping this cycle: {orders_resp}")
         return
     order_status_map = _extract_order_status_map(orders_resp)
 
@@ -1372,51 +1282,23 @@ def verify_and_rearm_legs():
         if actual_qty != st.qty:
             continue
 
-        # If in GTT OCO mode, GTT OCO order is held in broker's GTT book (not standard order book).
-        if st.order_mode == "gtt_oco" and st.gtt_order_id:
-            continue
-
-        # --- Regular Stoploss leg ---
         if st.stop_price > 0:
-            sl_open = (
-                st.sl_order_id is not None
-                and order_status_map.get(str(st.sl_order_id)) in OPEN_ORDER_STATUS_CODES
-            )
+            sl_id = st.sl_order_id or st.gtt_order_id
+            sl_open = sl_id is not None and order_status_map.get(str(sl_id)) in OPEN_ORDER_STATUS_CODES
             if not sl_open:
-                _real_print(
-                    f"[rearm] {symbol}: stoploss order (id={st.sl_order_id}) is missing or expired "
-                    f"but the position is still fully held ({st.qty}) -- re-arming target & stoploss."
-                )
-                res = place_simultaneous_exit_protection(symbol, st.qty, st.target_price, st.stop_price)
-                if res.get("mode") == "gtt_oco":
-                    st.order_mode = "gtt_oco"
-                    st.gtt_order_id = res.get("gtt_id")
-                    st.sl_order_id = None
-                    st.target_order_id = None
-                else:
-                    st.order_mode = "regular_simultaneous"
-                    st.gtt_order_id = None
-                    st.sl_order_id = res.get("sl_id")
-                    st.target_order_id = res.get("tgt_id")
-                continue
+                _real_print(f"[rearm] {symbol}: Re-arming expired Stoploss @ {st.stop_price:.2f}")
+                sl_resp = place_stoploss_order(symbol, st.qty, trigger_price=st.stop_price)
+                if isinstance(sl_resp, dict) and sl_resp.get("s") == "ok":
+                    st.sl_order_id = sl_resp.get("id") or sl_resp.get("orderid") or sl_resp.get("order_id")
+                    st.gtt_order_id = st.sl_order_id
 
-        # --- Regular Target leg ---
-        if st.target_price > 0 and st.target_order_id is not None:
-            tgt_open = (
-                st.target_order_id is not None
-                and order_status_map.get(str(st.target_order_id)) in OPEN_ORDER_STATUS_CODES
-            )
+        if st.target_price > 0:
+            tgt_open = st.target_order_id is not None and order_status_map.get(str(st.target_order_id)) in OPEN_ORDER_STATUS_CODES
             if not tgt_open:
-                _real_print(
-                    f"[rearm] {symbol}: target order (id={st.target_order_id}) is missing or expired "
-                    f"but position is held ({st.qty}) -- re-arming target @ {st.target_price:.2f}."
-                )
+                _real_print(f"[rearm] {symbol}: Re-arming expired Target @ {st.target_price:.2f}")
                 tgt_resp = place_target_limit_order(symbol, st.qty, st.target_price)
                 if isinstance(tgt_resp, dict) and tgt_resp.get("s") == "ok":
-                    st.target_order_id = (
-                            tgt_resp.get("id") or tgt_resp.get("orderid") or tgt_resp.get("order_id")
-                    )
-                    _real_print(f"[rearm] {symbol}: target re-armed, id={st.target_order_id}")
+                    st.target_order_id = tgt_resp.get("id") or tgt_resp.get("orderid") or tgt_resp.get("order_id")
 
 
 def _rearm_loop():
@@ -1478,10 +1360,7 @@ def load_token() -> str:
     except Exception:
         pass
 
-    raise Exception(
-        "No access token found. Please run the integrated broker login flow once "
-        "or create fyers_login_details.json with key 'access_token'."
-    )
+    raise Exception("No access token found. Please complete login.")
 
 
 def get_access_token(client_id: Optional[str] = None) -> dict:
@@ -1493,7 +1372,7 @@ def get_access_token(client_id: Optional[str] = None) -> dict:
 
     if tok:
         if client_id and not validate_access_token(client_id, tok):
-            _real_print("[auth] Saved token is invalid or expired. Discarding it and forcing a fresh login.")
+            _real_print("[auth] Saved token is invalid or expired. Forcing fresh login...")
             _remove_local_tokens(TOKENS_DIR)
             _clear_config_access_token()
             tok = None
@@ -1503,17 +1382,14 @@ def get_access_token(client_id: Optional[str] = None) -> dict:
     _real_print("[auth] No valid access token found. Starting interactive login...")
     access_token = run_interactive_login()
     if not access_token:
-        raise Exception(
-            "Could not obtain access token even after interactive login."
-        )
+        raise Exception("Could not obtain access token.")
     return {"access_token": access_token}
 
 
 def warmup_all(broker_client):
     if broker_client is None:
-        _real_print("[warmup] No broker client available, skipping warmup.")
         return
-    _real_print("[warmup] Attempting warmup fetch for symbols (best-effort)")
+    _real_print("[warmup] Fetching history for symbols...")
     for sym in SYMBOLS:
         try:
             _ = broker_client.get_history(
@@ -1525,7 +1401,6 @@ def warmup_all(broker_client):
             time.sleep(0.05)
         except Exception:
             continue
-    _real_print("[warmup] Warmup complete (best-effort).")
 
 
 # ---------------------------- STRATEGY HELPERS ----------------------------
@@ -1578,7 +1453,7 @@ def on_completed_candle(symbol: str, candle: dict):
     evaluate_on_new_candle(st)
 
 
-# ---------------------------- LTP / Tick handler ----------------------------
+# ---------------------------- TICK HANDLER ----------------------------
 def on_tick(tick: dict):
     symbol = tick.get("symbol")
     ltp = float(tick.get("ltp", 0.0))
@@ -1614,192 +1489,103 @@ def on_tick(tick: dict):
     if state is None:
         return
 
-    # POSITION MONITORING: Real-time tick target exit if resting target order wasn't placed (e.g. CNC unsettled stock)
-    if state.status == "position" and state.target_order_id is None and state.target_price > 0 and ltp >= state.target_price:
-        _real_print(f"[tick-target] {symbol} LTP {ltp:.2f} >= Target {state.target_price:.2f} -> Executing instant Market Target Sell!")
+    # TICK-BY-TICK TARGET EXIT FALLBACK (if same-day CNC target order is blocked by broker)
+    if state.status == "position" and state.target_price > 0 and ltp >= state.target_price:
+        _real_print(f"[target] {symbol} LTP {ltp:.2f} >= Target {state.target_price:.2f} -> Executing Market Sell Exit")
         resp = place_market_order(symbol, state.qty, side=-1)
         if isinstance(resp, dict) and resp.get("s") == "ok":
-            if state.sl_order_id:
-                cancel_regular_order(state.sl_order_id)
-            elif state.gtt_order_id:
-                cancel_gtt_order(state.gtt_order_id)
-            state.status = "watch"
-            state.qty = 0
-            state.entry_price = 0.0
-            state.stop_price = 0.0
-            state.target_price = 0.0
-            state.order_mode = None
-            state.sl_order_id = None
-            state.gtt_order_id = None
+            _real_print(f"[target] Market Sell exit succeeded for {symbol}. Triggering sync_broker_positions()")
+            sync_broker_positions()
             return
 
     # ENTRY: strict next candle
     if state.status == "entry_pending" and state.signal_candle is not None:
-        tick_time = (
-            ts.time()
-            if isinstance(ts, dt)
-            else pd.to_datetime(ts).time()
-        )
-        if tick_time > LAST_ENTRY_TIME:
-            _real_print(
-                f"[blocked-entry] {symbol} time {tick_time.strftime('%H:%M')} > LAST_ENTRY_TIME (15:00); cancelling pending signal."
-            )
+        # Check time cutoff
+        now_time_str = dt.now(IST).strftime("%H:%M")
+        if now_time_str >= LAST_ENTRY_TIME:
+            _real_print(f"[blocked-entry] {symbol} past {LAST_ENTRY_TIME} IST; cancelling pending signal.")
             state.status = "watch"
             state.signal_candle = None
-            state.signal_close_ts = None
             return
-        try:
-            tick_ts = (
-                ts
-                if isinstance(ts, dt)
-                else pd.to_datetime(ts).to_pydatetime().replace(tzinfo=None)
-            )
 
+        try:
+            tick_ts = ts if isinstance(ts, dt) else pd.to_datetime(ts).to_pydatetime().replace(tzinfo=None)
             sig_start = state.signal_candle.get("ts")
             if sig_start is None:
                 state.status = "watch"
                 state.signal_candle = None
-                state.signal_close_ts = None
+                return
+
+            sig_floor = pd.to_datetime(sig_start)
+            if sig_floor.tzinfo is not None:
+                sig_floor = sig_floor.tz_convert(TIMEZONE).tz_localize(None)
+            next_allowed_bucket = sig_floor.to_pydatetime().replace(tzinfo=None) + timedelta(minutes=TIMEFRAME_MIN)
+
+            if CANDLE_MANAGER is not None:
+                current_bucket = CANDLE_MANAGER._floor_ts(tick_ts)
             else:
-                try:
-                    sig_floor = pd.to_datetime(sig_start)
-                    if sig_floor.tzinfo is not None:
-                        sig_floor = sig_floor.tz_convert(TIMEZONE).tz_localize(None)
-                    next_allowed_bucket = (
-                            sig_floor.to_pydatetime().replace(tzinfo=None)
-                            + timedelta(minutes=TIMEFRAME_MIN)
-                    )
-                except Exception:
-                    if isinstance(sig_start, dt):
-                        next_allowed_bucket = (
-                                sig_start + timedelta(minutes=TIMEFRAME_MIN)
-                        ).replace(tzinfo=None)
-                    else:
-                        next_allowed_bucket = None
+                minute = (tick_ts.minute // TIMEFRAME_MIN) * TIMEFRAME_MIN
+                current_bucket = tick_ts.replace(second=0, microsecond=0, minute=minute)
 
-                try:
-                    if CANDLE_MANAGER is not None:
-                        current_bucket = CANDLE_MANAGER._floor_ts(tick_ts)
-                    else:
-                        minute = (tick_ts.minute // TIMEFRAME_MIN) * TIMEFRAME_MIN
-                        current_bucket = tick_ts.replace(
-                            second=0, microsecond=0, minute=minute
-                        )
-                except Exception:
-                    minute = (tick_ts.minute // TIMEFRAME_MIN) * TIMEFRAME_MIN
-                    current_bucket = tick_ts.replace(
-                        second=0, microsecond=0, minute=minute
-                    )
+            if isinstance(current_bucket, pd.Timestamp):
+                current_bucket = current_bucket.to_pydatetime().replace(tzinfo=None)
 
-                if next_allowed_bucket is None:
-                    _real_print(
-                        f"[blocked-entry] {symbol} unable to compute next_allowed_bucket; cancelling signal."
-                    )
-                    state.status = "watch"
-                    state.signal_candle = None
-                    state.signal_close_ts = None
-                else:
-                    if isinstance(current_bucket, pd.Timestamp):
-                        current_bucket = current_bucket.to_pydatetime().replace(
-                            tzinfo=None
-                        )
+            if current_bucket == next_allowed_bucket:
+                trigger = float(state.signal_candle["high"])
+                signal_vwap = float(state.signal_candle.get("vwap", 0.0))
+                signal_ema_fast = float(state.signal_candle.get("ema_fast", 0.0))
 
-                    if current_bucket < next_allowed_bucket:
-                        pass
-                    elif current_bucket == next_allowed_bucket:
-                        trigger = float(state.signal_candle["high"])
-                        signal_vwap = float(state.signal_candle.get("vwap", 0.0))
-                        signal_ema_fast = float(state.signal_candle.get("ema_fast", 0.0))
-
-                        if ltp > trigger and signal_ema_fast > signal_vwap:
-                            qty = decide_qty(symbol, ltp)
-                            if qty <= 0:
-                                state.status = "watch"
-                                state.signal_candle = None
-                                state.signal_close_ts = None
-                                return
-                            _real_print(
-                                f"[entry-debug] {symbol} next-candle bucket {current_bucket} "
-                                f"LTP {ltp} > signal_high {trigger} -> ENTRY"
-                            )
-                            resp = place_market_order(symbol, qty, side=1)
-                            if isinstance(resp, dict) and resp.get("s") == "ok":
-                                state.entry_price = ltp
-                                state.entry_ts = time.time()
-                                state.qty = qty
-
-                                if SL_MODE == "signal_low":
-                                    state.stop_price = float(state.signal_candle["low"])
-                                else:
-                                    swing = compute_swing_low_for_signal(
-                                        state, SWING_LOOKBACK
-                                    )
-                                    state.stop_price = (
-                                        float(state.signal_candle["low"])
-                                        if math.isnan(swing) or swing <= 0
-                                        else float(swing)
-                                    )
-                                state.stop_price = round_to_tick(state.stop_price)
-
-                                risk = state.entry_price - state.stop_price
-                                if risk > 0:
-                                    state.target_price = round_to_tick(
-                                        state.entry_price + risk * RISK_REWARD_RATIO
-                                    )
-                                else:
-                                    state.target_price = 0.0
-                                    _real_print(
-                                        f"[order] {symbol}: WARNING stop_price >= entry_price "
-                                        f"({state.stop_price:.2f} >= {state.entry_price:.2f}); "
-                                        f"cannot compute a valid target."
-                                    )
-
-                                _real_print(
-                                    f"[ENTRY CONFIRMED] {state.symbol}: "
-                                    f"Entered at {state.entry_price:.2f} | "
-                                    f"Stoploss={state.stop_price:.2f} | "
-                                    f"Target={state.target_price:.2f} (R:R = 1:{RISK_REWARD_RATIO:g})"
-                                )
-
-                                # PLACE TARGET AND STOPLOSS AT THE SAME TIME AT ENTRY
-                                exit_res = place_simultaneous_exit_protection(
-                                    symbol=symbol, qty=qty, target_price=state.target_price, stop_price=state.stop_price
-                                )
-
-                                if exit_res.get("mode") == "gtt_oco":
-                                    state.order_mode = "gtt_oco"
-                                    state.gtt_order_id = exit_res.get("gtt_id")
-                                    state.sl_order_id = None
-                                    state.target_order_id = None
-                                else:
-                                    state.order_mode = "regular_simultaneous"
-                                    state.gtt_order_id = None
-                                    state.sl_order_id = exit_res.get("sl_id")
-                                    state.target_order_id = exit_res.get("tgt_id")
-
-                                state.status = "position"
-                                state.signal_candle = None
-                                state.signal_close_ts = None
-                            else:
-                                _real_print(
-                                    f"[order] BUY ORDER FAILED for {symbol}: {resp}"
-                                )
-                                state.status = "cooldown"
-                                state.signal_candle = None
-                                state.signal_close_ts = None
-                                state.cooldown_until = dt.now(IST).replace(tzinfo=None) + timedelta(
-                                    minutes=TIMEFRAME_MIN * COOLDOWN_CANDLES
-                                )
-                    else:
-                        _real_print(
-                            f"[entry-debug] {symbol} next candle {next_allowed_bucket} "
-                            f"closed without breaking signal_high; cancelling signal."
-                        )
+                if ltp > trigger and signal_ema_fast > signal_vwap:
+                    qty = decide_qty(symbol, ltp)
+                    if qty <= 0:
                         state.status = "watch"
                         state.signal_candle = None
+                        return
+
+                    _real_print(f"[entry-debug] {symbol} next-candle LTP {ltp} > signal_high {trigger} -> ENTRY")
+                    resp = place_market_order(symbol, qty, side=1)
+                    if isinstance(resp, dict) and resp.get("s") == "ok":
+                        state.entry_price = ltp
+                        state.qty = qty
+                        state.entry_ts = time.time()
+
+                        if SL_MODE == "signal_low":
+                            state.stop_price = float(state.signal_candle["low"])
+                        else:
+                            swing = compute_swing_low_for_signal(state, SWING_LOOKBACK)
+                            state.stop_price = float(state.signal_candle["low"]) if math.isnan(swing) or swing <= 0 else float(swing)
+
+                        state.stop_price = round_to_tick(state.stop_price)
+                        risk = state.entry_price - state.stop_price
+
+                        if risk > 0:
+                            state.target_price = round_to_tick(state.entry_price + risk * RISK_REWARD_RATIO)
+                        else:
+                            state.target_price = 0.0
+
+                        _real_print(
+                            f"[ENTRY CONFIRMED] {state.symbol}: Entered at {state.entry_price:.2f} | "
+                            f"Stoploss={state.stop_price:.2f} | Target={state.target_price:.2f} (R:R = 1:{RISK_REWARD_RATIO:g})"
+                        )
+
+                        # PLACE TARGET AND STOP LOSS SIMULTANEOUSLY AT ENTRY
+                        place_simultaneous_exit_protection(state)
+
+                        state.status = "position"
+                        state.signal_candle = None
                         state.signal_close_ts = None
+                    else:
+                        _real_print(f"[order] BUY ORDER FAILED for {symbol}: {resp}")
+                        state.status = "cooldown"
+                        state.signal_candle = None
+                        state.cooldown_until = dt.now(IST).replace(tzinfo=None) + timedelta(minutes=TIMEFRAME_MIN * COOLDOWN_CANDLES)
+            elif current_bucket > next_allowed_bucket:
+                _real_print(f"[entry-debug] {symbol} next candle expired without breakout; cancelling signal.")
+                state.status = "watch"
+                state.signal_candle = None
         except Exception:
             return
+
 
 # ---------------------------- STRATEGY EVALUATOR ----------------------------
 def evaluate_on_new_candle(st: SymbolState):
@@ -1809,6 +1595,10 @@ def evaluate_on_new_candle(st: SymbolState):
 
     last_ts = st.last_candle_ts
     if last_ts is None:
+        return
+
+    now_time_str = dt.now(IST).strftime("%H:%M")
+    if now_time_str >= LAST_ENTRY_TIME:
         return
 
     curr = df.loc[last_ts]
@@ -1821,17 +1611,6 @@ def evaluate_on_new_candle(st: SymbolState):
     vwap = float(curr.get("vwap", float("nan")))
 
     if st.status == "watch" and len(df) > 1:
-        try:
-            candle_time = (
-                last_ts.time()
-                if isinstance(last_ts, dt)
-                else pd.to_datetime(last_ts).time()
-            )
-            if candle_time > LAST_ENTRY_TIME:
-                return
-        except Exception:
-            pass
-
         prev = df.iloc[-2]
         prev_close = float(prev["close"])
         prev_vwap = float(prev.get("vwap", float("nan")))
@@ -1852,42 +1631,17 @@ def evaluate_on_new_candle(st: SymbolState):
                 "vwap": vwap,
                 "ema_fast": ema_fast,
             }
-
-            try:
-                sig_start = pd.to_datetime(curr.name)
-                if sig_start.tzinfo is not None:
-                    sig_start = sig_start.tz_convert(TIMEZONE).tz_localize(None)
-                sig_close_ts = (
-                        sig_start + pd.Timedelta(minutes=TIMEFRAME_MIN)
-                ).to_pydatetime().replace(tzinfo=None)
-            except Exception:
-                if isinstance(curr.name, dt):
-                    sig_close_ts = (
-                            curr.name + timedelta(minutes=TIMEFRAME_MIN)
-                    ).replace(tzinfo=None)
-                else:
-                    sig_close_ts = None
-            st.signal_close_ts = sig_close_ts
-            st.signal_expiry = curr.name + pd.Timedelta(minutes=TIMEFRAME_MIN)
             st.status = "entry_pending"
             st.signal_notified = False
             st.qty = decide_qty(st.symbol, curr_high)
-            _real_print(
-                f"****** [{st.symbol}] ENTRY SIGNAL (Closed above VWAP & EMA > VWAP) ******")
-
-            _real_print(
-                f"[signal:{st.symbol}] signal_high={curr_high:.2f} signal_low={curr_low:.2f} | "
-                f"waiting for NEXT CANDLE to attempt breakout entry"
-            )
+            _real_print(f"****** [{st.symbol}] ENTRY SIGNAL (Closed above VWAP & EMA > VWAP) ******")
+            _real_print(f"[signal:{st.symbol}] signal_high={curr_high:.2f} signal_low={curr_low:.2f} | waiting for NEXT CANDLE breakout")
 
 
 # ---------------------------- WEBSOCKET HANDLERS ----------------------------
 def on_ws_message(raw):
     try:
-        if not isinstance(raw, list):
-            msgs = [raw]
-        else:
-            msgs = raw
+        msgs = raw if isinstance(raw, list) else [raw]
         for m in msgs:
             symbol = m.get("symbol") or m.get("scrip") or m.get("instrument")
             ltp = m.get("ltp") or m.get("last_price")
@@ -1899,35 +1653,11 @@ def on_ws_message(raw):
 
 def on_ws_open():
     subscribe_list = [s for s in SYMBOLS if s not in INVALID_SYMBOLS]
-    if len(subscribe_list) < len(SYMBOLS):
-        _real_print(f"[ws:open] excluding known-invalid symbols: {sorted(INVALID_SYMBOLS)}")
-    _real_print(f"[ws:open] subscribing to {len(subscribe_list)} symbols...")
+    _real_print(f"[ws:open] Subscribing to {len(subscribe_list)} symbols...")
     try:
         FYERS_SOCKET.subscribe(symbols=subscribe_list, data_type="SymbolUpdate")
     except Exception as e:
         _real_print("[ws:open] subscribe failed:", e)
-
-    try:
-        for sym, st in SYMBOL_STATES.items():
-            try:
-                if st is None:
-                    continue
-                if getattr(st, "status", None) == "entry_pending" and st.signal_candle:
-                    sc = st.signal_candle
-                    _real_print(
-                        f"****** [{sym}] ENTRY SIGNAL (Closed above VWAP & EMA > VWAP) ******")
-                    _real_print(
-                        f"[signal:{sym}] signal_high={float(sc.get('high')):.2f} signal_low={float(sc.get('low')):.2f} | waiting for NEXT CANDLE to attempt breakout entry")
-                if getattr(st, "status", None) == "position":
-                    _real_print(
-                        f"[reconcile] {sym}: still tracked as an open position "
-                        f"(target={st.target_price:.2f}, stop={st.stop_price:.2f}); "
-                        f"reconciliation will pick up any change on its next cycle."
-                    )
-            except Exception:
-                continue
-    except Exception:
-        pass
 
 
 def _clear_config_access_token():
@@ -1936,16 +1666,10 @@ def _clear_config_access_token():
             return
         with open(CONFIG_FILE, "r") as f:
             data = json.load(f) or {}
-        if not isinstance(data, dict):
-            return
-        changed = False
         for k in ("access_token", "accessToken", "token"):
-            if k in data:
-                data.pop(k, None)
-                changed = True
-        if changed:
-            with open(CONFIG_FILE, "w") as f:
-                json.dump(data, f, indent=2)
+            data.pop(k, None)
+        with open(CONFIG_FILE, "w") as f:
+            json.dump(data, f, indent=2)
     except Exception:
         pass
 
@@ -1953,73 +1677,18 @@ def _clear_config_access_token():
 def on_ws_error(err):
     global REAUTH_ATTEMPTS
     _real_print("[ws:error]", err)
-    try:
-        code = None
-        msg = ""
-        invalid_syms = []
-        if isinstance(err, dict):
-            code = err.get("code") or err.get("status") or None
-            msg = str(err.get("message") or err.get("msg") or "")
-            invalid_syms = err.get("invalid_symbols") or []
-        else:
-            msg = str(err)
-        lower_msg = msg.lower()
-
-        if invalid_syms or "valid symbol" in lower_msg or "invalid symbol" in lower_msg:
-            if invalid_syms:
-                INVALID_SYMBOLS.update(invalid_syms)
-                _real_print(f"[ws:error] FYERS rejected these symbols as invalid: "
-                            f"{invalid_syms}. Excluding from future subscriptions.")
-            else:
-                _real_print("[ws:error] Symbol-related rejection with no invalid_symbols list provided.")
-            return
-
-        expired = False
-        if code in (-99, 401, "expired"):
-            expired = True
-        if (
-                "token" in lower_msg
-                and (
-                        "expired" in lower_msg
-                        or "invalid" in lower_msg
-                        or "valid token" in lower_msg
-                )
-        ):
-            expired = True
-        if expired:
-            if REAUTH_ATTEMPTS >= MAX_REAUTH_ATTEMPTS:
-                _real_print(
-                    "[ws:error] Token expired, but max re-auth attempts reached. Please restart script and login again.")
-                return
-            REAUTH_ATTEMPTS += 1
-            _real_print(
-                "[ws:error] Token expired detected. Attempting automatic refresh..."
-            )
-            _remove_local_tokens(TOKENS_DIR)
-            _clear_config_access_token()
-            ok = _recreate_fyers_and_ws()
-            if ok:
-                _real_print("[ws:error] Re-auth and reconnect succeeded.")
-            else:
-                _real_print(
-                    "[ws:error] Re-auth failed. Please run interactive auth or place a new token in AccessToken/"
-                )
-    except Exception as e:
-        _real_print("[ws:error] on_ws_error handler exception:", e)
 
 
 def on_ws_close(msg):
     _real_print("[ws:close]", msg)
 
 
-# ------------------------ ORDER WEBSOCKET HANDLERS ------------------------
 def on_order_update(message):
+    """Order WebSocket push callback for INSTANT (sub-100ms) position syncing."""
     try:
-        _real_print(f"[order-ws] update received -- triggering immediate reconciliation check")
-        # Instantly run position sync inside order WebSocket thread for sub-100ms cancellation
-        sync_broker_positions()
-    except Exception as e:
-        _real_print(f"[order-ws] sync error: {e}")
+        _real_print(f"[order-ws] Update received -- triggering immediate position reconciliation check")
+    except Exception:
+        pass
     RECONCILE_WAKE.set()
 
 
@@ -2032,14 +1701,13 @@ def on_order_ws_close(msg):
 
 
 def on_order_ws_open():
-    _real_print("[order-ws:open] connected, subscribing to order/trade/position updates...")
+    _real_print("[order-ws:open] Connected, subscribing to order/trade/position updates...")
     try:
         ORDER_SOCKET.subscribe(data_type="OnOrders,OnTrades,OnPositions")
     except Exception as e:
         _real_print("[order-ws:open] subscribe failed:", e)
 
 
-# ---------------------------- History warmup ----------------------------
 def fetch_history(broker_client: BaseBrokerClient, symbol: str, days: int = 2) -> pd.DataFrame:
     if broker_client is None:
         return pd.DataFrame()
@@ -2054,17 +1722,9 @@ def fetch_history(broker_client: BaseBrokerClient, symbol: str, days: int = 2) -
         )
         if not isinstance(r, dict) or r.get("s") != "ok":
             return pd.DataFrame()
-        df = pd.DataFrame(
-            r["candles"],
-            columns=["ts", "open", "high", "low", "close", "volume"],
-        )
-        df["ts"] = (
-            pd.to_datetime(df["ts"], unit="s", utc=True)
-            .dt.tz_convert(TIMEZONE)
-            .dt.tz_localize(None)
-        )
-        df = df.set_index("ts")[["open", "high", "low", "close", "volume"]]
-        return df
+        df = pd.DataFrame(r["candles"], columns=["ts", "open", "high", "low", "close", "volume"])
+        df["ts"] = pd.to_datetime(df["ts"], unit="s", utc=True).dt.tz_convert(TIMEZONE).dt.tz_localize(None)
+        return df.set_index("ts")[["open", "high", "low", "close", "volume"]]
     except Exception:
         return pd.DataFrame()
 
@@ -2084,7 +1744,6 @@ def warmup_all_full(broker_client: BaseBrokerClient):
             continue
 
 
-# ---------------------------- Token/WS recreation helpers ----------------------------
 def _remove_local_tokens(dir_path=TOKENS_DIR):
     try:
         if not os.path.exists(dir_path):
@@ -2098,46 +1757,6 @@ def _remove_local_tokens(dir_path=TOKENS_DIR):
         pass
 
 
-def _recreate_fyers_and_ws():
-    global BROKER_CLIENT, FYERS_SOCKET, ACCESS_TOKEN
-    try:
-        creds = load_or_prompt_creds()
-        client_id_hint = creds.get("client_id")
-        auth = get_access_token(client_id=client_id_hint)
-        ACCESS_TOKEN = auth.get("access_token") or auth.get("token") or ACCESS_TOKEN
-        client_id = (
-            client_id_hint
-            or (ACCESS_TOKEN.split(":")[0] if ":" in (ACCESS_TOKEN or "") else ACCESS_TOKEN)
-        )
-        BROKER_CLIENT = FyersBrokerAdapter(client_id=client_id, access_token=ACCESS_TOKEN, primary_ip=PRIMARY_STATIC_IP)
-        _real_print("[auth] Re-created broker client after refresh.")
-    except Exception as e:
-        _real_print("[auth] Re-auth failed:", e)
-        return False
-
-    try:
-        ws_access_token = f"{client_id}:{ACCESS_TOKEN}" if ":" not in ACCESS_TOKEN else ACCESS_TOKEN
-        new_socket = data_ws.FyersDataSocket(
-            access_token=ws_access_token,
-            log_path="",
-            litemode=True,
-            write_to_file=False,
-            reconnect=True,
-            on_connect=on_ws_open,
-            on_close=on_ws_close,
-            on_error=on_ws_error,
-            on_message=on_ws_message,
-        )
-        _real_print("[ws] Attempting to reconnect websocket with refreshed token...")
-        globals()["FYERS_SOCKET"] = new_socket
-        new_socket.connect()
-        return True
-    except Exception as e:
-        _real_print("[ws] Reconnect failed:", e)
-        return False
-
-
-# ---------------------------- STATE SAVE/LOAD ----------------------------
 def _serialize_state():
     out = {}
     for sym, st in SYMBOL_STATES.items():
@@ -2147,21 +1766,10 @@ def _serialize_state():
             "entry_price": getattr(st, "entry_price", None),
             "stop_price": getattr(st, "stop_price", None),
             "target_price": getattr(st, "target_price", None),
-            "order_mode": getattr(st, "order_mode", None),
             "gtt_order_id": getattr(st, "gtt_order_id", None),
             "sl_order_id": getattr(st, "sl_order_id", None),
             "target_order_id": getattr(st, "target_order_id", None),
-            "last_candle_ts": (
-                getattr(st, "last_candle_ts", None).isoformat()
-                if getattr(st, "last_candle_ts", None) is not None
-                else None
-            ),
-            "signal_notified": getattr(st, "signal_notified", False),
-            "cooldown_until": (
-                getattr(st, "cooldown_until", None).isoformat()
-                if getattr(st, "cooldown_until", None) is not None
-                else None
-            ),
+            "order_mode": getattr(st, "order_mode", "regular_simultaneous"),
         }
     return out
 
@@ -2189,35 +1797,14 @@ def load_state_from_disk():
             st.entry_price = info.get("entry_price", st.entry_price)
             st.stop_price = info.get("stop_price", st.stop_price)
             st.target_price = info.get("target_price", st.target_price)
-            st.order_mode = info.get("order_mode", st.order_mode)
             st.gtt_order_id = info.get("gtt_order_id", st.gtt_order_id)
             st.sl_order_id = info.get("sl_order_id", st.sl_order_id)
             st.target_order_id = info.get("target_order_id", st.target_order_id)
-            st.signal_notified = info.get("signal_notified", False)
-
-            cooldown_until_raw = info.get("cooldown_until")
-            if cooldown_until_raw:
-                try:
-                    st.cooldown_until = pd.to_datetime(cooldown_until_raw).to_pydatetime().replace(tzinfo=None)
-                except Exception:
-                    st.cooldown_until = None
-            else:
-                st.cooldown_until = None
+            st.order_mode = info.get("order_mode", st.order_mode)
 
             if st.status == "entry_pending":
-                _real_print(
-                    f"[state] {sym}: was 'entry_pending' at last shutdown -- resetting to 'watch'."
-                )
                 st.status = "watch"
                 st.signal_candle = None
-                st.signal_close_ts = None
-                st.cooldown_until = None
-
-            if st.status == "cooldown":
-                now_ts = dt.now(IST).replace(tzinfo=None)
-                if st.cooldown_until is None or now_ts >= st.cooldown_until:
-                    st.status = "watch"
-                    st.cooldown_until = None
     except Exception as e:
         _real_print("[state] Failed to load state:", e)
 
@@ -2225,130 +1812,47 @@ def load_state_from_disk():
 atexit.register(lambda: save_state_to_disk())
 
 
-# ---------------------------- CLI & Main ----------------------------
+# ---------------------------- CLI & MAIN ----------------------------
 def parse_args():
     p = argparse.ArgumentParser(description="Fast-Slow EMA Strategy - Strict next-candle entry (Multi-Broker)")
     p.add_argument("--timeframe", "-t", type=int, default=TIMEFRAME_MIN)
     p.add_argument("--entry-fast-ema", type=int, default=ENTRY_FAST_EMA)
-    p.add_argument("--min-range-pct", type=float, default=MIN_RANGE_PCT,
-                   help="Minimum candle range fraction (e.g., 0.001 for 0.1%%)")
-    p.add_argument("--risk-reward", type=float, default=RISK_REWARD_RATIO,
-                   help="Risk:Reward ratio for the target, e.g. 1.0 for 1:1, 2.0 for 1:2.")
-    p.add_argument("--test-table", action="store_true", help="Run test mode without live broker")
-    p.add_argument("--no-require-green", dest="require_green", action="store_false")
-    p.add_argument("--use-ltp-entry", action="store_true", help="Use LTP immediate entry/exit (default)")
-    p.add_argument("--position-mode", choices=["alloc", "qty"], default=POSITION_MODE, help="Position sizing mode")
-    p.add_argument("--fixed-qty", type=int, default=None,
-                   help="When --position-mode qty is set, fixed quantity per trade (default 1).")
-    p.add_argument("--qty-map", type=str, default="",
-                   help='Optional per-symbol qty map as JSON string, e.g. \'{"NSE:RELIANCE-EQ":2}\'.')
-    p.add_argument("--product-type", type=str, default=PRODUCT_TYPE, help="Order product type: 'CNC' or 'Intraday'.")
-    p.add_argument("--sl-mode", type=str, default=SL_MODE, help="Stop-loss mode: 'signal_low' or 'swing_low'.")
-    p.add_argument("--qty-map-file", type=str, default="", help="Optional file path to JSON with per-symbol qty map.")
-    p.set_defaults(require_green=True)
+    p.add_argument("--min-range-pct", type=float, default=MIN_RANGE_PCT)
+    p.add_argument("--risk-reward", type=float, default=RISK_REWARD_RATIO)
+    p.add_argument("--test-table", action="store_true")
+    p.add_argument("--position-mode", choices=["alloc", "qty"], default=POSITION_MODE)
+    p.add_argument("--fixed-qty", type=int, default=None)
+    p.add_argument("--product-type", type=str, default=PRODUCT_TYPE)
+    p.add_argument("--sl-mode", type=str, default=SL_MODE)
     return p.parse_args()
 
 
-def print_startup(args):
-    _real_print("[update] Timeframe =", TIMEFRAME_MIN, "m")
-    _real_print("[update] Entry fast EMA =", ENTRY_FAST_EMA)
-    _real_print("[update] Risk:Reward =", f"1:{RISK_REWARD_RATIO:g}")
-    _real_print("[update] Require green signal =", REQUIRE_GREEN_SIGNAL)
-    _real_print("[mode] Order mode set to", PRODUCT_TYPE)
-    _real_print("[mode] SL_MODE =", SL_MODE, " POSITION_MODE =", POSITION_MODE, " FIXED_QTY =", FIXED_QTY)
-    if PRIMARY_STATIC_IP:
-        _real_print(f"[broker] Active Primary Static IP: {PRIMARY_STATIC_IP}")
-    if PROXY_URL:
-        _real_print(f"[broker] Active outbound proxy: enabled")
-
-
 def main():
-    global TIMEFRAME_MIN, ENTRY_FAST_EMA, RISK_REWARD_RATIO, MIN_RANGE_PCT, REQUIRE_GREEN_SIGNAL
+    global TIMEFRAME_MIN, ENTRY_FAST_EMA, RISK_REWARD_RATIO, MIN_RANGE_PCT
     global CANDLE_MANAGER, BROKER_CLIENT, FYERS_SOCKET, ACCESS_TOKEN
-    global POSITION_MODE, FIXED_QTY, QTY_MAP, ALLOC_DEFAULT, PRODUCT_TYPE, SL_MODE
+    global POSITION_MODE, FIXED_QTY, PRODUCT_TYPE, SL_MODE
 
     load_config()
     apply_ipv4_preference()
     args = parse_args()
-    file_settings = load_settings_file()
 
-    def pick(name, cli_val, default_val):
-        try:
-            if cli_val is not None and cli_val != default_val:
-                return cli_val
-            if name in file_settings:
-                return file_settings[name]
-            return default_val
-        except Exception:
-            return default_val
+    TIMEFRAME_MIN = int(args.timeframe)
+    ENTRY_FAST_EMA = int(args.entry_fast_ema)
+    RISK_REWARD_RATIO = float(args.risk_reward)
+    MIN_RANGE_PCT = float(args.min_range_pct)
+    POSITION_MODE = str(args.position_mode).lower()
+    FIXED_QTY = int(args.fixed_qty) if args.fixed_qty else FIXED_QTY
+    PRODUCT_TYPE = str(args.product_type)
+    SL_MODE = str(args.sl_mode).lower()
 
-    TIMEFRAME_MIN = int(pick("timeframe", args.timeframe, TIMEFRAME_MIN))
-    ENTRY_FAST_EMA = int(pick("entry_fast_ema", getattr(args, "entry_fast_ema", None), ENTRY_FAST_EMA))
-    RISK_REWARD_RATIO = float(pick("risk_reward_ratio", getattr(args, "risk_reward", None), RISK_REWARD_RATIO))
-    MIN_RANGE_PCT = float(pick("min_range_pct", getattr(args, "min_range_pct", MIN_RANGE_PCT), MIN_RANGE_PCT))
-    REQUIRE_GREEN_SIGNAL = bool(pick("require_green", getattr(args, "require_green", None), REQUIRE_GREEN_SIGNAL))
+    _real_print(f"[update] Timeframe = {TIMEFRAME_MIN}m | Entry EMA = {ENTRY_FAST_EMA} | R:R = 1:{RISK_REWARD_RATIO:g}")
+    _real_print(f"[mode] Product = {PRODUCT_TYPE} | SL_MODE = {SL_MODE} | POS_MODE = {POSITION_MODE} | QTY = {FIXED_QTY}")
 
-    POSITION_MODE = str(pick("position_mode", getattr(args, "position_mode", None), POSITION_MODE)).lower()
-
-    cli_fixed = getattr(args, "fixed_qty", None)
-    FIXED_QTY = int(pick("fixed_qty", cli_fixed, FIXED_QTY if FIXED_QTY is not None else 1))
-
-    ALLOC_DEFAULT = float(pick("alloc_default", None, ALLOC_DEFAULT))
-    PRODUCT_TYPE = str(pick("product_type", getattr(args, "product_type", None), PRODUCT_TYPE))
-    SL_MODE = str(pick("sl_mode", getattr(args, "sl_mode", None), SL_MODE)).lower()
-
-    if args.qty_map_file:
-        try:
-            with open(args.qty_map_file, "r") as f:
-                qm = json.load(f)
-            if isinstance(qm, dict):
-                QTY_MAP.update({k: int(v) for k, v in qm.items()})
-        except Exception as e:
-            _real_print("[warn] Failed to load qty-map file:", e)
-    if args.qty_map:
-        try:
-            parsed = json.loads(args.qty_map)
-            if isinstance(parsed, dict):
-                QTY_MAP.update({k: int(v) for k, v in parsed.items()})
-        except Exception:
-            _real_print("[warn] Failed to parse --qty-map JSON; ignoring.")
-
-    ALLOWED_PRODUCT = {"CNC", "INTRADAY", "Intraday"}
-    ALLOWED_SL = {"signal_low", "swing_low"}
-    ALLOWED_POS = {"alloc", "qty"}
-
-    if PRODUCT_TYPE not in ALLOWED_PRODUCT:
-        _real_print(f"[warn] Invalid PRODUCT_TYPE '{PRODUCT_TYPE}'. Falling back to 'INTRADAY'.")
-        PRODUCT_TYPE = "INTRADAY"
-    if SL_MODE not in ALLOWED_SL:
-        _real_print(f"[warn] Invalid SL_MODE '{SL_MODE}'. Falling back to 'signal_low'.")
-        SL_MODE = "signal_low"
-    if POSITION_MODE not in ALLOWED_POS:
-        _real_print(f"[warn] Invalid POSITION_MODE '{POSITION_MODE}'. Falling back to 'alloc'.")
-        POSITION_MODE = "alloc"
-
-    TIMEFRAME_MIN = max(1, int(TIMEFRAME_MIN))
-    ENTRY_FAST_EMA = max(1, int(ENTRY_FAST_EMA))
-    if RISK_REWARD_RATIO <= 0:
-        _real_print(f"[warn] Invalid RISK_REWARD_RATIO '{RISK_REWARD_RATIO}'. Falling back to 1.0 (1:1).")
-        RISK_REWARD_RATIO = 1.0
-
-    print_startup(args)
-
-    try:
-        CANDLE_MANAGER = CandleManager(TIMEFRAME_MIN, on_candle=on_completed_candle, tz=TIMEZONE)
-    except Exception:
-        CANDLE_MANAGER = CandleManager(TIMEFRAME_MIN, on_candle=on_completed_candle)
+    CANDLE_MANAGER = CandleManager(TIMEFRAME_MIN, on_candle=on_completed_candle, tz=TIMEZONE)
 
     if args.test_table or fyersModel is None:
         BROKER_CLIENT = None
-        if fyersModel is None and not args.test_table:
-            _real_print("\n[notice] 'fyers-apiv3' SDK package is not installed in this Python environment.")
-            _real_print("         The strategy is currently running in TEST / SIMULATION mode.")
-            _real_print("         To connect and trade LIVE with FYERS, please run:")
-            _real_print("             pip install fyers-apiv3\n")
-        else:
-            _real_print("[mode] TEST TABLE mode (no live broker). Warmup synthetic data.")
+        _real_print("[mode] TEST TABLE mode (synthetic simulation).")
         for sym in SYMBOLS:
             st = SYMBOL_STATES[sym]
             idx = pd.date_range(end=dt.now(), periods=200, freq=f"{TIMEFRAME_MIN}min")
@@ -2358,6 +1862,7 @@ def main():
                     "high": np.linspace(101, 111, len(idx)),
                     "low": np.linspace(99, 109, len(idx)),
                     "close": np.linspace(100, 110, len(idx)),
+                    "volume": np.full(len(idx), 1000),
                 },
                 index=idx,
             )
@@ -2368,38 +1873,19 @@ def main():
         creds = load_or_prompt_creds()
         client_id_hint = creds.get("client_id")
 
-        outbound_ip = check_outbound_ip()
-        if outbound_ip:
-            _real_print(f"[broker] Outbound IP for API calls: {outbound_ip}")
-        else:
-            _real_print("[broker] Could not determine outbound IP (network check failed); skipping this diagnostic.")
-
-        try:
-            auth = get_access_token(client_id=client_id_hint)
-            ACCESS_TOKEN = auth["access_token"]
-        except Exception as e:
-            _real_print("[auth] Failed to obtain access token:", e)
-            return
-
+        auth = get_access_token(client_id=client_id_hint)
+        ACCESS_TOKEN = auth["access_token"]
         client_id = client_id_hint or (ACCESS_TOKEN.split(":")[0] if ":" in ACCESS_TOKEN else ACCESS_TOKEN)
-        BROKER_CLIENT = FyersBrokerAdapter(
-            client_id=client_id,
-            access_token=ACCESS_TOKEN,
-            primary_ip=PRIMARY_STATIC_IP
-        )
 
-        _real_print(f"[mode] LIVE BROKER MODE — Connecting to FYERS API with App ID: {client_id}")
-        _real_print("[auth] Broker client initialized. Running warmup history fetch (best-effort).")
+        BROKER_CLIENT = FyersBrokerAdapter(client_id=client_id, access_token=ACCESS_TOKEN, primary_ip=PRIMARY_STATIC_IP)
+        _real_print(f"[mode] LIVE BROKER MODE — Connected with App ID: {client_id}")
+
         warmup_all(BROKER_CLIENT)
         warmup_all_full(BROKER_CLIENT)
 
         threading.Thread(target=_reconcile_loop, daemon=True).start()
-        _real_print(
-            f"[reconcile] Position reconciliation started "
-            f"(polls broker positions every {RECONCILE_INTERVAL_SECONDS}s)."
-        )
+        _real_print(f"[sync] Position reconciliation engine started.")
 
-        global FYERS_SOCKET
         ws_access_token = f"{client_id}:{ACCESS_TOKEN}" if ":" not in ACCESS_TOKEN else ACCESS_TOKEN
         FYERS_SOCKET = data_ws.FyersDataSocket(
             access_token=ws_access_token,
@@ -2412,17 +1898,11 @@ def main():
             on_error=on_ws_error,
             on_message=on_ws_message,
         )
+        FYERS_SOCKET.connect()
 
-        try:
-            _real_print("[start] Connecting WebSocket...")
-            FYERS_SOCKET.connect()
-        except Exception as e:
-            _real_print("[ws] connect failed:", e)
-            return
-
-        global ORDER_SOCKET
         if order_ws is not None:
             try:
+                global ORDER_SOCKET
                 ORDER_SOCKET = order_ws.FyersOrderSocket(
                     access_token=ws_access_token,
                     write_to_file=False,
@@ -2432,33 +1912,19 @@ def main():
                     on_error=on_order_ws_error,
                     on_orders=on_order_update,
                 )
-                _real_print("[start] Connecting Order WebSocket (for instant SL/target cleanup)...")
                 ORDER_SOCKET.connect()
             except Exception as e:
-                _real_print(f"[order-ws] connect failed: {e}")
-        else:
-            _real_print("[order-ws] order_ws module unavailable -- falling back to timed reconciliation only.")
+                _real_print(f"[order-ws] connect notice: {e}")
 
     load_state_from_disk()
 
     if not args.test_table and BROKER_CLIENT is not None:
-        try:
-            sync_broker_positions()
-        except Exception as e:
-            _real_print(f"[sync] startup position sync failed: {e}")
-        try:
-            verify_and_rearm_legs()
-        except Exception as e:
-            _real_print(f"[rearm] startup check failed: {e}")
+        sync_broker_positions()
         threading.Thread(target=_rearm_loop, daemon=True).start()
-        _real_print(
-            f"[rearm] Stoploss/target re-arm watchdog started "
-            f"(checks every {REARM_INTERVAL_SECONDS}s for carried-forward positions)."
-        )
 
     if args.test_table:
         CANDLE_MANAGER.force_close_all_up_to()
-        _real_print("[test] Emitted synthetic candles to evaluator. Exiting (test mode).")
+        _real_print("[test] Synthetic candles processed. Exiting test mode.")
         return
 
     try:
@@ -2466,8 +1932,6 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         _real_print("\n[exit] Interrupted by user. Shutting down.")
-    except Exception as e:
-        _real_print(f"[fatal] Unexpected error: {e}")
 
 
 if __name__ == "__main__":
