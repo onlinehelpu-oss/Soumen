@@ -161,7 +161,7 @@ def get_config() -> dict:
 # ============================================================================
 # 0b. STRATEGY CONFIG VALIDATION
 # ============================================================================
-FYERS_NATIVE_RESOLUTIONS = {"1", "2", "3", "5", "10", "15", "20", "30", "45", "60", "120", "240", "D"}
+FYERS_NATIVE_RESOLUTIONS = {"1", "2", "3", "5", "10", "15", "20", "30", "60", "120", "240", "D"}
 
 
 def validate_strategy_config(s: dict) -> None:
@@ -768,6 +768,8 @@ class FyersBroker(BaseBroker):
         return resp.get("s") == "ok"
 
     def get_order_status(self, order_id: str) -> str:
+        if not order_id:
+            return "REJECTED"
         resp = self.fyers.orderbook({"id": order_id})
         orders = resp.get("orderBook", [])
         if not orders:
@@ -963,7 +965,6 @@ class OptionStrategyEngine:
         live_fast = self._live_ema(self._last_closed_fast, ltp, self.cfg.ema_fast_period)
         live_slow = self._live_ema(self._last_closed_slow, ltp, self.cfg.ema_slow_period)
         if not (live_fast > live_slow > live_main):
-            self.state.pending = False
             return None
 
         sl = round_to_tick(self.state.signal_low - self.cfg.sl_buffer_points)
