@@ -221,7 +221,7 @@ LOG_FILE = "trade_log.csv"
 STATE_DUMP = "symbol_states.json"
 PARTIAL_CANDLES_FILE = "partial_candles.json"
 
-PRODUCT_TYPE = "INTRADAY"
+PRODUCT_TYPE = "CNC"
 ALLOC_DEFAULT = 1000.0
 ALLOC_MAP = {}
 
@@ -1225,10 +1225,10 @@ def sync_broker_positions():
             continue
 
         if actual_qty <= 0:
-            # Entry Grace Period: ignore 0 net qty for 5 seconds post-entry to allow FYERS position propagation
+            # Entry Grace Period: ignore 0 net qty for 1.5 seconds post-entry to allow FYERS position propagation
             time_since_entry = time.time() - getattr(st, "entry_ts", 0.0)
-            if time_since_entry < 5.0:
-                _real_print(f"[reconcile] {symbol}: 0 net qty detected within entry grace period ({time_since_entry:.1f}s < 5s); waiting for broker position propagation.")
+            if time_since_entry < 1.5:
+                _real_print(f"[reconcile] {symbol}: 0 net qty detected within entry grace period ({time_since_entry:.1f}s < 1.5s); waiting for broker position propagation.")
                 continue
 
             _real_print(
@@ -1382,6 +1382,7 @@ def verify_and_rearm_legs():
                     st.gtt_order_id = None
                     st.sl_order_id = res.get("sl_id")
                     st.target_order_id = res.get("tgt_id")
+                continue
 
         # --- Regular Target leg ---
         if st.target_price > 0 and st.target_order_id is not None:
@@ -1596,6 +1597,25 @@ def on_tick(tick: dict):
     state = SYMBOL_STATES.get(symbol)
     if state is None:
         return
+
+    # POSITION MONITORING: Real-time tick target exit if resting target order wasn't placed (e.g. CNC unsettled stock)
+    if state.status == "position" and state.target_order_id is None and state.target_price > 0 and ltp >= state.target_price:
+        _real_print(f"[tick-target] {symbol} LTP {ltp:.2f} >= Target {state.target_price:.2f} -> Executing instant Market Target Sell!")
+        resp = place_market_order(symbol, state.qty, side=-1)
+        if isinstance(resp, dict) and resp.get("s") == "ok":
+            if state.sl_order_id:
+                cancel_regular_order(state.sl_order_id)
+            elif state.gtt_order_id:
+                cancel_gtt_order(state.gtt_order_id)
+            state.status = "watch"
+            state.qty = 0
+            state.entry_price = 0.0
+            state.stop_price = 0.0
+            state.target_price = 0.0
+            state.order_mode = None
+            state.sl_order_id = None
+            state.gtt_order_id = None
+            return
 
     # ENTRY: strict next candle
     if state.status == "entry_pending" and state.signal_candle is not None:
@@ -1980,8 +2000,10 @@ def on_ws_close(msg):
 def on_order_update(message):
     try:
         _real_print(f"[order-ws] update received -- triggering immediate reconciliation check")
-    except Exception:
-        pass
+        # Instantly run position sync inside order WebSocket thread for sub-100ms cancellation
+        sync_broker_positions()
+    except Exception as e:
+        _real_print(f"[order-ws] sync error: {e}")
     RECONCILE_WAKE.set()
 
 
