@@ -1509,9 +1509,10 @@ def on_tick(tick: dict):
     if state is None:
         return
 
-    # TICK-BY-TICK TARGET EXIT FALLBACK (if same-day CNC target order is blocked by broker)
-    if state.status == "position" and state.target_price > 0 and ltp >= state.target_price:
-        _real_print(f"[target] {symbol} LTP {ltp:.2f} >= Target {state.target_price:.2f} -> Executing Market Sell Exit")
+    # TICK-BY-TICK TARGET EXIT FALLBACK: Restricted strictly to state.target_order_id is None
+    # to avoid duplicate order placement / accidental shorting when resting Limit Sell orders fill.
+    if state.status == "position" and state.target_order_id is None and state.target_price > 0 and ltp >= state.target_price:
+        _real_print(f"[target] {symbol} LTP {ltp:.2f} >= Target {state.target_price:.2f} (no resting limit order) -> Executing Market Sell Exit")
         resp = place_market_order(symbol, state.qty, side=-1)
         if isinstance(resp, dict) and resp.get("s") == "ok":
             _real_print(f"[target] Market Sell exit succeeded for {symbol}. Triggering sync_broker_positions()")
@@ -1694,9 +1695,79 @@ def _clear_config_access_token():
         pass
 
 
+def _recreate_fyers_and_ws():
+    global BROKER_CLIENT, FYERS_SOCKET, ACCESS_TOKEN
+    try:
+        creds = load_or_prompt_creds()
+        client_id_hint = creds.get("client_id")
+        auth = get_access_token(client_id=client_id_hint)
+        ACCESS_TOKEN = auth.get("access_token") or auth.get("token") or ACCESS_TOKEN
+        client_id = client_id_hint or (ACCESS_TOKEN.split(":")[0] if ":" in (ACCESS_TOKEN or "") else ACCESS_TOKEN)
+        BROKER_CLIENT = FyersBrokerAdapter(client_id=client_id, access_token=ACCESS_TOKEN, primary_ip=PRIMARY_STATIC_IP)
+        _real_print("[auth] Re-created broker client after refresh.")
+    except Exception as e:
+        _real_print("[auth] Re-auth failed:", e)
+        return False
+
+    try:
+        ws_access_token = f"{client_id}:{ACCESS_TOKEN}" if ":" not in ACCESS_TOKEN else ACCESS_TOKEN
+        new_socket = data_ws.FyersDataSocket(
+            access_token=ws_access_token,
+            log_path="",
+            litemode=True,
+            write_to_file=False,
+            reconnect=True,
+            on_connect=on_ws_open,
+            on_close=on_ws_close,
+            on_error=on_ws_error,
+            on_message=on_ws_message,
+        )
+        globals()["FYERS_SOCKET"] = new_socket
+        new_socket.connect()
+        return True
+    except Exception as e:
+        _real_print("[ws] Reconnect failed:", e)
+        return False
+
+
 def on_ws_error(err):
     global REAUTH_ATTEMPTS
     _real_print("[ws:error]", err)
+    try:
+        code = None
+        msg = ""
+        invalid_syms = []
+        if isinstance(err, dict):
+            code = err.get("code") or err.get("status") or None
+            msg = str(err.get("message") or err.get("msg") or "")
+            invalid_syms = err.get("invalid_symbols") or []
+        else:
+            msg = str(err)
+        lower_msg = msg.lower()
+
+        if invalid_syms or "valid symbol" in lower_msg or "invalid symbol" in lower_msg:
+            if invalid_syms:
+                INVALID_SYMBOLS.update(invalid_syms)
+                _real_print(f"[ws:error] Excluding invalid symbols: {invalid_syms}")
+            return
+
+        expired = False
+        if code in (-99, 401, "expired"):
+            expired = True
+        if "token" in lower_msg and ("expired" in lower_msg or "invalid" in lower_msg or "valid token" in lower_msg):
+            expired = True
+
+        if expired:
+            if REAUTH_ATTEMPTS >= MAX_REAUTH_ATTEMPTS:
+                _real_print("[ws:error] Max re-auth attempts reached.")
+                return
+            REAUTH_ATTEMPTS += 1
+            _real_print("[ws:error] Expired token detected. Refreshing session...")
+            _remove_local_tokens(TOKENS_DIR)
+            _clear_config_access_token()
+            _recreate_fyers_and_ws()
+    except Exception as e:
+        _real_print("[ws:error] Exception in on_ws_error handler:", e)
 
 
 def on_ws_close(msg):
