@@ -96,15 +96,31 @@ try:
                         session.mount("https://", adapter)
                     except Exception:
                         pass
-                response = session.post(
-                    url=self.symbols_token_api,
-                    headers={
-                        "Authorization": self.access_token,
-                        "Content-Type": "application/json",
-                    },
-                    json=data,
-                    timeout=15
-                )
+                try:
+                    response = session.post(
+                        url=self.symbols_token_api,
+                        headers={
+                            "Authorization": self.access_token,
+                            "Content-Type": "application/json",
+                        },
+                        json=data,
+                        timeout=15
+                    )
+                except Exception as net_err:
+                    # If local socket bind fails (e.g. WinError 10049 because primary_ip is not bound to local NIC), retry without SourceAddressAdapter
+                    if PRIMARY_STATIC_IP:
+                        session = requests.Session()
+                        response = session.post(
+                            url=self.symbols_token_api,
+                            headers={
+                                "Authorization": self.access_token,
+                                "Content-Type": "application/json",
+                            },
+                            json=data,
+                            timeout=15
+                        )
+                    else:
+                        raise net_err
                 response_data = response.json()
                 datadict = {}
                 file_path = resource_filename('fyers_apiv3.FyersWebsocket', 'map.json')
