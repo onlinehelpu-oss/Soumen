@@ -90,23 +90,42 @@ try:
         def _patched_symbol_to_hsmtoken(self, symbols: list):
             try:
                 data = {"symbols": symbols}
-                session = requests.Session()
+                headers = {
+                    "Authorization": self.access_token,
+                    "Content-Type": "application/json",
+                }
+
+                response = None
                 if PRIMARY_STATIC_IP:
                     try:
+                        session = requests.Session()
                         adapter = SourceAddressAdapter(PRIMARY_STATIC_IP)
                         session.mount("http://", adapter)
                         session.mount("https://", adapter)
-                    except Exception:
-                        pass
-                response = session.post(
-                    url=self.symbols_token_api,
-                    headers={
-                        "Authorization": self.access_token,
-                        "Content-Type": "application/json",
-                    },
-                    json=data,
-                    timeout=15
-                )
+                        response = session.post(
+                            url=self.symbols_token_api,
+                            headers=headers,
+                            json=data,
+                            timeout=15
+                        )
+                    except Exception as bind_err:
+                        # Handle [WinError 10049] / socket bind errors when static IP is not local
+                        session = requests.Session()
+                        response = session.post(
+                            url=self.symbols_token_api,
+                            headers=headers,
+                            json=data,
+                            timeout=15
+                        )
+                else:
+                    session = requests.Session()
+                    response = session.post(
+                        url=self.symbols_token_api,
+                        headers=headers,
+                        json=data,
+                        timeout=15
+                    )
+
                 response_data = response.json()
                 datadict = {}
                 file_path = resource_filename('fyers_apiv3.FyersWebsocket', 'map.json')
@@ -221,6 +240,7 @@ SYMBOLS = [
     'NSE:ETERNAL-EQ', 'NSE:INDUSINDBK-EQ', 'NSE:PNB-EQ', 'NSE:BANKBARODA-EQ', 'NSE:CANBK-EQ',
 
     'NSE:IDFCFIRSTB-EQ', 'NSE:FEDERALBNK-EQ', 'NSE:RECLTD-EQ', 'NSE:PFC-EQ', 'NSE:GAIL-EQ',
+
     'NSE:SAIL-EQ', 'NSE:HAL-EQ', 'NSE:BEL-EQ', 'NSE:IRFC-EQ', 'NSE:DLF-EQ'
 ]
 
